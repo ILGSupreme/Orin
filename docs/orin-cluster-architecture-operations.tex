@@ -1,0 +1,596 @@
+
+\documentclass[11pt,a4paper]{article}
+\usepackage[a4paper,margin=2.2cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{booktabs,longtable,array,tabularx}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{hyperref}
+\usepackage{xurl}
+\usepackage{titlesec}
+\usepackage{tcolorbox}
+\usepackage{listings}
+\usepackage{lastpage}
+\hypersetup{colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!50!black,pdftitle={Orin Cluster Architecture and Operations},pdfauthor={Samuel Padilla}}
+
+\definecolor{accent}{HTML}{1F4E79}
+\definecolor{rulegray}{HTML}{D9E2EA}
+\definecolor{codebg}{HTML}{F7F7F7}
+
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{Orin Cluster}
+\rhead{Architecture and Operations}
+\cfoot{\thepage/\pageref{LastPage}}
+
+\titleformat{\section}{\Large\bfseries\color{accent}}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{0.6em}{}
+\tcbset{colback=white,colframe=rulegray,boxrule=0.6pt,arc=1mm}
+\newtcolorbox{infobox}{colback=white,colframe=rulegray,boxrule=0.6pt,arc=1mm}
+\lstset{basicstyle=\ttfamily\small,backgroundcolor=\color{codebg},frame=single,framerule=0pt,breaklines=true,columns=fullflexible,keepspaces=true}
+
+\begin{document}
+
+\begin{titlepage}
+  \centering
+  \vspace*{2.2cm}
+  {\fontsize{26}{30}\selectfont\bfseries Orin Cluster\\Architecture and Operations\par}
+  \vspace{0.6cm}
+  {\large Current-state technical overview and operations reference\par}
+  \vspace{1.1cm}
+
+  \begin{infobox}
+  \textbf{Scope}\newline
+  Current Cortex-centered Kubernetes edge AI cluster with WorkPacket routing, Primer-backed LLM execution, memory persistence, deployment operations, and planned tool/federation roles.
+  \end{infobox}
+
+  \vspace{0.8cm}
+  \begin{tabular}{@{}ll@{}}
+  Author: & Samuel Padilla \\
+  Date: & \today \\
+  Namespace model: & configured by \texttt{/data/configuration} and Cortex deployment settings \\
+  Primary external entry point: & \texttt{http://orin-gw:30080/work} \\
+  \end{tabular}
+
+  \vfill
+
+  \begin{infobox}
+  This draft replaces the older gateway/orchestrator/Ollama document shape with the current Cortex, WorkPacket, LLM, memory, discovery, and deployment-service architecture.
+  \end{infobox}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+\section{System purpose}
+The Orin Cluster is a Kubernetes-based local edge-AI assistant platform. The current design is centered on \textbf{Cortex} as the local ingress, reasoning, command, discovery, and routing process. Runtime work is represented as canonical \textbf{WorkPackets} and routed to discovered backend services.
+
+The active runtime roles are:
+\begin{itemize}[leftmargin=1.2em]
+  \item \textbf{Cortex}: ingress, command interface, deployment operations, memory/session integration, local fast responses, discovery, routing, and future complex-task handling.
+  \item \textbf{LLM}: Primer-backed WorkPacket executor for model inference.
+  \item \textbf{Memory}: WorkPacket backend for users, sessions, chat history, claims, notes, summaries, and prompt context.
+  \item \textbf{Tool}: planned backend role; folder exists but is currently empty.
+  \item \textbf{Federation}: planned inter-cluster role; folder exists but is currently empty.
+  \item \textbf{Common}: shared protocol, runtime, model-loading, adapter, and Hugging Face helpers.
+\end{itemize}
+
+\begin{infobox}
+\textbf{Design direction.} Everything executable should become a WorkPacket. Everything routable should pass through the same router/discovery path, whether it is LLM work, memory work, tool work, or deferred Cortex work.
+\end{infobox}
+
+\section{Repository structure}
+\begin{lstlisting}
+orin-cluster/
+  canonincal-unified-image/
+  documentation/
+  src/
+    common/
+    cortex/
+    federation/
+    llm/
+    memory/
+    tool/
+  install-orin.sh
+  terminal-chat.py
+\end{lstlisting}
+
+\begin{itemize}[leftmargin=1.2em]
+  \item \texttt{common/} contains shared protocols, message adapters, Primer, Hugging Face helpers, and model/runtime types.
+  \item \texttt{cortex/} contains the main Cortex app, command router, deployment service, Kubernetes discovery, routing, and mailbox code.
+  \item \texttt{llm/} contains the Primer-backed LLM backend app. Its runtime class is currently named \texttt{CortexRuntime}; this should be renamed to an LLM-specific name such as \texttt{LLMRuntime}.
+  \item \texttt{memory/} contains the memory backend app, SQLite persistence, file-backed memory, and prompt-context logic.
+  \item \texttt{tool/} and \texttt{federation/} are planned runtime roles but are currently empty.
+\end{itemize}
+
+\section{Image model}
+The intended image split is:
+\begin{lstlisting}
+standard runtime, amd64/arm64:
+  FROM orin-gw:5000/primer-runtime:0.2
+
+jetson runtime:
+  FROM orin-gw:5000/primer-runtime:jetson-orin.0.2
+\end{lstlisting}
+
+The application folders \texttt{cortex}, \texttt{llm}, \texttt{memory}, and \texttt{tool} each have a standard \texttt{Dockerfile} and a Jetson-specific \texttt{Dockerfile.jetson}.
+
+\begin{infobox}
+Current implementation note: \texttt{install-orin.sh} and part of the deployment factory still contain a three-way platform image selection for \texttt{jetson}, \texttt{arm64}, and \texttt{amd64}. That should be cleaned up so \texttt{amd64} and \texttt{arm64} share standard image naming while Jetson keeps its separate image.
+\end{infobox}
+
+\section{Bootstrap model: install-orin.sh}
+\texttt{install-orin.sh} is the initial host/bootstrap installer. It is not the general ongoing pod deployment mechanism.
+
+Its responsibilities are:
+\begin{enumerate}[leftmargin=1.3em]
+  \item detect the host platform and GPU state
+  \item optionally configure the local test registry for k3s/containerd
+  \item install k3s server on the bootstrap/control host
+  \item create namespace and RBAC
+  \item create the Cortex SSH-key secret
+  \item create the k3s join-token secret
+  \item write the deployment configuration file
+  \item create the deployment configuration ConfigMap
+  \item label the bootstrap node
+  \item deploy the initial \texttt{memory} app
+  \item wait for memory rollout
+  \item deploy the initial \texttt{cortex} app
+  \item wait for Cortex rollout
+\end{enumerate}
+
+\subsection{Configuration and secrets}
+The installer writes JSON configuration to:
+\begin{lstlisting}
+/data/configuration
+\end{lstlisting}
+
+The Cortex pod receives that file through the ConfigMap \texttt{deployment-configuration}, mounted at \texttt{/data/configuration}.
+
+The installer creates:
+\begin{lstlisting}
+cortex-ssh-key
+  mounted in Cortex at /data/ssh/id_ed25519
+
+k3s-join-token
+  contains key: token
+\end{lstlisting}
+
+Cortex uses the SSH key for node operations and reads the k3s join token through the Kubernetes API when installing k3s agents on additional nodes.
+
+\subsection{Bootstrap deployments}
+The installer deploys the minimum working runtime:
+\begin{lstlisting}
+memory
+cortex
+\end{lstlisting}
+
+Cortex is exposed as \texttt{cortex-service} with service type \texttt{NodePort} and node port \texttt{30080}. Memory is exposed internally as \texttt{memory-service} with service type \texttt{ClusterIP}.
+
+\subsection{Bootstrap RBAC}
+The Cortex service account needs permissions to manage cluster resources and discover backends. The installer creates a ClusterRole and ClusterRoleBinding for nodes, namespaces, pods, services, persistentvolumeclaims, configmaps, secrets, deployments, and EndpointSlices. EndpointSlice access is required because backend discovery counts ready endpoints from EndpointSlices.
+
+\section{Runtime applications and endpoints}
+\subsection{Cortex}
+Cortex owns public \texttt{/work} ingress, slash-command handling, local Primer-backed fast response, memory/session integration, backend discovery, routing, deployment operations, and future complex-task handling.
+
+At startup, Cortex creates:
+\begin{lstlisting}
+Primer
+DeploymentService
+DiscoveryService
+BackendRoutingPolicy
+CommandRouter
+BackendClient
+Planner
+RouterService
+CortexMailbox
+CortexRuntime
+\end{lstlisting}
+
+\begin{longtable}{@{}p{4cm}p{2cm}p{8cm}@{}}
+\toprule
+\textbf{Endpoint} & \textbf{Method} & \textbf{Purpose} \\
+\midrule
+\endhead
+\texttt{/work} & POST & Main Cortex ingress for \texttt{InferenceSession}. \\
+\texttt{/work/\{work\_id\}} & GET & Reads deferred work state from \texttt{CortexMailbox}. \\
+\texttt{/network} & GET & Lists discovered backend descriptors. \\
+\texttt{/network/\{role\}} & GET & Lists discovered candidates for a role. \\
+\texttt{/backend} & POST & Loads a local Primer backend for Cortex. \\
+\texttt{/load} & POST & Loads a local model into Cortex's Primer. \\
+\texttt{/unload} & POST & Stops the local Primer backend/model. \\
+\texttt{/live} & GET & Process liveness. \\
+\texttt{/ready} & GET & Readiness and Primer status. \\
+\texttt{/health} & GET & Basic health endpoint. \\
+\bottomrule
+\end{longtable}
+
+\subsection{LLM}
+The LLM app is a Primer-backed WorkPacket executor. Cortex discovers LLM services through Kubernetes service metadata and routes \texttt{work\_type=llm} packets to them.
+
+\begin{longtable}{@{}p{4cm}p{2cm}p{8cm}@{}}
+\toprule
+\textbf{Endpoint} & \textbf{Method} & \textbf{Purpose} \\
+\midrule
+\endhead
+\texttt{/backend} & POST & Load \texttt{gguf} or \texttt{vllm} backend. \\
+\texttt{/load} & POST & Load a model. \\
+\texttt{/unload} & POST & Stop the current backend/model. \\
+\texttt{/work} & POST & Accept a \texttt{WorkPacket}. \\
+\texttt{/work/\{work\_id\}} & GET & Poll a submitted LLM work item. \\
+\texttt{/models} & GET & Return loaded model metadata including \texttt{effective\_n\_ctx}. \\
+\texttt{/live} & GET & Process liveness. \\
+\texttt{/ready} & GET & Readiness and Primer status. \\
+\texttt{/health} & GET & Basic health endpoint. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Memory}
+The memory app is a synchronous WorkPacket backend. It returns completed \texttt{WorkResult} values directly from \texttt{POST /work}.
+
+\begin{longtable}{@{}p{4cm}p{2cm}p{8cm}@{}}
+\toprule
+\textbf{Endpoint} & \textbf{Method} & \textbf{Purpose} \\
+\midrule
+\endhead
+\texttt{/work} & POST & Execute memory \texttt{WorkPacket} operations synchronously. \\
+\texttt{/work/\{work\_id\}} & GET & Placeholder; memory work currently completes on POST. \\
+\texttt{/live} & GET & Process liveness. \\
+\texttt{/ready} & GET & Readiness. \\
+\texttt{/health} & GET & Basic health endpoint. \\
+\bottomrule
+\end{longtable}
+
+\section{Canonical runtime protocol}
+The current architecture uses internal canonical message and work types instead of treating OpenAI chat messages as the universal internal contract.
+
+\subsection{Runtime messages}
+\begin{lstlisting}[language=Python]
+class ContentPart(BaseModel):
+    type: PartType
+    data: str
+    encoding: PartEncoding = "plain"
+    mime_type: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+class RuntimeMessage(BaseModel):
+    role: MessageRole
+    parts: list[ContentPart] = Field(default_factory=list)
+    name: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+\end{lstlisting}
+
+\subsection{Ingress and egress}
+\begin{lstlisting}[language=Python]
+class InferenceSession(BaseModel):
+    user_id: str
+    session_id: str | None = None
+    channel: str = "api"
+    stream: bool = False
+    content: list[RuntimeMessage]
+    metadata: dict[str, Any]
+
+class EgressResponse(BaseModel):
+    content: list[RuntimeMessage]
+    work_id: str | None = None
+    session_id: str | None = None
+    metadata: dict[str, object] = {}
+\end{lstlisting}
+
+\subsection{Work packets}
+\begin{lstlisting}[language=Python]
+class WorkType(str, Enum):
+    LLM = "llm"
+    TOOL = "tool"
+    CORTEX = "cortex"
+    MEMORY = "memory"
+
+class WorkDisposition(str, Enum):
+    DIRECT = "direct"
+    DEFERRED = "deferred"
+
+class CanonicalTask(BaseModel):
+    work_type: WorkType
+    operation: str
+    messages: list[RuntimeMessage] = Field(default_factory=list)
+    memoryrequest: RuntimeMemoryRequest | None = None
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    constraints: dict[str, Any] = Field(default_factory=dict)
+    routing_hints: RoutingHints = Field(default_factory=RoutingHints)
+
+class WorkPacket(BaseModel):
+    work_id: str
+    disposition: WorkDisposition = WorkDisposition.DIRECT
+    task: CanonicalTask
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+class WorkResult(BaseModel):
+    status: str
+    work_id: str
+    content: list[RuntimeMessage] = Field(default_factory=list)
+    backend_name: str | None = None
+    backend_model: str | None = None
+    error: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+\end{lstlisting}
+
+\section{Cortex runtime flow}
+For a normal \texttt{POST /work} request, Cortex validates \texttt{InferenceSession}, converts it into an \texttt{InferenceObject}, upserts the user through memory, resolves or creates a session, stores the incoming user message, checks for slash commands, fetches the last assistant message when needed, builds a fast response prompt, calls local Primer, and returns an \texttt{EgressResponse} or text stream.
+
+\subsection{Slash commands}
+If the latest user text starts with \texttt{/}, Cortex treats it as a terminal command. Command output is returned as terminal output using the response header:
+\begin{lstlisting}
+Terminal-output: terminal
+\end{lstlisting}
+
+\subsection{Deferred task direction}
+The current \texttt{/task <description>} command starts a background pipeline in \texttt{CortexRuntime}. Separately, \texttt{CortexMailbox} accepts deferred Cortex WorkPackets. These two mechanisms should be unified.
+
+\begin{infobox}
+Deferred and complex tasks should use the same WorkPacket pipeline used for LLM, tool, and memory work. Cortex should create a WorkPacket and route it to the closest/best Cortex backend. In the current local cluster, that will usually be the initial Cortex.
+\end{infobox}
+
+\section{Command interface}
+The command router exposes a folder-style terminal interface.
+
+\begin{lstlisting}
+Root
+  /help
+  /commands
+  /cd
+  /network
+
+  Deployment
+    /deploy_pod
+    /delete_pod
+    /list_pods
+    /install_k3s
+    /add_node
+    /remove_node
+    /list_nodes
+    /label_node
+
+  Disconnect
+    /disconnect
+    /reset
+
+  Configuration
+    /models
+    /load_model
+    /unload_model
+    /backend
+
+    ModelDownloader
+      /huggingface
+\end{lstlisting}
+
+\section{Deployment service and inventory}
+\texttt{DeploymentService} owns the mutable in-memory \texttt{Inventory}. It reads \texttt{/data/configuration} during startup and seeds the initial host/control node into inventory.
+
+\subsection{Inventory model}
+\begin{lstlisting}
+Inventory
+  nodes: list[Node]
+
+Node
+  alias
+  machine_settings
+    host
+    ip
+    platform: amd64 | arm64 | jetson
+    nvidia_gpu
+  ssh_config
+    default_user
+    default_key
+    port
+    auth_method
+  kubernetes_settings
+    k3s_node_name
+    namespace
+    data_dir=/data/k3s
+    default_local_storage_path=/data/k3s-storage
+\end{lstlisting}
+
+\subsection{Placement labels and discovery labels}
+Node labels are used for scheduling and compatibility:
+\begin{lstlisting}
+orin.role.backend=true
+orin.platform=<amd64|arm64|jetson>
+orin.gpu=<true|false>
+\end{lstlisting}
+
+Optional role preference labels are:
+\begin{lstlisting}
+orin.role.cortex=true
+orin.role.llm=true
+orin.role.tool=true
+orin.role.memory=true
+\end{lstlisting}
+
+Service labels and annotations are used for backend discovery and routing:
+\begin{lstlisting}
+labels:
+  orin.ai/backend=true
+  orin.ai/role=<role>
+
+annotations:
+  orin.ai/kind=<kind>
+  orin.ai/role=<role>
+  orin.ai/visibility=internal
+  orin.ai/health_path=/health
+  orin.ai/work_path=/work
+  orin.ai/models_path=/models        # llm only
+\end{lstlisting}
+
+\section{Pod application model}
+The deployment code uses generic app specs: \texttt{PodDeploymentSpec}, \texttt{PodServiceSpec}, \texttt{PodPvcSpec}, \texttt{PodDiscoverySpec}, \texttt{PodProbeSpec}, and \texttt{PlacementDecision}.
+
+For an app named \texttt{<app\_name>}, generated resources are:
+\begin{lstlisting}
+Deployment: <app_name>
+Service:    <app_name>-service
+PVC:        <app_name>-pvc
+\end{lstlisting}
+
+Cortex is deployed as NodePort. LLM, memory, and tool apps are deployed as ClusterIP services.
+
+Current storage profile implementation:
+\begin{lstlisting}
+light  -> 20Gi
+medium -> 50Gi
+high   -> 100Gi
+\end{lstlisting}
+
+Some command/type definitions still use \texttt{strong} instead of \texttt{high}; this should be cleaned up.
+
+\section{Discovery, health, and routing}
+Cortex creates a \texttt{DiscoveryService} consisting of \texttt{KubernetesDiscoveryProvider}, \texttt{BackendHealthProber}, \texttt{InMemoryBackendRegistry}, \texttt{RegistryRefresher}, and \texttt{BackendSelector}. The registry refreshes every 15 seconds by default.
+
+Backends are discovered from Kubernetes Services in the configured namespace with \texttt{orin.ai/backend=true}. EndpointSlice readiness is used to count ready endpoints.
+
+Discovered services become \texttt{BackendDescriptor} objects containing name, namespace, service name, URL, role, kind, model, capabilities, modalities, context window, max output tokens, priority, weight, visibility, health path, work path, models path, labels, annotations, health, and runtime metadata such as \texttt{effective\_n\_ctx}.
+
+Health probing checks ready endpoints, \texttt{/health}, and optionally \texttt{/models}. If \texttt{/models} succeeds, \texttt{models[0].effective\_n\_ctx} is copied into backend runtime metadata.
+
+Backend selection filters by health, runtime preference, role, required capabilities, and required modalities. Routing is healthy-first with degraded fallback.
+
+\section{Primer and model execution}
+\texttt{Primer} is the shared runtime facade used by Cortex and the LLM app. It supports backend loading, model provider loading, model file download/ensure logic, model loading, OpenAI-style message adapter loading, token counting, text chat, JSON chat, and streaming text.
+
+The current adapter is \texttt{OpenAIStyleMessageAdapter}. It renders canonical \texttt{RuntimeMessage} objects into backend message structures and parses backend output back into \texttt{RuntimeMessage} objects. With \texttt{nothink=True}, it injects a no-thinking instruction and separates any emitted \texttt{<think>} block into an internal reasoning message.
+
+\subsection{Generation policies}
+\begin{lstlisting}
+MAX_TOKENS_POLICY:
+  chat:      384
+  summarize: 640
+  classify:   64
+  extract:   128
+  analyze:   900
+  search:    256
+  inspect:   256
+
+TEMPERATURE_POLICY:
+  chat:      0.7
+  summarize: 0.3
+  classify:  0.1
+  extract:   0.1
+  analyze:   0.4
+  search:    0.2
+  inspect:   0.1
+\end{lstlisting}
+
+\section{Memory backend}
+Memory supports user, session, chat history, summaries, notes, memory events, memory claims, retrieval, and prompt-context operations.
+
+Default storage:
+\begin{lstlisting}
+./cluster-memory/memory.db
+./cluster-memory/notes/
+./cluster-memory/summaries/
+./cluster-memory/docs/
+./cluster-memory/yaml/
+\end{lstlisting}
+
+Memory creates SQLite tables for users, chat sessions, chat messages, session summaries, note index, memory events, memory claims, and work items.
+
+The \texttt{prompt\_context} operation returns recent messages, claims, summaries, retrieved chunks, and a rendered prompt block.
+
+\section{Terminal client}
+\texttt{terminal-chat.py} is a lightweight local terminal client for Cortex. It targets:
+\begin{lstlisting}
+http://orin-gw:30080/work
+\end{lstlisting}
+
+The client sends canonical \texttt{InferenceSession} payloads using \texttt{RuntimeMessage} content. On startup it sends \texttt{/render}. It separates command output from chat output by checking the \texttt{Terminal-output: terminal} response header.
+
+\section{Operations runbook}
+\subsection{Bootstrap}
+\begin{lstlisting}[language=bash]
+./install-orin.sh
+\end{lstlisting}
+
+Useful overrides:
+\begin{lstlisting}[language=bash]
+ORIN_NAMESPACE=orin \
+HOST_ALIAS=orin-gw \
+HOST_NAME=orin-gw \
+HOST_IP=<host-ip> \
+PLATFORM=jetson \
+NVIDIA_GPU=true \
+REGISTRY=orin-gw:5000 \
+IMAGE_VERSION=1.0.0 \
+./install-orin.sh
+\end{lstlisting}
+
+\subsection{Health checks}
+\begin{lstlisting}[language=bash]
+kubectl get nodes -o wide
+kubectl get pods -n orin -o wide
+kubectl get svc -n orin
+kubectl get deployments -n orin
+curl -s http://orin-gw:30080/health
+curl -s http://orin-gw:30080/ready
+curl -s http://orin-gw:30080/network
+\end{lstlisting}
+
+\subsection{Debug pod}
+\begin{lstlisting}[language=bash]
+kubectl run netdebug \
+  -n orin \
+  --image=nicolaka/netshoot \
+  --restart=Never \
+  --command -- /bin/sh -c "sleep 86400"
+\end{lstlisting}
+
+\subsection{Terminal client}
+\begin{lstlisting}[language=bash]
+python terminal-chat.py
+\end{lstlisting}
+
+\subsection{Example operational commands}
+\begin{lstlisting}
+/commands
+/cd Deployment
+/list_nodes
+/list_pods
+/add_node orin-node-1 --host orin-node-1 --ip 192.168.50.11 --platform jetson --gpu
+/install_k3s orin-node-1
+/label_node orin-node-1 --role llm
+/deploy_pod llm light --platform jetson
+/list_pods --verbose
+/cd ..
+/cd Configuration
+/backend gguf
+/load_model qwen35-4b
+/models
+\end{lstlisting}
+
+\section{Known implementation cleanup}
+\begin{enumerate}[leftmargin=1.3em]
+  \item Unify the \texttt{/task} command pipeline and \texttt{CortexMailbox} deferred pipeline through WorkPackets routed to the closest/best Cortex backend.
+  \item Rename the LLM runtime class from \texttt{CortexRuntime} to \texttt{LLMRuntime} or similar.
+  \item Keep \texttt{tool/} and \texttt{federation/} documented only as planned roles until implemented.
+  \item Clean up image naming so \texttt{amd64} and \texttt{arm64} share the standard runtime image while Jetson keeps its own image.
+  \item Fix \texttt{PodImageConfig.image\_for()} so \texttt{arm64} and \texttt{amd64} are separate values in a set.
+  \item Make \texttt{DeploymentService.\_build\_pod\_factory\_defaults()} read registry/version from configuration.
+  \item Resolve storage profile naming: \texttt{high} versus \texttt{strong}.
+  \item Align routed streaming WorkPackets with router polling expectations.
+  \item Treat \texttt{MemoryRuntime.handle\_egress()} as placeholder while memory work completes synchronously on POST.
+  \item Integrate or remove old work item persistence helpers in \texttt{memory.sql}.
+  \item Clean up repeated memory error strings that mention \texttt{Summary Instance} for unrelated request types.
+  \item Replace mutable Pydantic defaults with \texttt{Field(default\_factory=dict)}.
+  \item Make direct GGUF \texttt{/load} consistently pass or infer the Hugging Face provider.
+  \item Add timeout and failure handling to router polling.
+  \item Align \texttt{Planner.derive\_requirements()} and \texttt{Planner.select\_backend()}.
+\end{enumerate}
+
+\section{Near-term architecture direction}
+The next architecture cleanup should focus on making WorkPacket the single execution unit across Cortex, LLM, memory, tool, and deferred work; unifying \texttt{/task} and \texttt{CortexMailbox}; finishing the standard-vs-Jetson image split; making service discovery metadata patching part of normal model/runtime operations; adding the first real tool backend; defining federation after local WorkPacket routing is stable; persisting deployment inventory; and replacing old gateway/orchestrator terminology with Cortex/LLM/memory/tool/federation terminology.
+
+\end{document}

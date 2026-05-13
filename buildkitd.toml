@@ -1,0 +1,4 @@
+# buildkitd.toml
+[registry."orin-gw:5000"]
+  http = true
+  insecure = true
