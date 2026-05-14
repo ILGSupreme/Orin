@@ -146,7 +146,7 @@ class JobManager:
 
         model_id = payload["model_id"]
         provider = payload.get("provider") or "huggingface"
-        backend = payload.get("backend")
+        engine = payload.get("engine")
         repo_id = payload.get("repo_id")
         filename = payload.get("filename")
         revision = payload.get("revision", "main")
@@ -154,28 +154,28 @@ class JobManager:
         force_reload = payload.get("force_reload", False)
 
         self.logger.info(
-            "Model load started: job_id=%s model=%s backend=%s",
+            "Model load started: job_id=%s model=%s engine=%s",
             job.job_id,
             model_id,
-            backend,
+            engine,
         )
 
-        if backend:
-            current_backend = self.primer.status().get("backend")
+        if engine:
+            current_engine = self.primer.status().get("engine")
 
-            if current_backend != backend:
+            if current_engine != engine:
                 self.logger.info(
-                    "Switching backend: %s -> %s",
-                    current_backend,
-                    backend,
+                    "Switching engine: %s -> %s",
+                    current_engine,
+                    engine,
                 )
-                await self.primer.load_backend(backend)
+                await self.primer.load_engine(engine)
 
-        active_backend = self.primer.status().get("backend")
+        active_engine = self.primer.status().get("engine")
 
-        if active_backend == "gguf":
+        if active_engine == "gguf":
             if not repo_id or not filename:
-                raise ValueError("GGUF backend requires repo_id and filename")
+                raise ValueError("GGUF engine requires repo_id and filename")
 
             self.logger.info(
                 "Loading GGUF model: repo=%s file=%s revision=%s",
@@ -198,7 +198,7 @@ class JobManager:
             self.logger.info(
                 "Loading model: model=%s backend=%s provider=%s",
                 model_id,
-                active_backend,
+                active_engine,
                 provider,
             )
 
@@ -210,6 +210,6 @@ class JobManager:
 
         job.result = {
             "model_id": model_id,
-            "backend": active_backend,
+            "engine": active_engine,
             "primer": self.primer.status(),
         }

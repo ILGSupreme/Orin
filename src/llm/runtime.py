@@ -23,7 +23,7 @@ class GenerativeModelRuntime:
 
         self.work_responses[req.work_id] = {
             "task": rsp,
-            "engine": self.primer.backend_type,
+            "engine": self.primer.engine_type,
             "stream": task.constraints.get("stream", False),
         }
 
@@ -40,7 +40,7 @@ class GenerativeModelRuntime:
                 backend_model=self.primer.get_model(),
             )
 
-        if self.primer.backend_type != work_item["engine"]:
+        if self.primer.engine_type != work_item["engine"]:
             raise Exception("primer backend is not of the correct instance")
         if self.primer.is_ready() is False:
             raise Exception("primer is not ready")

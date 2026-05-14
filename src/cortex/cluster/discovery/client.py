@@ -8,8 +8,8 @@ from common.protocol.routing_types import WorkPacket
 
 
 class BackendClient:
-    def __init__(self, timeout: float = 180.0) -> None:
-        self.timeout = timeout
+    def __init__(self, http: httpx.AsyncClient) -> None:
+        self.http = http
 
     def _backend_value(self, backend, key: str, default=None):
         if isinstance(backend, dict):
@@ -28,10 +28,10 @@ class BackendClient:
     ) -> dict[str, Any]:
         url = self._build_packet_url(backend)
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(url, json=packet.model_dump())
-            response.raise_for_status()
-            data = response.json()
+        #async with httpx.AsyncClient(timeout=self.timeout) as client:
+        response = await self.http.post(url, json=packet.model_dump())
+        response.raise_for_status()
+        data = response.json()
 
         if not isinstance(data, dict):
             raise ValueError(
@@ -43,10 +43,10 @@ class BackendClient:
     async def retrieve_work(self, *, backend, work_id) -> dict[str, Any]:
         url = self._build_packet_url(backend).rstrip("/") + f"/{work_id}"
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            data = response.json()
+        #async with httpx.AsyncClient(timeout=self.timeout) as client:
+        response = await self.http.get(url)
+        response.raise_for_status()
+        data = response.json()
 
         if not isinstance(data, dict):
             raise ValueError(
@@ -78,10 +78,10 @@ class BackendClient:
         url: str,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
+        #async with httpx.AsyncClient(timeout=self.timeout) as client:
+        response = await self.http.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
 
         if not isinstance(data, dict):
             raise ValueError(f"GET {url} returned non-object response")
@@ -94,10 +94,10 @@ class BackendClient:
         url: str,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.post(url, json=payload or {})
-            response.raise_for_status()
-            data = response.json()
+        #async with httpx.AsyncClient(timeout=self.timeout) as client:
+        response = await self.http.post(url, json=payload or {})
+        response.raise_for_status()
+        data = response.json()
 
         if not isinstance(data, dict):
             raise ValueError(f"POST {url} returned non-object response")

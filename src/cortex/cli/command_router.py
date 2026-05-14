@@ -77,7 +77,7 @@ FOLDERS = {
                     Command("/load_model", "Load model to backend engine"),
                     Command("/job_status", "Show job status"),
                     Command("/unload_model", "Unload model from backend engine"),
-                    Command("/backend", "load backend engine, gguf or vllm"),
+                    Command("/engine", "load backend engine, gguf or vllm"),
                 ],
                 "folders": {
                     "ModelDownloader": {
@@ -96,7 +96,7 @@ FOLDERS = {
 MODEL_ALIASES = {
     "qwen35-4b": {
         "provider": "huggingface",
-        "backend": "gguf",
+        "engine": "gguf",
         "model_id": "qwen35-4b",
         "repo_id": "unsloth/Qwen3.5-4b-GGUF",
         "filename": "Qwen3.5-4B-Q4_K_M.gguf",
@@ -105,7 +105,7 @@ MODEL_ALIASES = {
     },
     "qwen35-9b": {
         "provider": "huggingface",
-        "backend": "gguf",
+        "engine": "gguf",
         "model_id": "qwen35-9b",
         "repo_id": "unsloth/Qwen3.5-9B-GGUF",
         "filename": "Qwen3.5-9B-Q4_K_M.gguf",
@@ -140,7 +140,7 @@ class CommandRouter:
             "/help": {"text": self.handle_help},
             "/commands": {"text": self.handle_get_commands},
             "/render": {"text": self.handle_render},
-            "/backend": {"text": self.handle_backend},
+            "/engine": {"text": self.handle_engine},
             "/models": {"text": self.handle_models},
             "/load_model": {"text": self.handle_load_model},
             "/job_status": {"text": self.handle_job_status},
@@ -439,7 +439,7 @@ class CommandRouter:
     def _list_discovered_backends(self) -> list:
         return self.backend_service.get_registry().list_backends()
 
-    def _find_backend_by_name(self, name: str):
+    def _find_backend_by_name(self, name: str | None):
         backends = self._list_discovered_backends()
 
         for backend in backends:
@@ -618,7 +618,7 @@ class CommandRouter:
         if getattr(backend, "role", None) in {"llm", "cortex"}:
             commands.extend(
                 [
-                    "/backend",
+                    "/engine",
                     "/load_model",
                     "/load_status",
                     "/unload_model",
@@ -705,7 +705,7 @@ class CommandRouter:
                 "/show": "Show selected backend",
                 "/health": "Read selected backend health",
                 "/models": "Read selected backend models",
-                "/backend": "Load backend engine on selected backend",
+                "/engine": "Load backend engine on selected backend",
                 "/load_model": "Load model on selected backend",
                 "/unload_model": "Unload model on selected backend",
                 "/update_discovery_meta": "Update selected backend discovery metadata",
@@ -798,7 +798,7 @@ class CommandRouter:
             if command == "/unload_model":
                 return await self.handle_backend_unload_model(backend, args)
 
-            if command == "/backend":
+            if command == "/engine":
                 return await self.handle_backend_engine(backend, args)
 
         return await self.dispatch_static_command(command, args)
@@ -859,7 +859,7 @@ class CommandRouter:
 
         for alias, model in MODEL_ALIASES.items():
             lines.append(f"{alias}")
-            lines.append(f"  backend: {model['backend']}")
+            lines.append(f"  engine: {model['engine']}")
             lines.append(f"  repo: {model.get('repo_id', model['model_id'])}")
             lines.append("")
 
@@ -955,7 +955,7 @@ class CommandRouter:
 
             MODEL_ALIASES[alias] = {
                 "provider": "huggingface",
-                "backend": "gguf",
+                "engine": "gguf",
                 "model_id": alias,
                 "repo_id": repo_id,
                 "filename": filename,
@@ -974,22 +974,22 @@ class CommandRouter:
             "  /huggingface alias add qwen35-9b unsloth/Qwen3.5-9B-GGUF\n"
         )
 
-    async def handle_backend(self, args: str) -> str:
-        parser = argparse.ArgumentParser(prog="/backend", add_help=False)
-        parser.add_argument("backend", nargs="?")
+    async def handle_engine(self, args: str) -> str:
+        parser = argparse.ArgumentParser(prog="/engine", add_help=False)
+        parser.add_argument("engine", nargs="?")
 
         try:
             parsed = parser.parse_args(shlex.split(args))
         except SystemExit:
-            return "Invalid usage.\n\nExamples:\n  /backend gguf\n  /backend vllm\n"
+            return "Invalid usage.\n\nExamples:\n  /engine gguf\n  /engine vllm\n"
 
-        if not parsed.backend:
-            return "Missing backend.\n\nUsage:\n  /backend <backend_name>\n"
+        if not parsed.engine:
+            return "Missing engine.\n\nUsage:\n  /engine <engine_name>\n"
 
         try:
-            await self.primer.load_backend(parsed.backend)
+            await self.primer.load_engine(parsed.engine)
             status = self.primer.status()
-            return f"backend loading success\n{status}"
+            return f"engine loading success\n{status}"
 
         except Exception as e:
             return f"error: {e}"
@@ -1014,7 +1014,7 @@ class CommandRouter:
             payload={
                 "model_id": model["model_id"],
                 "provider": model["provider"],
-                "backend": model["backend"],
+                "engine": model["engine"],
                 "repo_id": model.get("repo_id"),
                 "filename": model.get("filename"),
                 "revision": model.get("revision", "main"),
@@ -1042,7 +1042,7 @@ class CommandRouter:
             f"job_id: {job.job_id}\n"
             f"alias: {alias}\n"
             f"model: {model['model_id']}\n"
-            f"backend: {model['backend']}\n\n"
+            f"engine: {model['engine']}\n\n"
             f"Use /load_status {job.job_id} to check status.\n"
             f"Use /attach to follow Cortex logs.\n"
         )
@@ -1076,14 +1076,14 @@ class CommandRouter:
             return
 
         yield f"Loading model alias: {alias}\n"
-        yield f"Backend: {model['backend']}\n"
+        yield f"engine: {model['engine']}\n"
 
-        current_backend = self.primer.status().get("backend")
+        current_engine = self.primer.status().get("engine")
 
-        if current_backend != model["backend"]:
-            yield f"Switching backend to {model['backend']}...\n"
-            await self.primer.load_backend(model["backend"])
-            yield "Backend ready.\n"
+        if current_engine != model["engine"]:
+            yield f"Switching engine to {model['engine']}...\n"
+            await self.primer.load_engine(model["engine"])
+            yield "engine ready.\n"
 
         async for msg in self.primer.load_model_stream(
             provider=model["provider"],
@@ -1932,11 +1932,11 @@ class CommandRouter:
 
         try:
             await self.backend_client.post_json(
-                url=f"{backend.url}/backend",
-                payload={"backend": model["backend"]},
+                url=f"{backend.url}/engine",
+                payload={"engine": model["engine"]},
             )
 
-            if model["backend"] == "gguf":
+            if model["engine"] == "gguf":
                 payload = {
                     "provider": model["provider"],
                     "model_id": model["model_id"],

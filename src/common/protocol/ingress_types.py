@@ -20,7 +20,7 @@ class InferenceSession(BaseModel):
 class LoadModelRequest(BaseModel):
     model_id: str
     provider: str = "huggingface"
-    backend: str | None = None
+    engine: str | None = None
     repo_id: str | None = None
     filename: str | None = None
     revision: str = "main"
@@ -33,7 +33,7 @@ class LoadModelRequest(BaseModel):
             payload={
                 "model_id": self.model_id,
                 "provider": self.provider or "huggingface",
-                "backend": self.backend,
+                "engine": self.engine,
                 "repo_id": self.repo_id,
                 "filename": self.filename,
                 "revision": self.revision,
@@ -44,4 +44,4 @@ class LoadModelRequest(BaseModel):
 
 
 class LoadBackendRequest(BaseModel):
-    backend: Literal["vllm", "gguf"]
+    engine: Literal["vllm", "gguf"]

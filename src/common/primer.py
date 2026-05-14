@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import httpx
 from typing import Any
 
 from common.engine.gguf import GGUFPrimerBackend
@@ -12,13 +13,14 @@ from common.types import MAX_TOKENS_POLICY, SAFETY_TOKEN_SIZE
 
 
 class Primer:
-    def __init__(self) -> None:
-        self._backend = None
-        self.backend_type = None
+    def __init__(self, external_http: httpx.AsyncClient) -> None:
+        self._engine = None
+        self.engine_type = None
         self._message_adapter = None
         self.message_adapter_type = None
         self.model_provider_type = None
         self._model_provider = None
+        self._external_http_client = external_http
         self._generation_lock = asyncio.Lock()
 
     async def load_model_provider(self, model_provider_type: str) -> None:
@@ -26,26 +28,26 @@ class Primer:
             return
 
         if model_provider_type == "huggingface":
-            self._model_provider = HFDownloader()
+            self._model_provider = HFDownloader(external_http=self._external_http_client)
         else:
             raise ValueError(f"Unsupported model provider = {model_provider_type}")
 
         self.model_provider_type = model_provider_type
 
-    async def load_backend(self, backend_type: str) -> None:
-        if self.backend_type == backend_type and self._backend is not None:
+    async def load_engine(self, engine_type: str) -> None:
+        if self.engine_type == engine_type and self._engine is not None:
             return
 
         await self.stop()
 
-        if backend_type == "gguf":
-            self._backend = GGUFPrimerBackend()
-        elif backend_type == "vllm":
-            self._backend = VLLMPrimerBackend()
+        if engine_type == "gguf":
+            self._engine = GGUFPrimerBackend()
+        elif engine_type == "vllm":
+            self._engine = VLLMPrimerBackend()
         else:
-            raise ValueError(f"Unsupported backend={backend_type}")
+            raise ValueError(f"Unsupported engine={engine_type}")
 
-        self.backend_type = backend_type
+        self.engine_type = engine_type
 
     async def load_message_adapter(
         self, message_adapter: str, nothink: bool = False
@@ -63,59 +65,59 @@ class Primer:
                 raise ValueError(f"No adapter found for : {message_adapter}")
 
     def is_ready(self) -> bool:
-        if self._backend is None:
+        if self._engine is None:
             return False
 
         if self._message_adapter is None:
             return False
 
-        return self._backend.is_ready()
+        return self._engine.is_ready()
 
     def is_loading(self) -> bool:
-        if self._backend is None:
-            raise ValueError("Backend is not assigned")
-        return self._backend.is_loading()
+        if self._engine is None:
+            raise ValueError("engine is not assigned")
+        return self._engine.is_loading()
 
     def status(self) -> dict[str, Any]:
-        if self._backend is None:
-            return {"error": "Backend not set up"}
-        data = self._backend.status()
-        data["backend"] = self.backend_type
+        if self._engine is None:
+            return {"error": "engine not set up"}
+        data = self._engine.status()
+        data["engine"] = self.engine_type
         return data
 
     def get_model(self) -> str:
-        if self._backend is None:
-            raise ValueError("Backend is not assigned")
-        return self._backend.model_id
+        if self._engine is None:
+            raise ValueError("engine is not assigned")
+        return self._engine.model_id
 
     def count_tokens(self, messages: list[RuntimeMessage]) -> int:
-        if self._backend is None:
-            raise ValueError("Backend is not assigned")
+        if self._engine is None:
+            raise ValueError("engine is not assigned")
         if self._message_adapter is None:
             raise ValueError("Message Adapter not set")
 
         rendered_messages = self._message_adapter.render_messages(messages=messages)
 
-        return self._backend.count_tokens(messages=rendered_messages)
+        return self._engine.count_tokens(messages=rendered_messages)
 
     async def start_background(self) -> None:
-        if self._backend is None:
-            raise ValueError("Backend is not assigned")
-        await self._backend.start_background()
+        if self._engine is None:
+            raise ValueError("engine is not assigned")
+        await self._engine.start_background()
 
     async def ensure_ready(self) -> None:
-        if self._backend is None:
-            raise ValueError("Backend is not assigned")
-        await self._backend.ensure_ready()
+        if self._engine is None:
+            raise ValueError("engine is not assigned")
+        await self._engine.ensure_ready()
 
     async def stop(self) -> None:
-        if self._backend is None:
+        if self._engine is None:
             return
-        await self._backend.stop()
+        await self._engine.stop()
 
     async def load_model(self, *args: Any, **kwargs: Any) -> None:
-        if self._backend is None:
-            raise ValueError("Backend is not assigned")
+        if self._engine is None:
+            raise ValueError("engine is not assigned")
 
         repo_id = kwargs.pop("repo_id", None)
         filename = kwargs.pop("filename", None)
@@ -139,11 +141,11 @@ class Primer:
             kwargs["path"] = str(path)
 
         await self.load_message_adapter("openai", nothink=True)
-        await self._backend.load_model(*args, **kwargs)
+        await self._engine.load_model(*args, **kwargs)
 
     async def load_model_stream(self, *args: Any, **kwargs: Any):
-        if self._backend is None:
-            yield "error: Backend is not assigned\n"
+        if self._engine is None:
+            yield "error: engine is not assigned\n"
             return
 
         repo_id = kwargs.get("repo_id")
@@ -184,14 +186,14 @@ class Primer:
         yield "Loading message adapter...\n"
         await self.load_message_adapter("openai", nothink=True)
 
-        yield "Loading model into backend...\n"
-        await self._backend.load_model(*args, **kwargs)
+        yield "Loading model into engine...\n"
+        await self._engine.load_model(*args, **kwargs)
 
-        yield "Backend model ready.\n"
+        yield "engine model ready.\n"
 
     def send_work_to_thread(self, *args: Any, **kwargs: Any):
-        if self._backend is None:
-            raise ValueError("Backend is not assigned")
+        if self._engine is None:
+            raise ValueError("engine is not assigned")
 
         if self._message_adapter is None:
             raise ValueError("No adapter set")
@@ -215,7 +217,7 @@ class Primer:
             messages=messages, operation=operation, constraints=constraints
         )
 
-        return self._backend.send_work_to_thread(
+        return self._engine.send_work_to_thread(
             *args,
             messages=rendered_messages,
             max_new_tokens=max_new_tokens,
@@ -225,8 +227,8 @@ class Primer:
         )
 
     async def chat_text(self, **kwargs: Any) -> list[RuntimeMessage]:
-        if self._backend is None:
-            raise ValueError("Backend is not assigned")
+        if self._engine is None:
+            raise ValueError("engine is not assigned")
         if self._message_adapter is None:
             raise ValueError("No adapter set")
 
@@ -248,7 +250,7 @@ class Primer:
         )
 
         async with self._generation_lock:
-            content = await self._backend.chat_text(
+            content = await self._engine.chat_text(
                 messages=rendered_messages,
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
@@ -258,8 +260,8 @@ class Primer:
         return self._message_adapter.parse_response(content=content, role="assistant")
 
     async def chat_json(self, **kwargs: Any) -> list[RuntimeMessage]:
-        if self._backend is None:
-            raise ValueError("Backend is not assigned")
+        if self._engine is None:
+            raise ValueError("engine is not assigned")
         if self._message_adapter is None:
             raise ValueError("No adapter set")
 
@@ -280,7 +282,7 @@ class Primer:
             messages=messages, operation=operation, constraints=constraints
         )
         async with self._generation_lock:
-            content = await self._backend.chat_json(
+            content = await self._engine.chat_json(
                 messages=rendered_messages,
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
@@ -290,8 +292,8 @@ class Primer:
         return self._message_adapter.parse_response(content=content, role="assistant")
 
     async def stream_text(self, **kwargs: Any):
-        if self._backend is None:
-            raise ValueError("Backend is not assigned")
+        if self._engine is None:
+            raise ValueError("engine is not assigned")
         if self._message_adapter is None:
             raise ValueError("No adapter set")
 
@@ -316,7 +318,7 @@ class Primer:
             rendered_messages = messages
 
         async with self._generation_lock:
-            async for chunk in self._backend.stream_text(
+            async for chunk in self._engine.stream_text(
                 messages=rendered_messages,
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,

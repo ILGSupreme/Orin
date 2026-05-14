@@ -1,9 +1,9 @@
 from __future__ import annotations
-
+import httpx
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from common.jobs import JobManager
@@ -14,11 +14,14 @@ from common.protocol.routing_types import WorkPacket
 from llm.runtime import GenerativeModelRuntime
 
 log_stream = LogStream()
+
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)
 
 has_stdout_handler = any(
-    isinstance(h, logging.StreamHandler) for h in root_logger.handlers
+    isinstance(h, logging.StreamHandler)
+    and not isinstance(h, LogStreamHandler)
+    for h in root_logger.handlers
 )
 
 if not has_stdout_handler:
@@ -28,38 +31,65 @@ if not has_stdout_handler:
     )
     root_logger.addHandler(stdout_handler)
 
-attach_handler = LogStreamHandler(log_stream)
-attach_handler.setFormatter(
-    logging.Formatter("%(asctime)s | %(name)s | %(levelname)s | %(message)s")
+has_attach_handler = any(
+    isinstance(h, LogStreamHandler)
+    for h in root_logger.handlers
 )
-root_logger.addHandler(attach_handler)
 
-primer = Primer()
-job_manager = JobManager(primer=primer)
-cortex_runtime = GenerativeModelRuntime(primer=primer)
+if not has_attach_handler:
+    attach_handler = LogStreamHandler(log_stream)
+    attach_handler.setFormatter(
+        logging.Formatter("%(asctime)s | %(name)s | %(levelname)s | %(message)s")
+    )
+    root_logger.addHandler(attach_handler)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    app.state.internal_http = httpx.AsyncClient(
+        timeout=httpx.Timeout(180.0, connect=2.0),
+        limits=httpx.Limits(
+            max_connections=100,
+            max_keepalive_connections=20,
+            keepalive_expiry=30.0,
+        ),
+        verify=False,
+        trust_env=False,
+    )
+
+    app.state.external_http = httpx.AsyncClient(
+        timeout=30.0,
+        verify=True,
+        trust_env=True,
+        follow_redirects=True,
+    )
+
+    app.state.primer = Primer(external_http=app.state.external_http)
+    app.state.job_manager = JobManager(primer=app.state.primer)
+    app.state.cortex_runtime = GenerativeModelRuntime(primer=app.state.primer)
+
     logging.info("Starting LLM app")
     try:
         yield
     finally:
         logging.info("Stopping LLM app")
-        await primer.stop()
+        await app.state.primer.stop()
 
 
 app = FastAPI(title="cortex", lifespan=lifespan)
 
 
-@app.post("/backend")
-async def load_backend(req: LoadBackendRequest):
-    await primer.load_backend(req.backend)
+@app.post("/engine")
+async def load_backend(req: LoadBackendRequest, request: Request):
+    primer = request.app.state.primer
+    await primer.load_engine(req.engine)
     return {"ok": True, "primer": primer.status()}
 
 
 @app.post("/work")
-async def submit_work(req: WorkPacket):
+async def submit_work(req: WorkPacket, request: Request):
+    primer = request.app.state.primer
+    cortex_runtime = request.app.state.cortex_runtime
     if not primer.is_ready():
         return JSONResponse(
             status_code=409,
@@ -74,25 +104,28 @@ async def submit_work(req: WorkPacket):
 
 
 @app.get("/work/{work_id}")
-async def fetch_work(work_id: str):
+async def fetch_work(work_id: str, request:Request):
+    cortex_runtime = request.app.state.cortex_runtime
     return await cortex_runtime.handle_egress(work_id)
 
 
 @app.post("/load")
-async def load_model(req: LoadModelRequest):
-    backend = req.backend or primer.status().get("backend")
+async def load_model(req: LoadModelRequest, request: Request):
+    primer = request.app.state.primer
+    job_manager = app.state.job_manager
+    engine = req.engine or primer.status().get("engine")
 
-    if backend == "gguf" and (not req.repo_id or not req.filename):
+    if engine == "gguf" and (not req.repo_id or not req.filename):
         return JSONResponse(
             status_code=400,
             content={
                 "ok": False,
-                "error": "GGUF backend requires repo_id and filename",
+                "error": "GGUF engine requires repo_id and filename",
             },
         )
 
     spec = req.to_job_spec()
-    spec.payload["backend"] = backend
+    spec.payload["engine"] = engine
 
     job = job_manager.start(spec)
 
@@ -102,12 +135,13 @@ async def load_model(req: LoadModelRequest):
         "job_id": job.job_id,
         "kind": job.spec.kind,
         "model_id": req.model_id,
-        "backend": backend,
+        "engine": engine,
     }
 
 
 @app.get("/jobs/{job_id}")
-async def get_job(job_id: str):
+async def get_job(job_id: str, request: Request):
+    job_manager = request.app.state.job_manager
     job = job_manager.get(job_id)
 
     if job is None:
@@ -117,13 +151,15 @@ async def get_job(job_id: str):
 
 
 @app.post("/unload")
-async def unload_model():
+async def unload_model(request: Request):
+    primer = request.app.state.primer
     await primer.stop()
     return {"ok": True, "primer": primer.status()}
 
 
 @app.get("/models")
-async def models():
+async def models(request: Request):
+    primer =  request.app.state.primer
     status = primer.status()
     state = status.get("state")
 
@@ -166,7 +202,8 @@ async def live():
 
 
 @app.get("/ready")
-async def ready():
+async def ready(request: Request):
+    primer = request.app.state.primer
     return {
         "ok": True,
         "accepting_requests": True,

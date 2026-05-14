@@ -15,6 +15,7 @@ class HFDownloader:
         self,
         *,
         cache_dir: str = "/models/huggingface",
+        external_http: httpx.AsyncClient,
         token: str | None = None,
         timeout_seconds: float = 300.0,
     ) -> None:
@@ -22,6 +23,7 @@ class HFDownloader:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.token = token or os.getenv("HF_TOKEN")
         self.timeout_seconds = timeout_seconds
+        self.external_http = external_http
 
     def _set_idle(self) -> None:
         self._status = "idle"
@@ -76,11 +78,11 @@ class HFDownloader:
         total_bytes: int | None = None
         last_logged_percent = -1
 
-        async with httpx.AsyncClient(
-            follow_redirects=True,
-            timeout=self.timeout_seconds,
-        ) as client:
-            async with client.stream("GET", url, headers=headers) as response:
+        # async with httpx.AsyncClient(
+        #     follow_redirects=True,
+        #     timeout=self.timeout_seconds,
+        # ) as client:
+        async with self.external_http.stream("GET", url, headers=headers) as response:
                 response.raise_for_status()
 
                 content_length = response.headers.get("Content-Length")
@@ -159,11 +161,11 @@ class HFDownloader:
         last_logged_percent = -1
 
         try:
-            async with httpx.AsyncClient(
-                follow_redirects=True,
-                timeout=self.timeout_seconds,
-            ) as client:
-                async with client.stream("GET", url, headers=headers) as response:
+            # async with httpx.AsyncClient(
+            #     follow_redirects=True,
+            #     timeout=self.timeout_seconds,
+            # ) as client:
+            async with self.external_http.stream("GET", url, headers=headers) as response:
                     response.raise_for_status()
 
                     content_length = response.headers.get("Content-Length")

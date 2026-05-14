@@ -11,7 +11,6 @@ from typing import Any, Literal
 from llama_cpp import Llama, LlamaGrammar
 from transformers import AutoTokenizer
 
-from common.hf_downloader import HFDownloader
 from common.system.profiler import get_model_profile
 from common.types import RESERVE_SIZE, RUNTIMEPROFILES, SAFETY_SIZE, ModelProfile
 
@@ -20,7 +19,6 @@ PrimerState = Literal["unloaded", "loading", "ready", "error"]
 
 class GGUFPrimerBackend:
     def __init__(self) -> None:
-        self.downloader = HFDownloader()
         self.model_id = os.getenv("PRIMER_MODEL_ID", "local-gguf")
         self.model_path = os.getenv("PRIMER_MODEL_PATH", "/models/model.gguf")
         self.tokenizer_id = os.getenv("PRIMER_TOKENIZER_ID", "")
