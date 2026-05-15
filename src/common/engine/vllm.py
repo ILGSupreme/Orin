@@ -3,11 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 import uuid
 from typing import Any, AsyncIterator, Literal
-
+from common.system import configuration
 from transformers import AutoTokenizer
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
@@ -16,17 +15,16 @@ from vllm.sampling_params import SamplingParams
 PrimerState = Literal["unloaded", "loading", "ready", "error"]
 
 
-class VLLMPrimerBackend:
+class VLLMPrimerEngine:
     def __init__(self) -> None:
-        self.model_id = os.getenv("PRIMER_MODEL_ID", "Qwen/Qwen3-4B-Instruct-2507-FP8")
-        self.max_new_tokens = int(os.getenv("PRIMER_MAX_NEW_TOKENS", "1400"))
-        self.temperature = float(os.getenv("PRIMER_TEMPERATURE", "0.1"))
-        self.top_p = float(os.getenv("PRIMER_TOP_P", "0.95"))
-        self.gpu_memory_utilization = float(
-            os.getenv("PRIMER_GPU_MEMORY_UTILIZATION", "0.50")
-        )
-        self.tensor_parallel_size = int(os.getenv("PRIMER_TENSOR_PARALLEL_SIZE", "1"))
-        self.max_model_len = int(os.getenv("PRIMER_MAX_MODEL_LEN", "4096"))
+        cfg = configuration.get_configuration("cortex").primer
+        self.model_id = cfg.model_id
+        self.max_new_tokens = cfg.max_new_tokens
+        self.temperature = cfg.temperature
+        self.top_p = cfg.top_p
+        self.gpu_memory_utilization = cfg.gpu_memory_util
+        self.tensor_parallel_size = cfg.tensor_parallel_size
+        self.max_model_len = cfg.max_model_len
 
         self.tokenizer: Any | None = None
         self.engine: AsyncLLMEngine | None = None

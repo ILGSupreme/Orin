@@ -154,11 +154,54 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="cortex", lifespan=lifespan)
 
+# ---------------------------------------------------------------------------
+# Dependency helpers
+# ---------------------------------------------------------------------------
 
+def cortex(request: Request) -> CortexRuntime:
+    return request.app.state.cortex_runtime
+
+def primer(request: Request) -> Primer:
+    return request.app.state.primer
+
+def discovery(request: Request) -> DiscoveryService:
+    return request.app.state.discovery_service
+
+def policy(request: Request) -> BackendRoutingPolicy:
+    return request.app.state.routing_policy
+
+def job_manager(request: Request) -> JobManager:
+    return request.app.state.job_manager
+
+# ---------------------------------------------------------------------------
+# Basic service endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/live")
+async def live():
+    return {"ok": True}
+
+
+@app.get("/ready")
+async def ready(request: Request):
+    _primer = primer(request=request)
+    return {
+        "ok": True,
+        "accepting_requests": True,
+        "primer": _primer.status(),
+    }
+
+@app.get("/health")
+async def health():
+    return {"ok": True}
+
+# ---------------------------------------------------------------------------
+# Network endpoints
+# ---------------------------------------------------------------------------
 
 @app.post("/terminal_chat")
 async def terminal_chat(req: InferenceSession, request: Request):
-    cortex_runtime = request.app.state.cortex_runtime
+    cortex_runtime = cortex(request=request)
 
     if req.stream:
         return await cortex_runtime.handle_session_stream(req)
@@ -194,16 +237,16 @@ async def terminal_chat(req: InferenceSession, request: Request):
 @app.post("/work")
 async def submit_work(req: WorkPacket, request:Request):
 
-    cortex_runtime = request.app.state.cortex_runtime
-    primer = request.app.state.primer
+    cortex_runtime = cortex(request=request)
+    _primer = primer(request=request)
 
-    if not primer.is_ready():
+    if not _primer.is_ready():
         return JSONResponse(
             status_code=409,
             content={
                 "ok": False,
                 "error": "primer_not_ready",
-                "primer": primer.status(),
+                "primer": _primer.status(),
             },
         )
 
@@ -212,13 +255,13 @@ async def submit_work(req: WorkPacket, request:Request):
 
 @app.get("/work/{work_id}")
 async def fetch_work(work_id: str, request: Request):
-    cortex_runtime = request.app.state.cortex_runtime
+    cortex_runtime = cortex(request=request)
     return await cortex_runtime.handle_egress(work_id)
 
 
 @app.post("/chat")
 async def chat_test(req: InferenceSession, request: Request):
-    cortex_runtime = request.app.state.cortex_runtime
+    cortex_runtime = cortex(request=request)
     if req.stream:
         return await cortex_runtime.chat_stream(req=req)
 
@@ -227,7 +270,7 @@ async def chat_test(req: InferenceSession, request: Request):
 
 @app.get("/network")
 async def get_backends(request:Request):
-    discovery_service = request.app.state.discovery_service
+    discovery_service = discovery(request=request)
     backend_descriptors = discovery_service.get_registry().list_backends()
 
     return {"result": [descriptor.to_dict() for descriptor in backend_descriptors]}
@@ -235,7 +278,7 @@ async def get_backends(request:Request):
 
 @app.get("/network/{role}")
 async def get_backends_by_role(role: str, request:Request):
-    routing_policy = request.app.state.routing_policy
+    routing_policy = policy(request=request)
     candidates = routing_policy.get_all_candidates(role=role)
 
     return {"result": [candidate.to_dict() for candidate in candidates]}
@@ -243,23 +286,23 @@ async def get_backends_by_role(role: str, request:Request):
 
 @app.post("/load")
 async def load_model(req: LoadModelRequest, request: Request):
-    primer = request.app.state.primer
-    job_manager = request.app.state.job_manager
-    backend = req.engine or primer.status().get("backend")
+    _primer = primer(request=request)
+    _job_manager = job_manager(request=request)
+    engine = req.engine or _primer.status().get("engine")
 
-    if backend == "gguf" and (not req.repo_id or not req.filename):
+    if engine == "gguf" and (not req.repo_id or not req.filename):
         return JSONResponse(
             status_code=400,
             content={
                 "ok": False,
-                "error": "GGUF backend requires repo_id and filename",
+                "error": "GGUF engine requires repo_id and filename",
             },
         )
 
     spec = req.to_job_spec()
-    spec.payload["backend"] = backend
+    spec.payload["engine"] = engine
 
-    job = job_manager.start(spec)
+    job = _job_manager.start(spec)
 
     return {
         "ok": True,
@@ -267,15 +310,15 @@ async def load_model(req: LoadModelRequest, request: Request):
         "job_id": job.job_id,
         "kind": job.spec.kind,
         "model_id": req.model_id,
-        "backend": backend,
+        "engine": engine,
     }
 
 
 @app.get("/jobs/{job_id}")
 async def get_job(job_id: str, request: Request):
-    job_manager = request.app.state.job_manager
+    _job_manager = job_manager(request=request)
 
-    job = job_manager.get(job_id)
+    job = _job_manager.get(job_id)
 
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
@@ -285,17 +328,17 @@ async def get_job(job_id: str, request: Request):
 
 @app.post("/engine")
 async def load_backend(req: LoadBackendRequest, request: Request):
-    primer = request.app.state.primer
-    await primer.load_engine(req.engine)
-    return {"ok": True, "primer": primer.status()}
+    _primer = primer(request=request)
+    await _primer.load_engine(req.engine)
+    return {"ok": True, "primer": _primer.status()}
 
 
 @app.post("/unload")
 async def unload_model(request: Request):
-    primer = request.app.state.primer
+    _primer = primer(request=request)
 
-    await primer.stop()
-    return {"ok": True, "primer": primer.status()}
+    await _primer.stop()
+    return {"ok": True, "primer": _primer.status()}
 
 
 @app.get("/attach")
@@ -308,23 +351,3 @@ async def attach(tail: int = 100):
             "X-Accel-Buffering": "no",
         },
     )
-
-
-@app.get("/live")
-async def live():
-    return {"ok": True}
-
-
-@app.get("/ready")
-async def ready(request: Request):
-    primer = request.app.state.primer
-    return {
-        "ok": True,
-        "accepting_requests": True,
-        "primer": primer.status(),
-    }
-
-
-@app.get("/health")
-async def health():
-    return {"ok": True}

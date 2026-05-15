@@ -3,34 +3,34 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 import threading
 from typing import Any, Literal
 
 from llama_cpp import Llama, LlamaGrammar
 from transformers import AutoTokenizer
-
-from common.system.profiler import get_model_profile
-from common.types import RESERVE_SIZE, RUNTIMEPROFILES, SAFETY_SIZE, ModelProfile
+from common.system import configuration
+from common.types import ModelProfile
 
 PrimerState = Literal["unloaded", "loading", "ready", "error"]
 
 
-class GGUFPrimerBackend:
+class GGUFPrimerEngine:
     def __init__(self) -> None:
-        self.model_id = os.getenv("PRIMER_MODEL_ID", "local-gguf")
-        self.model_path = os.getenv("PRIMER_MODEL_PATH", "/models/model.gguf")
-        self.tokenizer_id = os.getenv("PRIMER_TOKENIZER_ID", "")
-        self.max_new_tokens = int(os.getenv("PRIMER_MAX_NEW_TOKENS", "1400"))
-        self.temperature = float(os.getenv("PRIMER_TEMPERATURE", "0.1"))
-        self.top_p = float(os.getenv("PRIMER_TOP_P", "0.95"))
-        self.max_model_len = int(os.getenv("PRIMER_MAX_MODEL_LEN", "4096"))
 
-        self.n_gpu_layers = int(os.getenv("PRIMER_N_GPU_LAYERS", "-1"))
-        self.n_threads = int(os.getenv("PRIMER_N_THREADS", "6"))
-        self.n_batch = int(os.getenv("PRIMER_N_BATCH", "512"))
-        self.verbose = os.getenv("PRIMER_VERBOSE", "true").lower() == "true"
+        cfg = configuration.get_configuration("cortex").primer
+
+        self.model_id = cfg.model_id
+        self.model_path = cfg.model_path
+        self.tokenizer_id = cfg.tokenizer_path
+        self.max_new_tokens = cfg.max_new_tokens
+        self.temperature = cfg.temperature
+        self.top_p = cfg.top_p
+        self.max_model_len = cfg.max_model_len
+        self.n_gpu_layers = cfg.n_gpu_layer
+        self.n_threads = cfg.n_threads
+        self.n_batch = cfg.n_batch
+        self.verbose = cfg.verbose
 
         self.tokenizer: Any | None = None
         self.engine: Llama | None = None
@@ -41,7 +41,7 @@ class GGUFPrimerBackend:
         self._ready_event = asyncio.Event()
         self._load_task: asyncio.Task[None] | None = None
         self.profiles: dict[str, ModelProfile] = {}
-        self.current_profile: str | None = None
+        self.current_profile: ModelProfile | None = None
 
     @property
     def state(self) -> PrimerState:
@@ -99,13 +99,9 @@ class GGUFPrimerBackend:
         model_id: str,
         tokenizer_id: str | None = None,
         force_reload: bool = False,
+        current_profile: ModelProfile | None = None
     ) -> None:
-        self.profiles = get_model_profile(
-            path=path,
-            reserve_size=RESERVE_SIZE,
-            safety_size=SAFETY_SIZE,
-            profile_factors=RUNTIMEPROFILES,
-        )
+        self.current_profile = current_profile
 
         logging.info("Profiles set to: %s", self.profiles)
 
@@ -187,69 +183,58 @@ class GGUFPrimerBackend:
 
                 last_exc: Exception | None = None
 
-                for profile_name in ("conservative", "balanced", "aggressive"):
-                    value = self.profiles.get(profile_name)
-                    logging.info(f"Using Profile : {value}")
-                    logging.info("self id: %s", id(self))
-                    logging.info("profiles type: %s", type(self.profiles))
-                    logging.info("profiles id: %s", id(self.profiles))
-                    logging.info("profiles raw: %r", self.profiles)
+                logging.info(f"Using Profile : {self.current_profile}")
 
-                    if isinstance(self.profiles, dict):
-                        logging.info("profile keys: %s", list(self.profiles.keys()))
-                    else:
-                        logging.info("self.profiles is not a dict")
-                    if value is None:
-                        continue
-                    try:
-                        logging.info(
-                            "Loading Primer GGUF engine: %s (n_gpu=%s, n_batch=%s, n_ctx=%s)",
-                            self.model_path,
-                            value.inputs.n_gpu_layers,
-                            value.n_batch,
-                            value.recommended_n_ctx,
-                        )
+                if not self.current_profile:
+                    raise ValueError("error")
+                
+                try:
+                    logging.info(
+                    "Loading Primer GGUF engine: %s (n_gpu=%s, n_batch=%s, n_ctx=%s)",
+                    self.model_path,
+                    self.current_profile.inputs.n_gpu_layers,
+                    self.current_profile.n_batch,
+                    self.current_profile.recommended_n_ctx,
+                    )
+                    engine = await asyncio.to_thread(
+                    self._build_engine_with_profile,
+                    self.model_path,
+                    self.current_profile.inputs.n_gpu_layers,
+                    self.current_profile.n_batch,
+                    self.current_profile.recommended_n_ctx,
+                    )
 
-                        engine = await asyncio.to_thread(
-                            self._build_engine_with_profile,
-                            self.model_path,
-                            value.inputs.n_gpu_layers,
-                            value.n_batch,
-                            value.recommended_n_ctx,
-                        )
+                    self.tokenizer = tokenizer
+                    self.engine = engine
+                    self.n_gpu_layers = self.current_profile.inputs.n_gpu_layers
+                    self.n_batch = self.current_profile.n_batch
+                    self.max_model_len = self.current_profile.recommended_n_ctx
+                    self._state = "ready"
+                    self._error = None
 
-                        self.tokenizer = tokenizer
-                        self.engine = engine
-                        self.n_gpu_layers = value.inputs.n_gpu_layers
-                        self.n_batch = value.n_batch
-                        self.max_model_len = value.recommended_n_ctx
-                        self._state = "ready"
-                        self._error = None
-                        self.current_profile = profile_name
-
-                        logging.info(
+                    logging.info(
                             "Primer loaded successfully with profile "
                             "(n_gpu=%s, n_batch=%s, n_ctx=%s)",
                             self.n_gpu_layers,
                             self.n_batch,
                             self.max_model_len,
                         )
-                        return
+                    return
 
-                    except Exception as exc:
+                except Exception as exc:
                         last_exc = exc
                         logging.warning(
                             "Primer load attempt failed "
                             "(n_gpu=%s, n_batch=%s, n_ctx=%s): %s",
-                            value.inputs.n_gpu_layers,
-                            value.n_batch,
-                            value.recommended_n_ctx,
+                            self.current_profile.inputs.n_gpu_layers,
+                            self.current_profile.n_batch,
+                            self.current_profile.recommended_n_ctx,
                             exc,
                         )
 
-                raise RuntimeError(
-                    f"All GGUF load attempts failed. Last error: {last_exc}"
-                ) from last_exc
+                        raise RuntimeError(
+                            f"All GGUF load attempts failed. Last error: {last_exc}"
+                        ) from last_exc
 
             except asyncio.CancelledError:
                 logging.info("Primer load cancelled")

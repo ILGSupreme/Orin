@@ -4,13 +4,14 @@ import asyncio
 import httpx
 from typing import Any
 
-from common.engine.gguf import GGUFPrimerBackend
-from common.engine.vllm import VLLMPrimerBackend
+from common.engine.gguf import GGUFPrimerEngine
+from common.engine.vllm import VLLMPrimerEngine
 from common.hf_downloader import HFDownloader
 from common.protocol.adapter.openai_adapter import OpenAIStyleMessageAdapter
 from common.protocol.unified_types import RuntimeMessage
 from common.types import MAX_TOKENS_POLICY, SAFETY_TOKEN_SIZE
-
+from common.types import Profile
+from common.system import profiler
 
 class Primer:
     def __init__(self, external_http: httpx.AsyncClient) -> None:
@@ -21,7 +22,13 @@ class Primer:
         self.model_provider_type = None
         self._model_provider = None
         self._external_http_client = external_http
+        self._profile = Profile()
         self._generation_lock = asyncio.Lock()
+
+        self.load_profile()
+    
+    def load_profile(self):
+        self._profile.set_machine_info(info=profiler.get_linux_info())
 
     async def load_model_provider(self, model_provider_type: str) -> None:
         if self.model_provider_type == model_provider_type and self._model_provider:
@@ -41,9 +48,9 @@ class Primer:
         await self.stop()
 
         if engine_type == "gguf":
-            self._engine = GGUFPrimerBackend()
+            self._engine = GGUFPrimerEngine()
         elif engine_type == "vllm":
-            self._engine = VLLMPrimerBackend()
+            self._engine = VLLMPrimerEngine()
         else:
             raise ValueError(f"Unsupported engine={engine_type}")
 
@@ -139,6 +146,10 @@ class Primer:
             )
 
             kwargs["path"] = str(path)
+
+        if kwargs['path']:
+            self._profile.set_profiles(kwargs["path"])
+            kwargs['current_profile'] = self._profile.get_current_profile()
 
         await self.load_message_adapter("openai", nothink=True)
         await self._engine.load_model(*args, **kwargs)

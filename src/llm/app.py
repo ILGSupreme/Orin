@@ -66,7 +66,7 @@ async def lifespan(app: FastAPI):
 
     app.state.primer = Primer(external_http=app.state.external_http)
     app.state.job_manager = JobManager(primer=app.state.primer)
-    app.state.cortex_runtime = GenerativeModelRuntime(primer=app.state.primer)
+    app.state.generative_runtime = GenerativeModelRuntime(primer=app.state.primer)
 
     logging.info("Starting LLM app")
     try:
@@ -78,42 +78,79 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="cortex", lifespan=lifespan)
 
+# ---------------------------------------------------------------------------
+# Dependency helpers
+# ---------------------------------------------------------------------------
+
+def runtime(request: Request) -> GenerativeModelRuntime:
+    return request.app.state.generative_runtime
+
+def primer(request: Request) -> Primer:
+    return request.app.state.primer
+
+def job_manager(request: Request) -> JobManager:
+    return request.app.state.job_manager
+
+# ---------------------------------------------------------------------------
+# Basic service endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/live")
+async def live():
+    return {"ok": True}
+
+@app.get("/ready")
+async def ready(request: Request):
+    primer = request.app.state.primer
+    return {
+        "ok": True,
+        "accepting_requests": True,
+        "primer": primer.status(),
+    }
+
+@app.get("/health")
+async def health():
+    return {"ok": True}
+
+# ---------------------------------------------------------------------------
+# Network endpoints
+# ---------------------------------------------------------------------------
 
 @app.post("/engine")
 async def load_backend(req: LoadBackendRequest, request: Request):
-    primer = request.app.state.primer
-    await primer.load_engine(req.engine)
-    return {"ok": True, "primer": primer.status()}
+    _primer = primer(request=request)
+    await _primer.load_engine(req.engine)
+    return {"ok": True, "primer": _primer.status()}
 
 
 @app.post("/work")
 async def submit_work(req: WorkPacket, request: Request):
-    primer = request.app.state.primer
-    cortex_runtime = request.app.state.cortex_runtime
-    if not primer.is_ready():
+    _primer = primer(request=request)
+    generative_runtime = runtime(request=request)
+    if not _primer.is_ready():
         return JSONResponse(
             status_code=409,
             content={
                 "ok": False,
                 "error": "primer_not_ready",
-                "primer": primer.status(),
+                "primer": _primer.status(),
             },
         )
 
-    return await cortex_runtime.handle_ingress(req)
+    return await generative_runtime.handle_ingress(req)
 
 
 @app.get("/work/{work_id}")
 async def fetch_work(work_id: str, request:Request):
-    cortex_runtime = request.app.state.cortex_runtime
-    return await cortex_runtime.handle_egress(work_id)
+    generative_runtime = runtime(request=request)
+    return await generative_runtime.handle_egress(work_id)
 
 
 @app.post("/load")
 async def load_model(req: LoadModelRequest, request: Request):
-    primer = request.app.state.primer
-    job_manager = app.state.job_manager
-    engine = req.engine or primer.status().get("engine")
+    _primer = primer(request=request)
+    _job_manager = job_manager(request=request)
+    engine = req.engine or _primer.status().get("engine")
 
     if engine == "gguf" and (not req.repo_id or not req.filename):
         return JSONResponse(
@@ -127,7 +164,7 @@ async def load_model(req: LoadModelRequest, request: Request):
     spec = req.to_job_spec()
     spec.payload["engine"] = engine
 
-    job = job_manager.start(spec)
+    job = _job_manager.start(spec)
 
     return {
         "ok": True,
@@ -141,8 +178,8 @@ async def load_model(req: LoadModelRequest, request: Request):
 
 @app.get("/jobs/{job_id}")
 async def get_job(job_id: str, request: Request):
-    job_manager = request.app.state.job_manager
-    job = job_manager.get(job_id)
+    _job_manager = job_manager(request=request)
+    job = _job_manager.get(job_id)
 
     if job is None:
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
@@ -152,15 +189,15 @@ async def get_job(job_id: str, request: Request):
 
 @app.post("/unload")
 async def unload_model(request: Request):
-    primer = request.app.state.primer
-    await primer.stop()
-    return {"ok": True, "primer": primer.status()}
+    _primer = primer(request=request)
+    await _primer.stop()
+    return {"ok": True, "primer": _primer.status()}
 
 
 @app.get("/models")
 async def models(request: Request):
-    primer =  request.app.state.primer
-    status = primer.status()
+    _primer =  primer(request=request)
+    status = _primer.status()
     state = status.get("state")
 
     if state == "ready":
@@ -169,7 +206,7 @@ async def models(request: Request):
             "models": [
                 {
                     "id": status.get("model_id") or status.get("model_path"),
-                    "backend": status.get("backend"),
+                    "engine": status.get("engine"),
                     "effective_n_ctx": status.get("effective_n_ctx", 0),
                     "n_gpu_layers": status.get("n_gpu_layers"),
                     "n_batch": status.get("n_batch"),
@@ -194,23 +231,3 @@ async def attach(tail: int = 100):
             "X-Accel-Buffering": "no",
         },
     )
-
-
-@app.get("/live")
-async def live():
-    return {"ok": True}
-
-
-@app.get("/ready")
-async def ready(request: Request):
-    primer = request.app.state.primer
-    return {
-        "ok": True,
-        "accepting_requests": True,
-        "primer": primer.status(),
-    }
-
-
-@app.get("/health")
-async def health():
-    return {"ok": True}

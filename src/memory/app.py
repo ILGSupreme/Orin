@@ -33,6 +33,9 @@ root_logger.addHandler(attach_handler)
 memory_runtime = MemoryRuntime()
 app = FastAPI(title="memory")
 
+# ---------------------------------------------------------------------------
+# Basic service endpoints
+# ---------------------------------------------------------------------------
 
 @app.post("/work")
 async def submit_work(req: WorkPacket):

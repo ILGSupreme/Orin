@@ -452,6 +452,7 @@ def build_profile(
 
         profiles[profile_name] = ModelProfile.model_validate(
             {
+                "designation": profile_name,
                 "inputs": {
                     "total_vram_bytes": total_vram_bytes,
                     "model_size_bytes": model_size_bytes,
@@ -563,7 +564,7 @@ def get_model_profile(
         f"Entering get model profile, reserve: path: {path}, {reserve_size}, safety: {safety_size}, profile_factors: {profile_factors}"
     )
     model_metadata = inspect_model(path)
-    system_info = get_linux_info()
+    #system_info = get_linux_info()
     memory_info = inspect_system()
 
     n_gpus = get_ngpu_layers_by_profile_factor(

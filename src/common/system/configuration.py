@@ -41,6 +41,21 @@ class DeploymentConfiguration(BaseModel):
 
     cortex_service_account_name: str = "cortex"
 
+class PrimerConfiguration(BaseModel):
+    model_id : str = ""
+    model_path : str = ""
+    tokenizer_path : str = ""
+    max_new_tokens : int = 0
+    temperature: float = 0.1
+    top_p: float = 0.0
+    max_model_len: int = 0
+    n_gpu_layer: int = 0
+    n_threads: int = 0
+    n_batch: int = 0
+    verbose: bool = False
+    ### VLLM
+    gpu_memory_util: float = 0.50
+    tensor_parallel_size: int = 1 
 
 class CortexConfiguration(BaseModel):
     namespace: str = "orin"
@@ -62,6 +77,7 @@ class CortexConfiguration(BaseModel):
 
     images: ImageConfiguration = Field(default_factory=ImageConfiguration)
     deployment: DeploymentConfiguration = Field(default_factory=DeploymentConfiguration)
+    primer: PrimerConfiguration = Field(default_factory=PrimerConfiguration)
 
 
 class FederationConfiguration(BaseModel):

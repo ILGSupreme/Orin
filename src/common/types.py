@@ -1,5 +1,6 @@
+from __future__ import annotations
 from typing import Any, Literal
-
+from common.system import profiler
 from pydantic import BaseModel, Field
 
 RUNTIMEPROFILES = {"conservative": 0.5, "balanced": 0.7, "aggressive": 0.85}
@@ -76,34 +77,73 @@ class ModelMetadata(BaseModel):
 
 
 class ModelInputs(BaseModel):
-    total_vram_bytes: int
-    model_size_bytes: int
-    total_layers: int
-    n_gpu_layers: int
-    block_count: int
-    head_count_kv: int
-    key_length: int
-    value_length: int
-    model_max_context: int
-    bytes_per_elem: int
-    active_kv_fraction: int
-    reserve_bytes: int
-    safety_margin_bytes: int
-    minimum_n_ctx: int
-    alignment: int
+    total_vram_bytes: int = 0
+    model_size_bytes: int = 0
+    total_layers: int = 0
+    n_gpu_layers: int = 0
+    block_count: int = 0
+    head_count_kv: int = 0
+    key_length: int = 0
+    value_length: int = 0
+    model_max_context: int = 0
+    bytes_per_elem: int = 0
+    active_kv_fraction: int = 0
+    reserve_bytes: int = 0
+    safety_margin_bytes: int = 0
+    minimum_n_ctx: int = 0
+    alignment: int = 0
 
 
 class ModelEstimates(BaseModel):
-    model_residency_bytes: int
-    kv_bytes_per_token: int
-    estimated_upper_n_ctx: int
+    model_residency_bytes: int = 0
+    kv_bytes_per_token: int = 0
+    estimated_upper_n_ctx: int = 0
 
+class MachineInfo(BaseModel):
+    operating_system: str | None = None
+    distro: str | None = None
+    kernel: str | None = None
+    architecture: str | None = None
+    device_model: str | None = None
+    unified_memory: str | None = None
+    unified_memory_reason: str | None = None
 
 class ModelProfile(BaseModel):
-    inputs: ModelInputs
-    estimates: ModelEstimates
-    recommended_n_ctx: int
-    n_batch: int
+    designation: str = "conservative"
+    inputs: ModelInputs = Field(default_factory=ModelInputs)
+    estimates: ModelEstimates = Field(default_factory=ModelEstimates)
+    recommended_n_ctx: int = 0
+    n_batch: int = 0
+
+class Profile(BaseModel):
+    machine_info: MachineInfo = Field(default_factory=MachineInfo)
+    profiles: dict[str, ModelProfile] = Field(default_factory=dict)
+
+    reserve_size = 1024 * 1024 * 1024
+    safety_size = 1024 * 1024 * 1024
+    runtime_profiles = {"conservative": 0.5, "balanced": 0.7, "aggressive": 0.85}
+
+    current_profile: Literal['conservative', "balanced", "aggressive"] = "conservative"
+
+    def set_machine_info(self, info:dict[str,Any]):
+        try:
+            self.machine_info = MachineInfo.model_validate(info)
+        except Exception as e:
+            raise e
+        
+    def set_profiles(self, path):
+        self.profiles = profiler.get_model_profile(
+            path=path,
+            reserve_size=self.reserve_size, 
+            safety_size=self.safety_size, 
+            profile_factors=self.runtime_profiles
+            )
+    
+    def get_current_profile(self):
+        profile = self.profiles.get(self.current_profile)
+        if profile:
+            return profile
+        raise ValueError(f"Profile: {self.current_profile} not found")
 
 
 class LoadSettings(BaseModel):
