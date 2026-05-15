@@ -30,16 +30,15 @@ class KubernetesDiscoveryProvider:
     WORK_PATH_ANNOTATION = "orin.ai/work_path"
     MODELS_PATH_ANNOTATION = "orin.ai/models_path"
 
+    namespace : str
+
     def __init__(
-        self,
-        *,
-        in_cluster: bool = True,
+        self
     ) -> None:
+        cfg = configuration.get_configuration("cortex")
+        self.namespace = cfg.namespace
 
-        cfg = configuration.load_configuration()
-        self.namespace = cfg.get("namespace", "orin")
-
-        if in_cluster:
+        if cfg.in_cluster:
             config.load_incluster_config()
         else:
             config.load_kube_config()

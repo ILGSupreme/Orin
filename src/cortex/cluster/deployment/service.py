@@ -51,28 +51,13 @@ class DeploymentService:
         self.inventory = Inventory()
 
         ##load configuration file
-        cfg = configuration.load_configuration()
+        cfg = configuration.get_configuration("cortex")
+        
+        self.namespace = cfg.namespace
 
-        self.namespace = str(cfg.get("namespace", "orin"))
+        self.pod_factory_defaults = self._build_pod_factory_defaults()
 
-        host_alias = str(cfg.get("alias", "ORINC"))
-        host = str(cfg.get("host", ""))
-        ip = str(cfg.get("ip", "localhost"))
-
-        ssh_key = cfg.get("ssh_key", "/data/ssh/id_ed25519")
-        ssh_user = str(cfg.get("user", "ubuntu"))
-        ssh_port = int(cfg.get("port", 22))
-
-        nvidia_gpu = bool(cfg.get("nvidia_gpu", False))
-        k3s_node_name = cfg.get("k3s_node_name", None)
-
-        in_cluster = bool(cfg.get("in_cluster", True))
-
-        platform: MachinePlatform = cfg.get("platform", "jetson")
-
-        self.pod_factory_defaults = self._build_pod_factory_defaults(cfg=cfg)
-
-        if in_cluster:
+        if cfg.in_cluster:
             config.load_incluster_config()
         else:
             config.load_kube_config()
@@ -81,15 +66,15 @@ class DeploymentService:
         self.apps = client.AppsV1Api()
 
         self.add_node(
-            alias=host_alias,
-            host=host,
-            ip=ip,
-            platform=platform,
-            ssh_user=ssh_user,
-            ssh_key=ssh_key,
-            ssh_port=ssh_port,
-            nvidia_gpu=nvidia_gpu,
-            k3s_node_name=k3s_node_name or host_alias,
+            alias=cfg.alias,
+            host=cfg.host,
+            ip=cfg.ip,
+            platform=cfg.platform,
+            ssh_user=cfg.user,
+            ssh_key=cfg.ssh_key,
+            ssh_port=cfg.port,
+            nvidia_gpu=cfg.nvidia_gpu,
+            k3s_node_name=cfg.k3s_node_name,
         )
 
     @staticmethod
@@ -148,27 +133,25 @@ class DeploymentService:
                 "  sudo visudo -cf /etc/sudoers.d/orin-deploy"
             ) from exc
 
-    def _build_pod_factory_defaults(self, cfg: dict) -> PodFactoryDefaults:
-        deployment_cfg = cfg.get("deployment", {})
+    def _build_pod_factory_defaults(self) -> PodFactoryDefaults:
+        
+        deployment_cfg = configuration.get_configuration("cortex").deployment
 
         return PodFactoryDefaults(
             namespace=self.namespace,
             images=PodImageConfig(),
-            default_port=int(deployment_cfg.get("default_port", 8080)),
-            cortex_node_port=int(deployment_cfg.get("cortex_node_port", 30080)),
-            pvc_size=str(deployment_cfg.get("pvc_size", "30Gi")),
-            pvc_storage_class_name=str(
-                deployment_cfg.get("pvc_storage_class_name", "local-path")
-            ),
-            pvc_mount_path=str(
-                deployment_cfg.get("pvc_mount_path", "/models/huggingface")
-            ),
-            image_pull_policy=deployment_cfg.get("image_pull_policy", "Always"),
-            runtime_class_name=deployment_cfg.get("runtime_class_name", "runc"),
-            cortex_service_account_name=deployment_cfg.get(
-                "cortex_service_account_name",
-                "cortex",
-            ),
+            default_port=deployment_cfg.default_port,
+            cortex_node_port=deployment_cfg.cortex_node_port,
+            pvc_size=deployment_cfg.pvc_size,
+            pvc_storage_class_name=
+                deployment_cfg.pvc_storage_class_name
+            ,
+            pvc_mount_path=
+                deployment_cfg.pvc_mount_path
+            ,
+            image_pull_policy=deployment_cfg.image_pull_policy,
+            runtime_class_name=deployment_cfg.runtime_class_name,
+            cortex_service_account_name=deployment_cfg.cortex_service_account_name
         )
 
     def add_node(

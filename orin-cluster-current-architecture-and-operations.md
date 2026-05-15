@@ -273,13 +273,1033 @@ The memory backend returns completed `WorkResult` values directly from `POST /wo
 The `tool/` app folder exists but is currently empty. It represents the planned backend role for non-LLM tool execution.
 
 ### 5.5 Federation
+#### Orin Federation Implementation Progress
 
-The `federation/` app folder exists but is currently empty. It represents the planned inter-cluster communication role.
+##### Purpose
 
-Federation should not be documented as currently working. It is a planned boundary for future trusted remote cluster discovery, delegation, and policy-controlled task exchange.
+Federation is being implemented as the external communication boundary for Orin clusters.
+
+Federation handles:
+
+- public network discovery
+- token-gated joining
+- member identity
+- signed work exchange
+- policy enforcement
+- sanitized capability advertisement
+- result exchange
+
+Federation must not expose the internal Orin cluster structure.
+
+The following must remain private:
+
+- Cortex URLs
+- LLM URLs
+- Memory URLs
+- Kubernetes services
+- pod names
+- node IPs
+- SSH details
+- deployment configuration
+- model paths
+- memory contents
+- slash commands
+- backend load/unload controls
+
+External peers communicate only with Federation endpoints. Federation validates, verifies, authorizes, and sanitizes incoming work before handing it to local Cortex.
 
 ---
 
+##### Source Layout
+
+Current Federation source layout:
+
+```text
+src/federation/
+  models.py
+  settings.py
+  storage.py
+  network_registry.py
+  join_tokens.py
+  members.py
+  identity.py
+  envelopes.py
+  policy.py
+  app.py
+  capabilities.py
+  cortex_bridge.py
+  federation_client.py
+```
+
+---
+
+#### Major Design Decisions
+
+##### Federation does not own a separate database
+
+Federation does not create or own a separate SQLite database.
+
+Persistent Federation state is stored through the existing Memory service.
+
+Persistent records include:
+
+- networks
+- join-token records
+- member records
+- capability records
+- federated work records
+
+Local files under `/data/federation` are used only for:
+
+- identity keys
+- nonce/cache data
+- temporary local state
+
+#### Federation uses file-based configuration
+
+Federation settings are loaded from the shared file-based configuration system.
+
+At startup, the Federation app calls:
+
+```python
+configuration.load_configuration_file("federation")
+```
+
+This is done once during app startup/lifespan.
+
+Runtime settings are then read through `FederationSettings`.
+
+Environment-variable-driven Federation settings were rejected for the current design.
+
+#### Key material is not stored in configuration
+
+The Federation configuration file may store key paths, but it must not store raw key material.
+
+The configuration may contain:
+
+```python
+private_key_path: Path | None = None
+public_key_path: Path | None = None
+```
+
+If paths are omitted, they resolve to:
+
+```text
+/data/federation/identity/ed25519_private.key
+/data/federation/identity/ed25519_public.key
+```
+
+The actual private/public key files are owned by `identity.py`.
+
+#### Policy is allow-list based
+
+Federation policy is strict allow-list based.
+
+There is no `denied_operations` list.
+
+A remote WorkPacket is accepted only if:
+
+```text
+task.work_type is in allowed_work_types
+task.operation is in allowed_operations
+task.operation is a known runtime operation
+```
+
+Known runtime operations are:
+
+```text
+chat
+summarize
+classify
+extract
+analyze
+search
+inspect
+```
+
+Constants such as `RUNTIMEPROFILES`, `RESERVE_SIZE`, `SAFETY_SIZE`, and `SAFETY_TOKEN_SIZE` are not operations.
+
+---
+
+#### `models.py`
+
+`models.py` defines the core Federation domain models and endpoint DTOs.
+
+Core models:
+
+```text
+CapabilitySummary
+NetworkPolicy
+FederationNetwork
+JoinToken
+NetworkMember
+FederatedWorkEnvelope
+FederationWorkRecord
+```
+
+Endpoint DTOs:
+
+```text
+CreateNetworkRequest
+CreateNetworkResponse
+CreateJoinTokenRequest
+CreateJoinTokenResponse
+JoinNetworkRequest
+JoinNetworkResponse
+HeartbeatRequest
+HeartbeatResponse
+PublishCapabilitiesRequest
+PublishCapabilitiesResponse
+SubmitFederatedWorkResponse
+GetFederatedWorkResponse
+```
+
+##### `FederatedWorkEnvelope`
+
+`FederatedWorkEnvelope.packet` is kept as:
+
+```python
+dict[str, Any]
+```
+
+It is intentionally not typed directly as the internal `WorkPacket`.
+
+This keeps Federation models decoupled from Cortex/common imports. The bridge and policy layers validate and submit the packet later.
+
+##### `NetworkPolicy`
+
+`NetworkPolicy` is default-deny.
+
+Default allowed work types:
+
+```text
+llm
+tool
+```
+
+Default allowed operations:
+
+```text
+chat
+summarize
+classify
+extract
+analyze
+search
+inspect
+```
+
+Policy also defines limits for:
+
+- max payload bytes
+- max context tokens
+- max result tokens
+- max concurrent jobs per member
+
+Policy flags include:
+
+- allow remote work submission
+- allow remote result polling
+- allow member capability publishing
+- expose member list
+- expose exact models
+- expose runtime metadata
+
+No deny list is currently used.
+
+---
+
+#### `settings.py`
+
+`settings.py` defines `FederationSettings`.
+
+It is loaded from the shared file-based configuration system through:
+
+```python
+configuration.get_configuration("federation")
+```
+
+It uses `@lru_cache(maxsize=1)` so settings are loaded once per app instance.
+
+It also creates local directories for:
+
+- `data_dir`
+- identity-key parent paths
+
+Current settings include:
+
+```text
+app_name
+protocol_version
+host
+port
+cluster_id
+data_dir
+private_key_path
+public_key_path
+memory_base_url
+memory_work_path
+public_base_url
+cortex_base_url
+cortex_work_path
+cortex_work_result_path
+cortex_network_path
+default_network_visibility
+default_join_mode
+request_ttl_seconds
+allowed_clock_skew_seconds
+nonce_ttl_seconds
+max_request_bytes
+enable_remote_work_submission
+enable_capability_publish
+enable_member_heartbeat
+```
+
+Removed or intentionally not included:
+
+```text
+database_path
+state_backend
+bootstrap_peers
+raw private key
+raw public key
+environment-variable loading
+```
+
+`bootstrap_peers` is intentionally not part of the current settings model. Bootstrap and relay discovery belong to a later phase.
+
+`capabilities.py` should use:
+
+```python
+settings.cortex_network_url()
+```
+
+instead of hardcoding `/network`.
+
+---
+
+#### `storage.py`
+
+`storage.py` defines `MemoryFederationStorage`.
+
+Federation persistence is routed through Memory using WorkPacket-shaped requests.
+
+Expected Memory operations:
+
+```text
+federation_put_record
+federation_get_record
+federation_list_records
+federation_delete_record
+```
+
+Record types:
+
+```text
+network
+join_token
+member
+work
+```
+
+The storage adapter provides methods for:
+
+- putting, getting, listing, and deleting networks
+- putting, getting, listing, and deleting join tokens
+- putting, getting, listing, and deleting members
+- putting, getting, listing, and deleting federated work records
+
+Memory WorkPackets are built with:
+
+```text
+work_type = memory
+metadata.source = federation
+```
+
+##### `LocalNonceStore`
+
+`storage.py` also defines `LocalNonceStore`.
+
+This is a local JSON-backed replay-protection cache.
+
+Nonce state is temporary local state and is not stored in Memory.
+
+---
+
+#### `network_registry.py`
+
+`network_registry.py` owns `FederationNetwork` records.
+
+Responsibilities:
+
+- create network
+- get network by ID
+- get network by slug
+- require network by ID
+- require network by slug
+- list networks
+- list public networks
+- update network metadata
+- update advertised capabilities
+- refresh member count
+- delete network
+- return public-safe network view
+
+It does not manage:
+
+- join tokens
+- members
+- signatures
+- work routing
+
+Slug validation uses lowercase letters, numbers, and hyphens.
+
+Slug rules:
+
+```text
+3-64 characters
+must start with a letter or number
+must end with a letter or number
+may contain hyphens
+```
+
+---
+
+#### `join_tokens.py`
+
+`join_tokens.py` owns join-token lifecycle.
+
+Responsibilities:
+
+- create join token
+- hash token
+- validate raw token
+- redeem token
+- revoke token
+- expire token
+- delete token
+- list tokens
+
+Raw tokens are returned once to the creator and are never persisted.
+
+Stored token records contain only:
+
+```text
+token_id
+network_id
+token_hash
+scopes
+max_uses
+used_count
+expires_at
+created_by_cluster_id
+status
+created_at
+updated_at
+```
+
+Token format:
+
+```text
+orin_join_<token_id>.<secret>
+```
+
+Access tokens are bootstrap credentials only.
+
+After a successful join, future communication uses the member cluster keypair and signed requests.
+
+`join_tokens.py` does not create `NetworkMember` records. That belongs to `members.py`.
+
+---
+
+#### `members.py`
+
+`members.py` owns `NetworkMember` records.
+
+Responsibilities:
+
+- add member
+- get member
+- require member
+- require active member
+- list members
+- activate member
+- disable member
+- revoke member
+- delete member
+- update last seen
+- update advertised capabilities
+- update allowed work types
+- update allowed operations
+- update role
+- check member submission permissions
+
+It does not validate join tokens.
+
+It does not verify signatures.
+
+It does not enforce network policy.
+
+It does not refresh network member count by itself. The app or orchestration layer should call `NetworkRegistry.refresh_member_count()` after membership changes.
+
+---
+
+#### `identity.py`
+
+`identity.py` owns local Federation identity.
+
+Responsibilities:
+
+- load or create Ed25519 keypair
+- save private key file
+- save public key file
+- validate that public key matches private key
+- derive cluster ID from public key when not configured
+- sign payloads
+- verify signatures
+- provide canonical JSON serialization for signing
+
+Public key string format:
+
+```text
+ed25519:<base64url>
+```
+
+Signature string format:
+
+```text
+ed25519:<base64url>
+```
+
+If `cluster_id` is not configured, it is derived from the public key:
+
+```text
+orin-<first32hex_of_sha256_public_key>
+```
+
+Private key files are written with mode:
+
+```text
+0600
+```
+
+Public key files are written with mode:
+
+```text
+0644
+```
+
+`identity.py` depends on:
+
+```text
+cryptography
+```
+
+---
+
+#### `envelopes.py`
+
+`envelopes.py` owns `FederatedWorkEnvelope` creation and validation.
+
+Responsibilities:
+
+- create signed envelope
+- calculate envelope signing payload
+- verify envelope signature
+- validate protocol version
+- validate signature algorithm
+- validate `issued_at`
+- validate `expires_at`
+- validate expected network ID
+- validate expected origin cluster ID
+- check and remember nonce
+- parse envelope
+- serialize envelope
+- produce non-sensitive debug hash of signed payload
+
+The envelope signature covers all envelope fields except:
+
+```text
+signature
+```
+
+The signed payload includes:
+
+```text
+signature_algorithm
+```
+
+`envelopes.py` does not perform:
+
+- membership lookup
+- network policy enforcement
+- member permission checks
+- WorkPacket validation
+- quota checks
+- routing
+
+Those responsibilities belong to other modules.
+
+---
+
+#### `policy.py`
+
+`policy.py` enforces Federation policy after envelope and membership checks.
+
+Checks include:
+
+- remote work submission is enabled
+- `task.work_type` exists and is a string
+- `task.operation` exists and is a string
+- operation is a known runtime operation
+- work type is allowed by network policy
+- operation is allowed by network policy
+- payload size is within policy and app settings
+- requested context token limit does not exceed policy
+- requested result token limit does not exceed policy
+- member is active
+- member is allowed to submit the work type
+- member is allowed to submit the operation
+
+`policy.py` also defines:
+
+```python
+sanitize_packet_for_cortex()
+```
+
+This removes dangerous or trusted-looking metadata keys such as:
+
+```text
+backend_ref
+backend_desc
+selected_backend
+internal
+trusted
+admin
+command
+deployment
+kubernetes
+ssh
+```
+
+It then adds explicit federation-origin metadata:
+
+```text
+network_id
+network_slug
+origin_cluster_id
+member_role
+request_id
+```
+
+This metadata should be treated as untrusted external-origin context by Cortex.
+
+`policy.py` does not check:
+
+- signatures
+- membership existence
+- nonce replay
+- quotas/concurrency
+- Pydantic WorkPacket validation
+
+---
+
+#### `app.py`
+
+`app.py` is the FastAPI composition layer.
+
+During lifespan startup it wires:
+
+- file-based configuration
+- internal `httpx.AsyncClient`
+- external `httpx.AsyncClient`
+- `MemoryFederationStorage`
+- local `ClusterIdentity`
+- `LocalNonceStore`
+- `NetworkRegistry`
+- `JoinTokenService`
+- `MemberService`
+- `CapabilityService`
+- `CortexBridge`
+
+Basic endpoints:
+
+```text
+GET /live
+GET /ready
+GET /health
+```
+
+Network and token endpoints:
+
+```text
+POST /federation/networks
+GET  /federation/networks
+GET  /federation/networks/{slug}
+POST /federation/networks/{slug}/tokens
+POST /federation/networks/{slug}/join
+```
+
+Member/private endpoints:
+
+```text
+POST /federation/networks/{network_id}/heartbeat
+POST /federation/networks/{network_id}/capabilities
+```
+
+Work endpoints:
+
+```text
+POST /federation/networks/{network_id}/work
+GET  /federation/networks/{network_id}/work/{work_id}
+```
+
+Capability endpoints:
+
+```text
+GET  /federation/networks/{slug}/capabilities
+POST /federation/networks/{slug}/capabilities/refresh
+```
+
+The `/federation/networks/{network_id}/work` endpoint now uses `CortexBridge`.
+
+The old temporary `accepted_not_executed` block should be removed.
+
+Simple signed member requests, such as heartbeat and capability publish, use this signed payload shape:
+
+```python
+{
+    "network_id": network_id,
+    "body": body_without_signature,
+}
+```
+
+Local/admin endpoints such as network creation and token creation are currently unprotected. Later they should be restricted to the local command interface or explicit admin policy.
+
+---
+
+#### `cortex_bridge.py`
+
+`cortex_bridge.py` bridges validated and sanitized Federation work into local Cortex.
+
+Expected Cortex endpoints:
+
+```text
+POST /work
+GET  /work/{work_id}
+```
+
+Cortex currently accepts WorkPackets directly:
+
+```python
+@app.post("/work")
+async def submit_work(req: WorkPacket, request: Request):
+    cortex_runtime = request.app.state.cortex_runtime
+    primer = request.app.state.primer
+
+    if not primer.is_ready():
+        return JSONResponse(
+            status_code=409,
+            content={
+                "ok": False,
+                "error": "primer_not_ready",
+                "primer": primer.status(),
+            },
+        )
+
+    return await cortex_runtime.handle_ingress(req)
+
+
+@app.get("/work/{work_id}")
+async def fetch_work(work_id: str, request: Request):
+    cortex_runtime = request.app.state.cortex_runtime
+    return await cortex_runtime.handle_egress(work_id)
+```
+
+`CortexBridge` submits sanitized WorkPackets to Cortex and converts the Cortex response into a `FederationWorkRecord`.
+
+Handled Cortex statuses:
+
+```text
+accepted
+running
+completed
+failed
+```
+
+If Cortex returns an error object without a `status`, for example:
+
+```json
+{
+  "ok": false,
+  "error": "primer_not_ready"
+}
+```
+
+the bridge should raise a clear `CortexBridgeStatusError`.
+
+---
+
+#### `capabilities.py`
+
+`capabilities.py` builds sanitized public capability summaries from local Cortex discovery.
+
+Cortex currently exposes:
+
+```text
+GET /network
+```
+
+with response shape:
+
+```python
+{
+    "result": [descriptor.to_dict() for descriptor in backend_descriptors]
+}
+```
+
+`extract_backend_list()` must support the `result` key.
+
+It should also tolerate other possible shapes:
+
+```text
+[...]
+{"backends": [...]}
+{"network": [...]}
+{"items": [...]}
+{"descriptors": [...]}
+{"llm": [...], "tool": [...]}
+```
+
+Capabilities are collapsed into one public summary per work type so Federation does not reveal the internal backend/pod/service layout.
+
+Public work types:
+
+```text
+llm
+tool
+```
+
+Default operation mapping:
+
+```text
+llm:
+  chat
+  summarize
+  classify
+  extract
+  analyze
+
+tool:
+  search
+  inspect
+```
+
+Default modality:
+
+```text
+text
+```
+
+`capabilities.py` can expose coarse runtime or model hints only when policy allows:
+
+```text
+expose_runtime_metadata
+expose_exact_models
+```
+
+It must not expose:
+
+- service URLs
+- pod names
+- node IPs
+- Kubernetes labels
+- Kubernetes annotations
+- deployment metadata
+- model paths
+- backend refs
+- memory data
+- slash commands
+
+---
+
+#### `federation_client.py`
+
+`federation_client.py` is the outbound client for talking to another Federation node.
+
+It only talks to Federation endpoints.
+
+It must not talk directly to:
+
+- Cortex
+- LLM
+- Memory
+- Tool
+- Kubernetes
+- backend services
+
+Main responsibilities:
+
+- list remote networks
+- get remote network details
+- get remote network capabilities
+- join a network with a token
+- send signed heartbeat
+- publish signed capabilities
+- submit signed `FederatedWorkEnvelope`
+- poll federated result
+
+Main methods:
+
+```text
+list_networks()
+get_network()
+get_network_capabilities()
+join_network()
+send_heartbeat()
+publish_capabilities()
+submit_work()
+get_work_result()
+submit_work_and_poll_once()
+```
+
+`join_network()` sends:
+
+```text
+token
+local cluster_id
+local public_key
+optional advertised capabilities
+```
+
+`submit_work()` wraps a WorkPacket-shaped dict inside a signed `FederatedWorkEnvelope`.
+
+Simple signed member requests must match the verification shape used in `app.py`:
+
+```python
+{
+    "network_id": network_id,
+    "body": body_without_signature,
+}
+```
+
+---
+
+#### Current Integration Flow
+
+Federation can now conceptually support the following flow:
+
+```text
+1. Create a FederationNetwork.
+2. Create a join token.
+3. Another cluster joins with token, cluster_id, and public key.
+4. Member sends signed heartbeat.
+5. Member publishes signed sanitized capabilities.
+6. Member submits signed FederatedWorkEnvelope.
+7. Receiving Federation verifies envelope, membership, nonce, and policy.
+8. Federation sanitizes the WorkPacket.
+9. Federation submits the WorkPacket to local Cortex through CortexBridge.
+10. Federation stores the FederationWorkRecord through Memory.
+11. Remote member polls result through Federation.
+```
+
+---
+
+#### Cortex Integration Status
+
+Cortex already accepts WorkPackets directly at:
+
+```text
+POST /work
+GET  /work/{work_id}
+```
+
+Therefore Federation can route accepted federated work through `CortexBridge`.
+
+Current Cortex network discovery endpoint:
+
+```text
+GET /network
+```
+
+Current response shape:
+
+```python
+{
+    "result": [descriptor.to_dict() for descriptor in backend_descriptors]
+}
+```
+
+`capabilities.py` has been adjusted to read this shape.
+
+---
+
+#### Remaining Work
+
+Next implementation tasks:
+
+```text
+Add Memory backend operations:
+  federation_put_record
+  federation_get_record
+  federation_list_records
+  federation_delete_record
+
+Add Federation settings to the shared file-based configuration model.
+
+Add deployment support for the Federation pod/service.
+
+Add command-router Federation folder:
+  /cd Federation
+  /network_list
+  /network_create
+  /network_token_create
+  /network_join
+  /network_members
+  /network_leave
+
+Add manual test/curl flow:
+  create network
+  create token
+  join network
+  heartbeat
+  publish capabilities
+  submit WorkPacket
+  poll result
+```
+
+Later phases:
+
+```text
+discovery/bootstrap peers
+relay support
+NAT traversal
+quota/concurrency enforcement
+revocation lists
+protocol version negotiation
+network health reporting
+federated backend descriptors for Cortex routing
+```
+
+---
+
+#### Design Principle
+
+Federation is the membrane between Orin and the outside world.
+
+External peers see only Federation-level concepts:
+
+```text
+FederationNetwork
+NetworkMember
+CapabilitySummary
+FederatedWorkEnvelope
+FederationWorkRecord
+```
+
+They must not see internal Orin implementation details.
+
+The final direction is a public, no-pay overlay network where Orin installs can discover FederationNetworks, join authorized networks with tokens, and exchange signed policy-limited WorkPackets without exposing internal cluster structure.
 ## 6. Runtime endpoints
 
 ### 6.1 Cortex endpoints

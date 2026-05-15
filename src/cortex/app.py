@@ -21,6 +21,7 @@ from cortex.cluster.discovery.services import DiscoveryService
 from cortex.cortex.mailbox import CortexMailbox
 from cortex.cortex.runtime import CortexRuntime
 from cortex.router.planner import Planner
+from common.system import configuration
 from cortex.router.service import RouterService
 import cProfile
 import pstats
@@ -75,6 +76,8 @@ async def lifespan(app: FastAPI):
         trust_env=True,
         follow_redirects=True,
     )
+
+    configuration.load_configuration_file("cortex")
 
     app.state.primer = Primer(
         external_http=app.state.external_http,
@@ -150,36 +153,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="cortex", lifespan=lifespan)
-
-# primer = Primer(external_http=app.state.external_http)
-# job_manager = JobManager(primer=primer)
-# deployment_service = DeploymentService()
-# discovery_service = DiscoveryService()
-# routing_policy = BackendRoutingPolicy(discovery_service.selector)
-# backend_client = BackendClient(http=app.state.internal_http)
-# command_router = CommandRouter(
-#     primer=primer,
-#     deployment_service=deployment_service,
-#     backend_service=discovery_service,
-#     routing_policy=routing_policy,
-#     backend_client=backend_client,
-#     job_manager=job_manager,
-#     log_stream=log_stream,
-# )
-# planner = Planner(routing_policy=routing_policy)
-# router = RouterService(
-#     backend_client=backend_client,
-#     backend_services=discovery_service,
-#     planner=planner,
-# )
-# cortex_mailbox = CortexMailbox(router=router)
-# router.set_cortex_mailbox(cortex_mailbox)
-# cortex_runtime = CortexRuntime(
-#     mailbox=cortex_mailbox,
-#     backend_services=discovery_service,
-#     primer=primer,
-#     command_router=command_router,
-# )
 
 
 
