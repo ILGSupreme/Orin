@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from common.jobs import JobManager
+from common.jobs import JobManager,JobSpec
 from common.log import LogStream, LogStreamHandler
 from common.primer import Primer
 from common.protocol.ingress_types import LoadBackendRequest, LoadModelRequest
@@ -65,8 +65,8 @@ async def lifespan(app: FastAPI):
     )
 
     app.state.primer = Primer(external_http=app.state.external_http)
-    app.state.job_manager = JobManager(primer=app.state.primer)
-    app.state.generative_runtime = GenerativeModelRuntime(primer=app.state.primer)
+    app.state.job_manager = JobManager()
+    app.state.generative_runtime = GenerativeModelRuntime(primer=app.state.primer, job_manager=app.state.job_manager)
 
     logging.info("Starting LLM app")
     try:
@@ -150,7 +150,18 @@ async def fetch_work(work_id: str, request:Request):
 async def load_model(req: LoadModelRequest, request: Request):
     _primer = primer(request=request)
     _job_manager = job_manager(request=request)
+    _runtime = runtime(request=request)
+
     engine = req.engine or _primer.status().get("engine")
+
+    if not engine:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "ok": False,
+                "error": "No engine selected. Provide engine or load an engine first.",
+            },
+        )
 
     if engine == "gguf" and (not req.repo_id or not req.filename):
         return JSONResponse(
@@ -161,19 +172,30 @@ async def load_model(req: LoadModelRequest, request: Request):
             },
         )
 
-    spec = req.to_job_spec()
-    spec.payload["engine"] = engine
+    payload = req.model_dump(mode="python")
+    payload["engine"] = engine
 
-    job = _job_manager.start(spec)
+    spec = JobSpec(
+        kind="cortex.load_model",
+        payload=payload,
+    )
 
-    return {
-        "ok": True,
-        "status": job.status,
-        "job_id": job.job_id,
-        "kind": job.spec.kind,
-        "model_id": req.model_id,
-        "engine": engine,
-    }
+    job = _job_manager.start(
+        spec=spec,
+        runner=_runtime.run_load_model_job,
+    )
+
+    return JSONResponse(
+        status_code=202,
+        content={
+            "ok": True,
+            "status": job.status,
+            "job_id": job.job_id,
+            "kind": job.spec.kind,
+            "model_id": req.model_id,
+            "engine": engine,
+        },
+    )
 
 
 @app.get("/jobs/{job_id}")

@@ -93,7 +93,7 @@ class Primer:
         return data
 
     def get_model(self) -> str:
-        if self._engine is None:
+        if self._engine is None or not self._engine.model_id:
             raise ValueError("engine is not assigned")
         return self._engine.model_id
 
@@ -107,15 +107,15 @@ class Primer:
 
         return self._engine.count_tokens(messages=rendered_messages)
 
-    async def start_background(self) -> None:
-        if self._engine is None:
-            raise ValueError("engine is not assigned")
-        await self._engine.start_background()
+    # async def start_background(self) -> None:
+    #     if self._engine is None:
+    #         raise ValueError("engine is not assigned")
+    #     await self._engine.start_background()
 
-    async def ensure_ready(self) -> None:
-        if self._engine is None:
-            raise ValueError("engine is not assigned")
-        await self._engine.ensure_ready()
+    # async def ensure_ready(self) -> None:
+    #     if self._engine is None:
+    #         raise ValueError("engine is not assigned")
+    #     await self._engine.ensure_ready()
 
     async def stop(self) -> None:
         if self._engine is None:
@@ -148,7 +148,13 @@ class Primer:
             kwargs["path"] = str(path)
 
         if kwargs['path']:
-            self._profile.set_profiles(kwargs["path"])
+            profiles = profiler.get_model_profile(
+                    path=kwargs["path"],
+                    reserve_size=self._profile.reserve_size, 
+                    safety_size=self._profile.safety_size, 
+                    profile_factors=self._profile.runtime_profiles
+                )
+            self._profile.set_profiles(profiles=profiles)
             kwargs['current_profile'] = self._profile.get_current_profile()
 
         await self.load_message_adapter("openai", nothink=True)

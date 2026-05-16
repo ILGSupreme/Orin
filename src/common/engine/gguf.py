@@ -70,27 +70,27 @@ class GGUFPrimerEngine:
             "runtime_profile": self.current_profile,
         }
 
-    async def start_background(self) -> None:
-        if self._state in {"loading", "ready"}:
-            return
+    # async def start_background(self) -> None:
+    #     if self._state in {"loading", "ready"}:
+    #         return
 
-        self._state = "loading"
-        self._error = None
-        self._ready_event.clear()
+    #     self._state = "loading"
+    #     self._error = None
+    #     self._ready_event.clear()
 
-        self._load_task = asyncio.create_task(self._load())
+    #     self._load_task = asyncio.create_task(self._load())
 
-    async def ensure_ready(self) -> None:
-        if self._state == "ready":
-            return
+    # async def ensure_ready(self) -> None:
+    #     if self._state == "ready":
+    #         return
 
-        if self._state == "unloaded":
-            await self.start_background()
+    #     if self._state == "unloaded":
+    #         await self.start_background()
 
-        await self._ready_event.wait()
+    #     await self._ready_event.wait()
 
-        if self._state != "ready":
-            raise RuntimeError(self._error or "Primer failed to load")
+    #     if self._state != "ready":
+    #         raise RuntimeError(self._error or "Primer failed to load")
 
     async def load_model(
         self,
@@ -99,158 +99,105 @@ class GGUFPrimerEngine:
         model_id: str,
         tokenizer_id: str | None = None,
         force_reload: bool = False,
-        current_profile: ModelProfile | None = None
+        profile: ModelProfile | None = None,
     ) -> None:
-        self.current_profile = current_profile
+        if profile is None:
+            raise ValueError("ModelProfile is required to load a GGUF model")
 
-        logging.info("Profiles set to: %s", self.profiles)
-
-        self.model_id = model_id
-
-        await self._load_local_model(
-            model_path=path,
-            tokenizer_id=tokenizer_id,
-            force_reload=force_reload,
-        )
-
-    async def _load_local_model(
-        self,
-        *,
-        model_path: str,
-        tokenizer_id: str | None = None,
-        force_reload: bool = False,
-    ) -> None:
         async with self._load_lock:
-            same_model = self.model_path == model_path and (
-                tokenizer_id is None or self.tokenizer_id == tokenizer_id
+            same_model = (
+                self._state == "ready"
+                and self.engine is not None
+                and self.model_path == path
+                and self.model_id == model_id
+                and self.tokenizer_id == tokenizer_id
+                and self.n_gpu_layers == profile.inputs.n_gpu_layers
+                and self.n_batch == profile.n_batch
+                and self.max_model_len == profile.recommended_n_ctx
             )
 
-            if (
-                not force_reload
-                and same_model
-                and self._state == "ready"
-                and self.engine is not None
-            ):
+            if same_model and not force_reload:
+                logging.info("Model already loaded: %s", model_id)
                 return
 
-            if self._load_task is not None and not self._load_task.done():
-                self._load_task.cancel()
-                try:
-                    await self._load_task
-                except asyncio.CancelledError:
-                    pass
-
-            self._unload()
-            self.model_path = model_path
-            if tokenizer_id is not None:
-                self.tokenizer_id = tokenizer_id
+            logging.info("Loading model: %s from %s", model_id, path)
 
             self._state = "loading"
             self._error = None
             self._ready_event.clear()
 
-        self._load_task = asyncio.create_task(self._load())
-        await self._load_task
-
-    async def stop(self) -> None:
-        if self._load_task is not None and not self._load_task.done():
-            self._load_task.cancel()
-            self.profiles = {}
-            try:
-                await self._load_task
-            except asyncio.CancelledError:
-                pass
-
-        self._unload()
-
-    async def _load(self) -> None:
-        async with self._load_lock:
-            if self._state == "ready":
-                self._ready_event.set()
-                return
-
-            self._ready_event.clear()
+            # After this point, the old model is gone.
+            self._unload()
 
             try:
                 tokenizer = None
-                if self.tokenizer_id:
-                    logging.info("Loading Primer tokenizer: %s", self.tokenizer_id)
+
+                if tokenizer_id is not None:
+                    logging.info("Loading tokenizer: %s", tokenizer_id)
                     tokenizer = await asyncio.to_thread(
                         AutoTokenizer.from_pretrained,
-                        self.tokenizer_id,
+                        tokenizer_id,
                         trust_remote_code=True,
                     )
 
-                last_exc: Exception | None = None
+                logging.info(
+                    "Building GGUF engine: path=%s n_gpu_layers=%s n_batch=%s n_ctx=%s",
+                    path,
+                    profile.inputs.n_gpu_layers,
+                    profile.n_batch,
+                    profile.recommended_n_ctx,
+                )
 
-                logging.info(f"Using Profile : {self.current_profile}")
-
-                if not self.current_profile:
-                    raise ValueError("error")
-                
-                try:
-                    logging.info(
-                    "Loading Primer GGUF engine: %s (n_gpu=%s, n_batch=%s, n_ctx=%s)",
-                    self.model_path,
-                    self.current_profile.inputs.n_gpu_layers,
-                    self.current_profile.n_batch,
-                    self.current_profile.recommended_n_ctx,
-                    )
-                    engine = await asyncio.to_thread(
+                engine = await asyncio.to_thread(
                     self._build_engine_with_profile,
-                    self.model_path,
-                    self.current_profile.inputs.n_gpu_layers,
-                    self.current_profile.n_batch,
-                    self.current_profile.recommended_n_ctx,
-                    )
-
-                    self.tokenizer = tokenizer
-                    self.engine = engine
-                    self.n_gpu_layers = self.current_profile.inputs.n_gpu_layers
-                    self.n_batch = self.current_profile.n_batch
-                    self.max_model_len = self.current_profile.recommended_n_ctx
-                    self._state = "ready"
-                    self._error = None
-
-                    logging.info(
-                            "Primer loaded successfully with profile "
-                            "(n_gpu=%s, n_batch=%s, n_ctx=%s)",
-                            self.n_gpu_layers,
-                            self.n_batch,
-                            self.max_model_len,
-                        )
-                    return
-
-                except Exception as exc:
-                        last_exc = exc
-                        logging.warning(
-                            "Primer load attempt failed "
-                            "(n_gpu=%s, n_batch=%s, n_ctx=%s): %s",
-                            self.current_profile.inputs.n_gpu_layers,
-                            self.current_profile.n_batch,
-                            self.current_profile.recommended_n_ctx,
-                            exc,
-                        )
-
-                        raise RuntimeError(
-                            f"All GGUF load attempts failed. Last error: {last_exc}"
-                        ) from last_exc
-
-            except asyncio.CancelledError:
-                logging.info("Primer load cancelled")
-                self._state = "unloaded"
-                self._error = None
-                raise
+                    path,
+                    profile.inputs.n_gpu_layers,
+                    profile.n_batch,
+                    profile.recommended_n_ctx,
+                )
 
             except Exception as exc:
-                logging.exception("Primer failed to load")
-                self._state = "error"
-                self._error = str(exc)
                 self.engine = None
                 self.tokenizer = None
+                self.model_path = None
+                self.model_id = None
+                self.tokenizer_id = None
+                self.current_profile = None
 
-            finally:
-                self._ready_event.set()
+                self._state = "error"
+                self._error = str(exc)
+                self._ready_event.clear()
+
+                logging.exception("Failed to load model: %s", model_id)
+                raise RuntimeError(f"Failed to load model {model_id}: {exc}") from exc
+
+            self.engine = engine
+            self.tokenizer = tokenizer
+
+            self.model_path = path
+            self.model_id = model_id
+            self.tokenizer_id = tokenizer_id
+            self.current_profile = profile
+
+            self.n_gpu_layers = profile.inputs.n_gpu_layers
+            self.n_batch = profile.n_batch
+            self.max_model_len = profile.recommended_n_ctx
+
+            self._state = "ready"
+            self._error = None
+            self._ready_event.set()
+
+            logging.info(
+                "Model loaded: %s n_gpu_layers=%s n_batch=%s n_ctx=%s",
+                model_id,
+                self.n_gpu_layers,
+                self.n_batch,
+                self.max_model_len,
+            )
+
+    async def stop(self) -> None:
+        async with self._load_lock:
+            self._unload()
 
     def _build_engine_with_profile(
         self, model_path: str, n_gpu_layers: int, n_batch: int, n_ctx: int
@@ -265,6 +212,10 @@ class GGUFPrimerEngine:
         )
 
     def _unload(self) -> None:
+        self.model_path = None
+        self.model_id = None
+        self.tokenizer_id = None
+        self.current_profile = None
         self.engine = None
         self.tokenizer = None
         self._state = "unloaded"
@@ -301,7 +252,6 @@ class GGUFPrimerEngine:
         top_p: float | None = None,
         grammar: str | None = None,
     ) -> str:
-        await self.ensure_ready()
 
         grammar_llama = None
         if grammar:
@@ -387,7 +337,6 @@ class GGUFPrimerEngine:
         temperature: float = 0.1,
         top_p: float = 0.95,
     ):
-        await self.ensure_ready()
 
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[str | None] = asyncio.Queue()

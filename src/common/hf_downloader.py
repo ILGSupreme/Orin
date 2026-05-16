@@ -7,8 +7,6 @@ from urllib.parse import quote
 
 import httpx
 
-logging.getLogger(__name__)
-
 
 class HFDownloader:
     def __init__(

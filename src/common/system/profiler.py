@@ -9,8 +9,8 @@ from typing import Any
 
 from torch.cuda import mem_get_info
 
-from common.system.model_inspector import inspect_model
-from common.types import ModelProfile, SystemConstraints
+from common.system.model_inspector import summarize_gguf_metadata,read_gguf_metadata
+from common.types import ModelProfile, SystemConstraints, ModelMetadata
 
 logging.getLogger(__name__)
 
@@ -586,4 +586,46 @@ def get_model_profile(
         safety_margin_bytes=safety_size,
         bytes_per_elem=bytes_per_element,
         profile_factors=profile_factors,
+    )
+    
+def inspect_model(model_path: str | Path) -> ModelMetadata:
+    path = Path(model_path)
+
+    if path.suffix.lower() == ".gguf":
+        summary = summarize_gguf_metadata(path)
+        raw = read_gguf_metadata(path)
+
+        return ModelMetadata(
+            path=str(path),
+            format="gguf",
+            file_size_bytes=summary["file_size_bytes"],
+            architecture=summary.get("architecture"),
+            name=summary.get("name"),
+            basename=summary.get("basename"),
+            size_label=summary.get("size_label"),
+            license=summary.get("license"),
+            gguf_version=summary.get("gguf_version"),
+            tensor_count=summary.get("tensor_count"),
+            kv_count=summary.get("kv_count"),
+            file_type=summary.get("file_type"),
+            quantization_version=summary.get("quantization_version"),
+            block_count=summary.get("block_count"),
+            context_length=summary.get("context_length"),
+            embedding_length=summary.get("embedding_length"),
+            head_count=summary.get("head_count"),
+            head_count_kv=summary.get("head_count_kv"),
+            key_length=summary.get("key_length"),
+            value_length=summary.get("value_length"),
+            rope_freq_base=summary.get("rope_freq_base"),
+            tokenizer_model=summary.get("tokenizer_model"),
+            tokenizer_pre=summary.get("tokenizer_pre"),
+            eos_token_id=summary.get("eos_token_id"),
+            padding_token_id=summary.get("padding_token_id"),
+            raw_metadata=raw,
+        )
+
+    return ModelMetadata(
+        path=str(path),
+        format="unknown",
+        file_size_bytes=path.stat().st_size,
     )

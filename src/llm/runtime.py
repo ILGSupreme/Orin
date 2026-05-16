@@ -1,89 +1,174 @@
-from fastapi.responses import StreamingResponse
-
+from __future__ import annotations
 from common.primer import Primer
 from common.protocol.routing_types import (
     WorkPacket,
     WorkResult,
 )
 
+from common.protocol.ingress_types import LoadModelRequest
+
+import logging
+
+from common.jobs import JobManager,JobSpec,Job
+from typing import Any
 
 class GenerativeModelRuntime:
-    def __init__(self, *, primer: Primer) -> None:
+    def __init__(self, *, primer: Primer, job_manager: JobManager) -> None:
         self.primer = primer
+        self.job_manager = job_manager
         self.work_responses = {}
 
     async def handle_ingress(self, req: WorkPacket) -> WorkResult:
-        task = req.task
+        spec = JobSpec(
+            kind="llm.chat",
+            payload={
+                "packet": req,
+            },
+            job_id=req.work_id,
+        )
 
-        rsp = self.primer.send_work_to_thread(
+        job = self.job_manager.start(
+            spec=spec,
+            runner=self._run_workpacket_job,
+        )
+
+        return WorkResult(
+            status="accepted",
+            work_id=job.job_id,
+        )
+
+    async def handle_egress(self, work_id: str) -> WorkResult:
+        job = self.job_manager.get(work_id)
+
+        if job is None:
+            return WorkResult(
+                status="failed",
+                work_id=work_id,
+                error=f"Unknown work_id: {work_id}",
+            )
+
+        if job.status in {"accepted", "running"}:
+            return WorkResult(
+                status=job.status,
+                work_id=job.job_id,
+            )
+
+        if job.status == "failed":
+            return WorkResult(
+                status="failed",
+                work_id=job.job_id,
+                error=job.error,
+            )
+
+        result = job.result
+
+        if isinstance(result, WorkResult):
+            return result
+
+        if isinstance(result, dict):
+            return WorkResult(
+                status=result.get("status", "completed"),
+                work_id=result.get("work_id", job.job_id),
+                content=result.get("content", []),
+                backend_name=result.get("backend_name"),
+                backend_model=result.get("backend_model"),
+                error=result.get("error"),
+                metadata=result.get("metadata", {}),
+            )
+
+        return WorkResult(
+            status="completed",
+            work_id=job.job_id,
+            metadata={"result": result},
+        )
+        
+    async def _run_workpacket_job(self, job: Job) -> dict[str, Any]:
+        packet: WorkPacket = job.spec.payload["packet"]
+        task = packet.task
+
+        messages = await self.primer.chat_text(
             messages=task.messages,
             constraints=task.constraints,
             operation=task.operation,
         )
 
-        self.work_responses[req.work_id] = {
-            "task": rsp,
+        return {
+            "status": "completed",
+            "work_id": packet.work_id,
+            "content": messages,
             "engine": self.primer.engine_type,
-            "stream": task.constraints.get("stream", False),
         }
+    
+    async def run_load_model_job(self, job: Job) -> dict[str, Any]:
+        req = LoadModelRequest.model_validate(job.spec.payload)
 
-        return WorkResult(status="accepted", work_id=req.work_id)
+        model_id = req.model_id
+        provider = req.provider
+        engine = req.engine
+        repo_id = req.repo_id
+        filename = req.filename
+        revision = req.revision
+        tokenizer_id = req.tokenizer_id
+        force_reload = req.force_reload
 
-    async def handle_egress(self, work_id):
+        if not engine:
+            raise ValueError("No engine selected for model load job")
 
-        work_item = self.work_responses.get(work_id, None)
+        current_engine = self.primer.status().get("engine")
 
-        if work_item is None:
-            return WorkResult(
-                status="Not found",
-                work_id=work_id,
-                backend_model=self.primer.get_model(),
+        if current_engine != engine:
+            logging.info(
+                "Switching engine: %s -> %s",
+                current_engine,
+                engine,
+            )
+            await self.primer.load_engine(engine)
+
+        active_engine = self.primer.status().get("engine")
+
+        if active_engine != engine:
+            raise RuntimeError(
+                f"Engine switch failed: requested={engine}, active={active_engine}"
             )
 
-        if self.primer.engine_type != work_item["engine"]:
-            raise Exception("primer backend is not of the correct instance")
-        if self.primer.is_ready() is False:
-            raise Exception("primer is not ready")
-        if work_item["stream"]:
-            async_gen = self.primer.stream_text(**work_item["task"])
+        if active_engine == "gguf":
+            if not repo_id or not filename:
+                raise ValueError("GGUF engine requires repo_id and filename")
 
-            return StreamingResponse(
-                async_gen,
-                media_type="text/plain",
+            logging.info(
+                "Loading GGUF model: model=%s repo=%s file=%s revision=%s",
+                model_id,
+                repo_id,
+                filename,
+                revision,
             )
+
+            await self.primer.load_model(
+                provider=provider,
+                model_id=model_id,
+                repo_id=repo_id,
+                filename=filename,
+                revision=revision,
+                tokenizer_id=tokenizer_id,
+                force_reload=force_reload,
+            )
+
         else:
-            if not work_item["task"].done():
-                return WorkResult(
-                    status="running",
-                    work_id=work_id,
-                    backend_model=self.primer.get_model(),
-                )
-            try:
-                messages = work_item["task"].result()
-
-                # temporary
-                if self.primer._message_adapter:
-                    inferred_runtime_messages = (
-                        self.primer._message_adapter.parse_response(
-                            content=messages, role="assistant"
-                        )
-                    )
-                else:
-                    raise ValueError("Message Adapter not set")
-
-            except Exception as exc:
-                self.work_responses.pop(work_id)
-                return WorkResult(
-                    status="failed",
-                    work_id=work_id,
-                    content=[],
-                    error=str(exc),
-                    backend_model=self.primer.get_model(),
-                )
-            self.work_responses.pop(work_id)
-            return WorkResult(
-                status="completed",
-                work_id=work_id,
-                content=inferred_runtime_messages,
-                backend_model=self.primer.get_model(),
+            logging.info(
+                "Loading model: model=%s engine=%s provider=%s",
+                model_id,
+                active_engine,
+                provider,
             )
+
+            await self.primer.load_model(
+                model_id=model_id,
+                provider=provider,
+                force_reload=force_reload,
+            )
+
+        return {
+            "model_id": model_id,
+            "engine": active_engine,
+            "primer": self.primer.status(),
+        }

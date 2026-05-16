@@ -1,6 +1,5 @@
 from __future__ import annotations
 from typing import Any, Literal
-from common.system import profiler
 from pydantic import BaseModel, Field
 
 RUNTIMEPROFILES = {"conservative": 0.5, "balanced": 0.7, "aggressive": 0.85}
@@ -119,9 +118,9 @@ class Profile(BaseModel):
     machine_info: MachineInfo = Field(default_factory=MachineInfo)
     profiles: dict[str, ModelProfile] = Field(default_factory=dict)
 
-    reserve_size = 1024 * 1024 * 1024
-    safety_size = 1024 * 1024 * 1024
-    runtime_profiles = {"conservative": 0.5, "balanced": 0.7, "aggressive": 0.85}
+    reserve_size:int = 1024 * 1024 * 1024
+    safety_size:int = 1024 * 1024 * 1024
+    runtime_profiles:dict[str,float] = {"conservative": 0.5, "balanced": 0.7, "aggressive": 0.85}
 
     current_profile: Literal['conservative', "balanced", "aggressive"] = "conservative"
 
@@ -131,13 +130,8 @@ class Profile(BaseModel):
         except Exception as e:
             raise e
         
-    def set_profiles(self, path):
-        self.profiles = profiler.get_model_profile(
-            path=path,
-            reserve_size=self.reserve_size, 
-            safety_size=self.safety_size, 
-            profile_factors=self.runtime_profiles
-            )
+    def set_profiles(self, profiles: dict[str, ModelProfile]):
+        self.profiles = profiles
     
     def get_current_profile(self):
         profile = self.profiles.get(self.current_profile)

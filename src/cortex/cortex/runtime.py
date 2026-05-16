@@ -9,11 +9,11 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 from fastapi.responses import StreamingResponse
-
+from common.jobs import Job
 from common.factory import packing
 from common.primer import Primer
 from common.protocol.egress_types import EgressResponse
-from common.protocol.ingress_types import InferenceSession
+from common.protocol.ingress_types import InferenceSession,LoadModelRequest
 from common.protocol.internal_types import InferenceObject
 from common.protocol.routing_types import (
     RoutingHints,
@@ -1831,4 +1831,78 @@ class CortexRuntime:
             "messages": self.runtime_messages_to_dicts(visible_messages),
             "backend_name": result.backend_name,
             "backend_model": result.backend_model,
+        }
+    
+    async def run_load_model_job(self, job: Job) -> dict[str, Any]:
+        req = LoadModelRequest.model_validate(job.spec.payload)
+
+        model_id = req.model_id
+        provider = req.provider or "huggingface"
+        engine = req.engine
+        repo_id = req.repo_id
+        filename = req.filename
+        revision = req.revision or "main"
+        tokenizer_id = req.tokenizer_id
+        force_reload = req.force_reload
+
+        if not engine:
+            raise ValueError("No engine selected for model load job")
+
+        current_engine = self.primer.status().get("engine")
+
+        if current_engine != engine:
+            logging.info(
+                "Switching engine: %s -> %s",
+                current_engine,
+                engine,
+            )
+            await self.primer.load_engine(engine)
+
+        active_engine = self.primer.status().get("engine")
+
+        if active_engine != engine:
+            raise RuntimeError(
+                f"Engine switch failed: requested={engine}, active={active_engine}"
+            )
+
+        if active_engine == "gguf":
+            if not repo_id or not filename:
+                raise ValueError("GGUF engine requires repo_id and filename")
+
+            logging.info(
+                "Loading GGUF model: model=%s repo=%s file=%s revision=%s",
+                model_id,
+                repo_id,
+                filename,
+                revision,
+            )
+
+            await self.primer.load_model(
+                provider=provider,
+                model_id=model_id,
+                repo_id=repo_id,
+                filename=filename,
+                revision=revision,
+                tokenizer_id=tokenizer_id,
+                force_reload=force_reload,
+            )
+
+        else:
+            logging.info(
+                "Loading model: model=%s engine=%s provider=%s",
+                model_id,
+                active_engine,
+                provider,
+            )
+
+            await self.primer.load_model(
+                model_id=model_id,
+                provider=provider,
+                force_reload=force_reload,
+            )
+
+        return {
+            "model_id": model_id,
+            "engine": active_engine,
+            "primer": self.primer.status(),
         }
