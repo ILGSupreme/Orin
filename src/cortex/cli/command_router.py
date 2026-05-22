@@ -7,21 +7,19 @@ from dataclasses import dataclass, field
 
 import httpx
 from fastapi.responses import PlainTextResponse, StreamingResponse
-
 from common.hfservice import HuggingFaceService
 from common.jobs import JobManager, JobSpec
+from common import primer
 from common.primer import Primer
-from cortex.cluster.deployment.pod_factory import create_pod_app_specs
-from cortex.cluster.deployment.pod_naming import (
-    assert_pod_app_name_available,
-    next_available_pod_app_name,
-    normalize_name_part,
-)
-from cortex.cluster.deployment.pod_template import pvc_size_for_profile
+from cortex.cluster.deployment import pod_factory
+from cortex.cluster.deployment import pod_naming
+from cortex.cluster.deployment import pod_template
 from cortex.cluster.deployment.service import DeploymentError, DeploymentService
+from cortex.cluster.discovery import formatting
 from cortex.cluster.discovery.client import BackendClient
 from cortex.cluster.discovery.policy import BackendRoutingPolicy
 from cortex.cluster.discovery.services import DiscoveryService
+from typing import Awaitable, Callable, Literal
 
 
 @dataclass
@@ -30,68 +28,47 @@ class ShellState:
     selected_backend_name: str | None = None
 
 
+GLOBAL_COMMANDS = {"/help", "/commands", "/cd", "/render", "/attach"}
+
+CommandMode = Literal["terminal", "chat"]
+HandlerKind = Literal["text", "stream"]
+
+TextHandler = Callable[[str], Awaitable[str]]
+StreamHandler = Callable[[str], object]
+
+
+@dataclass(slots=True)
 class Command:
-    def __init__(self, command: str, desc: str):
-        self.command = command
-        self.desc = desc
+    command: str
+    desc: str
+    kind: HandlerKind
+    handler: TextHandler | StreamHandler
+
+    # Harness exposure
+    modes: set[CommandMode] = field(default_factory=set)
+    harness_action: str | None = None
+    safe_info_action: bool = False
+    suggest_only: bool = False
+
+    async def run_text(self, args: str = "") -> str:
+        if self.kind != "text":
+            raise ValueError(f"Command is not text command: {self.command}")
+
+        result = self.handler(args)
+
+        if inspect.isawaitable(result):
+            result = await result
+
+        return str(result)
 
 
-FOLDERS = {
-    "Root": {
-        "desc": "Root commands",
-        "commands": [
-            Command("/help", "Show help information"),
-            Command("/commands", "Show all available commands"),
-            Command("/cd", "Traverse folder"),
-            Command("/attach", "Attach to logs for current context"),
-        ],
-        "folders": {
-            "Deployment": {
-                "desc": "Deploy and remove pods/services",
-                "commands": [
-                    Command("/deploy_pod", "Deploy a pod/service"),
-                    Command("/delete_pod", "Delete a pod/deployment"),
-                    Command("/list_pods", "List deployed pods"),
-                    Command("/install_k3s", "Install k3s on a host machine"),
-                    Command("/add_node", "Add host to inventory"),
-                    Command("/remove_node", "Remove host from inventory"),
-                    Command("/list_nodes", "Show inventory nodes"),
-                    Command("/label_node", "Add priority label to node"),
-                    Command(
-                        "/update_discovery_meta", "Add/remove/update discovery metadata"
-                    ),
-                ],
-                "folders": {},
-            },
-            "Cluster": {
-                "desc": "Cluster configuration and discovery controls",
-                "commands": [
-                    Command("/show", "Show discovered cluster backends"),
-                ],
-                "folders": {},
-            },
-            "Configuration": {
-                "desc": "node configuration controls",
-                "commands": [
-                    Command("/models", "list available model aliases"),
-                    Command("/load_model", "Load model to backend engine"),
-                    Command("/job_status", "Show job status"),
-                    Command("/unload_model", "Unload model from backend engine"),
-                    Command("/engine", "load backend engine, gguf or vllm"),
-                ],
-                "folders": {
-                    "ModelDownloader": {
-                        "desc": "Download models from a provider",
-                        "commands": [
-                            Command("/huggingface", "Models provided by Hugging Face")
-                        ],
-                        "folders": {},
-                    },
-                },
-            },
-        },
-    }
-}
+@dataclass(slots=True)
+class CommandFolder:
+    name: str
+    desc: str
+    commands: list[Command] = field(default_factory=list)
+    folders: dict[str, "CommandFolder"] = field(default_factory=dict)
+
 
 MODEL_ALIASES = {
     "qwen35-4b": {
@@ -110,6 +87,15 @@ MODEL_ALIASES = {
         "repo_id": "unsloth/Qwen3.5-9B-GGUF",
         "filename": "Qwen3.5-9B-Q4_K_M.gguf",
         "tokenizer_id": "Qwen/Qwen3.5-9B",
+        "revision": "main",
+    },
+    "qwen35-0.8b": {
+        "provider": "huggingface",
+        "engine": "gguf",
+        "model_id": "qwen35-0.8b",
+        "repo_id": "unsloth/Qwen3.5-0.8B-GGUF",
+        "filename": "Qwen3.5-0.8B-Q4_K_M.gguf",
+        "tokenizer_id": "Qwen/Qwen3.5-0.8B",
         "revision": "main",
     },
 }
@@ -136,29 +122,266 @@ class CommandRouter:
         self.log_stream = log_stream
         self.shell_state = ShellState()
 
-        self.handlers = {
-            "/help": {"text": self.handle_help},
-            "/commands": {"text": self.handle_get_commands},
-            "/render": {"text": self.handle_render},
-            "/engine": {"text": self.handle_engine},
-            "/models": {"text": self.handle_models},
-            "/load_model": {"text": self.handle_load_model},
-            "/job_status": {"text": self.handle_job_status},
-            "/unload_model": {"text": self.handle_unload_model},
-            "/attach": {"stream": self.handle_attach},
-            "/huggingface": {"text": self.handle_huggingface_commands},
-            "/show": {"text": self.handle_show},
-            "/cd": {"text": self.handle_cd},
-            "/deploy_pod": {"text": self.handle_deploy_pod},
-            "/delete_pod": {"text": self.handle_delete_pod},
-            "/list_pods": {"text": self.handle_list_pods},
-            "/install_k3s": {"text": self.handle_install_k3s},
-            "/add_node": {"text": self.handle_add_node},
-            "/remove_node": {"text": self.handle_remove_node},
-            "/label_node": {"text": self.handle_label_node},
-            "/update_discovery_meta": {"text": self.handle_update_discovery_meta},
-            "/list_nodes": {"text": self.handle_list_nodes},
-        }
+        self.root_folder = self._build_folders()
+
+    def _cmd(
+        self,
+        command: str,
+        desc: str,
+        handler,
+        *,
+        kind: HandlerKind = "text",
+        modes: set[CommandMode] | None = None,
+        harness_action: str | None = None,
+        safe_info_action: bool = False,
+        suggest_only: bool = False,
+    ) -> Command:
+        return Command(
+            command=command,
+            desc=desc,
+            kind=kind,
+            handler=handler,
+            modes=modes or set(),
+            harness_action=harness_action,
+            safe_info_action=safe_info_action,
+            suggest_only=suggest_only,
+        )
+
+    def _build_folders(self) -> CommandFolder:
+        return CommandFolder(
+            name="Root",
+            desc="Root commands",
+            commands=[
+                self._cmd(
+                    "/help",
+                    "Show help information",
+                    self.handle_help,
+                    modes={"terminal"},
+                    harness_action="help",
+                    safe_info_action=True,
+                ),
+                self._cmd(
+                    "/commands",
+                    "Show available commands",
+                    self.handle_get_commands,
+                    modes={"terminal"},
+                    harness_action="list_commands",
+                    safe_info_action=True,
+                ),
+                self._cmd(
+                    "/cd",
+                    "Traverse folder",
+                    self.handle_cd,
+                    modes={"terminal"},
+                    harness_action="change_folder",
+                    suggest_only=True,
+                ),
+                self._cmd(
+                    "/attach",
+                    "Attach to logs for current context",
+                    self.handle_attach,
+                    kind="stream",
+                    modes={"terminal"},
+                    harness_action="attach_logs",
+                    suggest_only=True,
+                ),
+                self._cmd(
+                    "/render",
+                    "Render current folder",
+                    self.handle_render,
+                    modes={"terminal"},
+                    harness_action="render_current_folder",
+                    safe_info_action=True,
+                ),
+            ],
+            folders={
+                "Deployment": CommandFolder(
+                    name="Deployment",
+                    desc="Deploy and remove pods/services",
+                    commands=[
+                        self._cmd(
+                            "/list_pods",
+                            "List deployed pods",
+                            self.handle_list_pods,
+                            modes={"terminal"},
+                            harness_action="list_pods",
+                            safe_info_action=True,
+                        ),
+                        self._cmd(
+                            "/list_nodes",
+                            "Show inventory nodes",
+                            self.handle_list_nodes,
+                            modes={"terminal"},
+                            harness_action="list_nodes",
+                            safe_info_action=True,
+                        ),
+                        self._cmd(
+                            "/deploy_pod",
+                            "Deploy a pod/service",
+                            self.handle_deploy_pod,
+                            modes={"terminal"},
+                            harness_action="deploy_pod",
+                            suggest_only=True,
+                        ),
+                        self._cmd(
+                            "/delete_pod",
+                            "Delete a pod/deployment",
+                            self.handle_delete_pod,
+                            modes={"terminal"},
+                            harness_action="delete_pod",
+                            suggest_only=True,
+                        ),
+                        self._cmd(
+                            "/install_k3s",
+                            "Install k3s on a host machine",
+                            self.handle_install_k3s,
+                            modes={"terminal"},
+                            harness_action="install_k3s",
+                            suggest_only=True,
+                        ),
+                        self._cmd(
+                            "/add_node",
+                            "Add host to inventory",
+                            self.handle_add_node,
+                            modes={"terminal"},
+                            harness_action="add_node",
+                            suggest_only=True,
+                        ),
+                        self._cmd(
+                            "/remove_node",
+                            "Remove host from inventory",
+                            self.handle_remove_node,
+                            modes={"terminal"},
+                            harness_action="remove_node",
+                            suggest_only=True,
+                        ),
+                        self._cmd(
+                            "/label_node",
+                            "Add priority label to node",
+                            self.handle_label_node,
+                            modes={"terminal"},
+                            harness_action="label_node",
+                            suggest_only=True,
+                        ),
+                        self._cmd(
+                            "/update_discovery_meta",
+                            "Add/remove/update discovery metadata",
+                            self.handle_update_discovery_meta,
+                            modes={"terminal"},
+                            harness_action="update_discovery_meta",
+                            suggest_only=True,
+                        ),
+                    ],
+                ),
+                "Cluster": CommandFolder(
+                    name="Cluster",
+                    desc="Cluster configuration and discovery controls",
+                    commands=[
+                        self._cmd(
+                            "/show",
+                            "Show discovered cluster backends",
+                            self.handle_show,
+                            modes={"terminal"},
+                            harness_action="show_cluster",
+                            safe_info_action=True,
+                        ),
+                    ],
+                ),
+                "Configuration": CommandFolder(
+                    name="Configuration",
+                    desc="Node and model configuration controls",
+                    commands=[
+                        self._cmd(
+                            "/models",
+                            "List available model aliases",
+                            self.handle_models,
+                            modes={"terminal"},
+                            harness_action="model_status",
+                            safe_info_action=True,
+                        ),
+                        self._cmd(
+                            "/job_status",
+                            "Show job status",
+                            self.handle_job_status,
+                            modes={"terminal", "chat"},
+                            harness_action="job_status",
+                            safe_info_action=True,
+                        ),
+                        self._cmd(
+                            "/load_model",
+                            "Load model to backend engine",
+                            self.handle_load_model,
+                            modes={"terminal"},
+                            harness_action="load_model",
+                            suggest_only=True,
+                        ),
+                        self._cmd(
+                            "/unload_model",
+                            "Unload model from backend engine",
+                            self.handle_unload_model,
+                            modes={"terminal"},
+                            harness_action="unload_model",
+                            suggest_only=True,
+                        ),
+                        self._cmd(
+                            "/engine",
+                            "Load backend engine, gguf or vllm",
+                            self.handle_engine,
+                            modes={"terminal"},
+                            harness_action="engine_status",
+                            suggest_only=True,
+                        ),
+                    ],
+                    folders={
+                        "ModelDownloader": CommandFolder(
+                            name="ModelDownloader",
+                            desc="Download models from a provider",
+                            commands=[
+                                self._cmd(
+                                    "/huggingface",
+                                    "Models provided by Hugging Face",
+                                    self.handle_huggingface_commands,
+                                    modes={"terminal"},
+                                    harness_action="huggingface",
+                                    suggest_only=True,
+                                ),
+                            ],
+                        )
+                    },
+                ),
+            },
+        )
+
+    def get_commands(self, mode: CommandMode) -> list[dict[str, str | bool | None]]:
+        commands: list[dict[str, str | bool | None]] = []
+
+        for folder_path, command in self._walk_commands(self.root_folder):
+            if mode not in command.modes:
+                continue
+
+            commands.append(
+                {
+                    "action": command.harness_action,
+                    "command": command.command,
+                    "description": command.desc,
+                    "folder": folder_path,
+                    "safe_info_action": command.safe_info_action,
+                    "suggest_only": command.suggest_only,
+                }
+            )
+
+        return commands
+
+    def _walk_commands(
+        self,
+        folder: CommandFolder,
+        path: str = "Root",
+    ):
+        for command in folder.commands:
+            yield path, command
+
+        for child_name, child in folder.folders.items():
+            yield from self._walk_commands(child, f"{path}/{child_name}")
 
     def _parse(self, text: str):
         parts = text.strip().split(maxsplit=1)
@@ -326,116 +549,6 @@ class CommandRouter:
 
         return annotations
 
-    def _format_backend_list(
-        self,
-        backends: list,
-        *,
-        role_filter: str | None = None,
-        verbose: bool = False,
-    ) -> str:
-        title = "Discovered backends"
-        if role_filter:
-            title += f" for role: {role_filter}"
-
-        lines: list[str] = [
-            title,
-            "=" * len(title),
-            "",
-        ]
-
-        for index, backend in enumerate(backends, start=1):
-            lines.extend(
-                self._format_backend_descriptor(
-                    backend,
-                    index=index,
-                    verbose=verbose,
-                )
-            )
-            lines.append("")
-
-        return "\n".join(lines).rstrip()
-
-    def _format_backend_descriptor(
-        self,
-        backend,
-        *,
-        index: int,
-        verbose: bool = False,
-    ) -> list[str]:
-        health = getattr(backend, "health", None)
-        runtime = getattr(backend, "runtime", None)
-
-        status = getattr(health, "status", None) if health else None
-        ready_endpoints = getattr(health, "ready_endpoints", None) if health else None
-        http_healthy = getattr(health, "http_healthy", None) if health else None
-        model_healthy = getattr(health, "model_healthy", None) if health else None
-
-        effective_n_ctx = getattr(runtime, "effective_n_ctx", None) if runtime else None
-
-        name = getattr(backend, "name", None) or "unknown"
-        service_name = getattr(backend, "service_name", None) or "-"
-        namespace = getattr(backend, "namespace", None) or "-"
-        role = getattr(backend, "role", None) or "-"
-        kind = getattr(backend, "kind", None) or "-"
-        model = getattr(backend, "model", None) or "-"
-        url = getattr(backend, "url", None) or "-"
-
-        capabilities = getattr(backend, "capabilities", None) or []
-        modalities = getattr(backend, "modalities", None) or []
-
-        priority = getattr(backend, "priority", None)
-        weight = getattr(backend, "weight", None)
-
-        lines = [
-            f"[{index}] {name}",
-            f"  service: {namespace}/{service_name}",
-            f"  role: {role}",
-            f"  kind: {kind}",
-            f"  model: {model}",
-            f"  health: {status or 'unknown'}",
-        ]
-
-        if ready_endpoints is not None:
-            lines.append(f"  ready endpoints: {ready_endpoints}")
-
-        if effective_n_ctx:
-            lines.append(f"  effective context: {effective_n_ctx}")
-
-        if capabilities:
-            lines.append(f"  capabilities: {', '.join(capabilities)}")
-        else:
-            lines.append("  capabilities: -")
-
-        if modalities:
-            lines.append(f"  modalities: {', '.join(modalities)}")
-        else:
-            lines.append("  modalities: -")
-
-        if verbose:
-            lines.extend(
-                [
-                    f"  url: {url}",
-                    f"  priority: {priority if priority is not None else '-'}",
-                    f"  weight: {weight if weight is not None else '-'}",
-                    f"  http healthy: {http_healthy if http_healthy is not None else '-'}",
-                    f"  model healthy: {model_healthy if model_healthy is not None else '-'}",
-                ]
-            )
-
-            health_path = getattr(backend, "health_path", None) or "-"
-            work_path = getattr(backend, "work_path", None) or "-"
-            models_path = getattr(backend, "models_path", None) or "-"
-
-            lines.extend(
-                [
-                    f"  health path: {health_path}",
-                    f"  work path: {work_path}",
-                    f"  models path: {models_path}",
-                ]
-            )
-
-        return lines
-
     def _list_discovered_backends(self) -> list:
         return self.backend_service.get_registry().list_backends()
 
@@ -461,6 +574,7 @@ class CommandRouter:
             and self.shell_state.path[0] == "Root"
             and self.shell_state.path[1] == "Cluster"
             and self.shell_state.selected_backend_name is not None
+            and self.shell_state.path[2] == self.shell_state.selected_backend_name
         )
 
     def _cd_up(self) -> str:
@@ -480,7 +594,7 @@ class CommandRouter:
         if current is None:
             return None
 
-        folders = current.get("folders", {})
+        folders = current.folders
 
         if target not in folders:
             return None
@@ -490,22 +604,32 @@ class CommandRouter:
 
         return self._render_current_folder()
 
-    def _get_static_folder(self, path: list[str]) -> dict | None:
-        node = FOLDERS.get("Root")
+    def _get_static_folder(self, path: list[str]) -> CommandFolder | None:
+        if not path:
+            return self.root_folder
 
-        if not node:
+        if path[0] != "Root":
             return None
 
-        for part in path[1:]:
-            folders = node.get("folders", {})
-            node = folders.get(part)
+        folder = self.root_folder
 
-            if node is None:
+        for part in path[1:]:
+            # Dynamic backend folder, not part of static tree.
+            if (
+                folder.name == "Cluster"
+                and part == self.shell_state.selected_backend_name
+            ):
+                break
+
+            next_folder = folder.folders.get(part)
+            if next_folder is None:
                 return None
 
-        return node
+            folder = next_folder
 
-    def _render_static_folder(self, folder: dict) -> str:
+        return folder
+
+    def _render_static_folder(self, folder: CommandFolder) -> str:
         title = " / ".join(self.shell_state.path)
 
         lines: list[str] = [
@@ -513,40 +637,28 @@ class CommandRouter:
             "=" * len(title),
         ]
 
-        desc = folder.get("desc")
-        if desc:
-            lines.extend(["", desc])
+        if folder.desc:
+            lines.extend(["", folder.desc])
 
-        commands = folder.get("commands", [])
-        folders = folder.get("folders", {})
-
-        if commands:
+        if folder.commands:
             lines.extend(["", "Commands:"])
 
-            for command in commands:
-                name = getattr(command, "name", None) or getattr(
-                    command, "command", None
-                )
-                description = getattr(command, "description", None) or getattr(
-                    command, "desc", ""
-                )
-
-                if description:
-                    lines.append(f"  {name:<24} {description}")
+            for command in folder.commands:
+                if command.desc:
+                    lines.append(f"  {command.command:<24} {command.desc}")
                 else:
-                    lines.append(f"  {name}")
+                    lines.append(f"  {command.command}")
 
-        if folders:
+        if folder.folders:
             lines.extend(["", "Folders:"])
 
-            for folder_name, child in folders.items():
-                child_desc = child.get("desc", "")
-                if child_desc:
-                    lines.append(f"  {folder_name:<24} {child_desc}")
+            for folder_name, child in folder.folders.items():
+                if child.desc:
+                    lines.append(f"  {folder_name:<24} {child.desc}")
                 else:
                     lines.append(f"  {folder_name}")
 
-        if not commands and not folders:
+        if not folder.commands and not folder.folders:
             lines.extend(["", "No commands or folders."])
 
         lines.extend(
@@ -580,16 +692,27 @@ class CommandRouter:
 
     def _render_cluster_folder(self) -> str:
         backends = self._list_discovered_backends()
+        folder = self._get_static_folder(["Root", "Cluster"])
 
         lines = [
             "Cluster",
             "=======",
             "",
-            "Commands:",
-            "  /show",
-            "",
-            "Backends:",
         ]
+
+        if folder and folder.desc:
+            lines.append(folder.desc)
+            lines.append("")
+
+        lines.append("Commands:")
+
+        if folder and folder.commands:
+            for command in folder.commands:
+                lines.append(f"  {command.command:<24} {command.desc}")
+        else:
+            lines.append("  -")
+
+        lines.extend(["", "Backends:"])
 
         if not backends:
             lines.append("  -")
@@ -601,6 +724,16 @@ class CommandRouter:
             model = getattr(backend, "model", None) or "-"
 
             lines.append(f"  {backend.name}  role={role} health={health} model={model}")
+
+        lines.extend(
+            [
+                "",
+                "Navigation:",
+                "  /cd <backend-name>",
+                "  /cd ..",
+                "  /cd /",
+            ]
+        )
 
         return "\n".join(lines)
 
@@ -620,7 +753,7 @@ class CommandRouter:
                 [
                     "/engine",
                     "/load_model",
-                    "/load_status",
+                    "/job_status",
                     "/unload_model",
                 ]
             )
@@ -663,33 +796,6 @@ class CommandRouter:
 
         return "\n".join(lines)
 
-    def _get_visible_command_names(self) -> set[str]:
-        commands: set[str] = {
-            "/help",
-            "/commands",
-            "/cd",
-            "/render",
-        }
-
-        if self._is_in_backend_folder():
-            backend = self._find_backend_by_name(self.shell_state.selected_backend_name)
-
-            if backend is None:
-                return commands
-
-            commands.update(self._backend_commands(backend))
-            return commands
-
-        folder = self._get_static_folder(self.shell_state.path)
-
-        if folder is None:
-            return commands
-
-        for command in folder.get("commands", []):
-            commands.add(command.command)
-
-        return commands
-
     def _description_for_visible_command(self, command_name: str) -> str:
         if command_name == "/render":
             return "Render current folder"
@@ -704,9 +810,11 @@ class CommandRouter:
             backend_descs = {
                 "/show": "Show selected backend",
                 "/health": "Read selected backend health",
+                "/attach": "Attach to selected backend logs",
                 "/models": "Read selected backend models",
                 "/engine": "Load backend engine on selected backend",
                 "/load_model": "Load model on selected backend",
+                "/job_status": "Show selected backend job status",
                 "/unload_model": "Unload model on selected backend",
                 "/update_discovery_meta": "Update selected backend discovery metadata",
             }
@@ -716,7 +824,7 @@ class CommandRouter:
         if folder is None:
             return ""
 
-        for command in folder.get("commands", []):
+        for command in folder.commands:
             if command.command == command_name:
                 return command.desc
 
@@ -765,43 +873,130 @@ class CommandRouter:
             yield chunk
 
     async def dispatch_command(self, command: str, args: str):
-        if command in {"/help", "/commands", "/cd", "/render"}:
-            return await self.dispatch_static_command(command, args)
+        if command in GLOBAL_COMMANDS:
+            return await self.dispatch_static_command(
+                command,
+                args,
+                prefer_stream=(command == "/attach"),
+            )
 
-        if command == "/attach":
-            return self.handle_attach(args)
+        if self._is_in_backend_folder():
+            backend_result = await self.dispatch_backend_command(command, args)
+            if backend_result is not None:
+                return backend_result
+
+            return (
+                f"Unknown command in backend folder: {command}\n\n"
+                "Use /commands or /help to see available commands."
+            )
+
+        return await self.dispatch_static_command(command, args)
+
+    async def dispatch_backend_command(self, command: str, args: str):
+        backend = self._find_backend_by_name(self.shell_state.selected_backend_name)
+
+        if backend is None:
+            return "Selected backend is no longer discovered."
+
+        if command == "/show":
+            return formatting.format_backend_list([backend], verbose=True)
+
+        if command == "/health":
+            return await self.handle_backend_health(backend, args)
+
+        if command == "/models":
+            return await self.handle_backend_models(backend, args)
+
+        if command == "/update_discovery_meta":
+            return await self.handle_backend_update_discovery_meta(backend, args)
+
+        if command == "/load_model":
+            return await self.handle_backend_load_model(backend, args)
+
+        if command == "/job_status":
+            return await self.handle_backend_job_status(backend, args)
+
+        if command == "/unload_model":
+            return await self.handle_backend_unload_model(backend, args)
+
+        if command == "/engine":
+            return await self.handle_backend_engine(backend, args)
+
+        return None
+
+    def _find_visible_static_command(self, command: str) -> Command | None:
+        for cmd in self._get_visible_static_commands():
+            if cmd.command == command:
+                return cmd
+
+        return None
+
+    def _get_visible_static_commands(self) -> list[Command]:
+        commands: list[Command] = []
+
+        root_commands = self.root_folder.commands
+        commands.extend(cmd for cmd in root_commands if cmd.command in GLOBAL_COMMANDS)
+
+        folder = self._get_static_folder(self.shell_state.path)
+
+        if folder is None:
+            return commands
+
+        for cmd in folder.commands:
+            if cmd.command not in GLOBAL_COMMANDS:
+                commands.append(cmd)
+
+        return commands
+
+    def _get_visible_command_names(self) -> set[str]:
+        commands: set[str] = {
+            cmd.command for cmd in self._get_visible_static_commands()
+        }
 
         if self._is_in_backend_folder():
             backend = self._find_backend_by_name(self.shell_state.selected_backend_name)
 
-            if backend is None:
-                return "Selected backend is no longer discovered."
+            if backend is not None:
+                commands.update(self._backend_commands(backend))
 
-            if command == "/show":
-                return self._format_backend_list([backend], verbose=True)
+        return commands
 
-            if command == "/health":
-                return await self.handle_backend_health(backend, args)
+    async def dispatch_static_command(
+        self,
+        command: str,
+        args: str,
+        *,
+        prefer_stream: bool = False,
+    ):
+        cmd = self._find_visible_static_command(command)
 
-            if command == "/models":
-                return await self.handle_backend_models(backend, args)
+        if cmd is None:
+            visible_commands = self._get_visible_command_names()
 
-            if command == "/update_discovery_meta":
-                return await self.handle_backend_update_discovery_meta(backend, args)
+            if command in visible_commands:
+                return f"Command {command} is visible but has no registered handler."
 
-            if command == "/load_model":
-                return await self.handle_backend_load_model(backend, args)
+            return (
+                f"Unknown command in current folder: {command}\n\n"
+                "Use /commands or /help to see available commands."
+            )
 
-            if command == "/job_status":
-                return await self.handle_backend_job_status(backend, args)
+        result = cmd.handler(args)
 
-            if command == "/unload_model":
-                return await self.handle_backend_unload_model(backend, args)
+        if inspect.isawaitable(result):
+            result = await result
 
-            if command == "/engine":
-                return await self.handle_backend_engine(backend, args)
+        if inspect.isasyncgen(result) and not prefer_stream:
+            chunks: list[str] = []
+            async for chunk in result:
+                chunks.append(str(chunk))
+            return "".join(chunks)
 
-        return await self.dispatch_static_command(command, args)
+        return result
+
+    # ---------------------------------------------------------------------------
+    # Handle Functions
+    # ---------------------------------------------------------------------------
 
     def handle_render(self, args: str = "") -> str:
         return self._render_current_folder() + "\n"
@@ -995,10 +1190,17 @@ class CommandRouter:
             return f"error: {e}"
 
     async def handle_load_model(self, args: str = "") -> str:
-        parsed = self._parse_load_model_args(args)
+        parser = argparse.ArgumentParser(prog="/load_model", add_help=False)
+        parser.add_argument("model_alias", nargs="?")
+        parser.add_argument("--force-reload", action="store_true")
 
-        if isinstance(parsed, str):
-            return parsed
+        try:
+            parsed = parser.parse_args(shlex.split(args))
+        except SystemExit:
+            return "Invalid usage.\n\nUsage:\n  /load_model <alias> [--force-reload]\n"
+
+        if not parsed.model_alias:
+            return "Missing model alias.\n\nUsage:\n  /load_model <alias>\n"
 
         alias = parsed.model_alias
         model = MODEL_ALIASES.get(alias)
@@ -1024,7 +1226,9 @@ class CommandRouter:
         )
 
         def update_cortex_discovery(job):
-            model_id = job.result.get("model_id") or model["model_id"]
+            metadata = job.result.get("metadata", {})
+            model_id = metadata.get("model_id") or model["model_id"]
+
             service_name = self._service_name_from_target("cortex")
 
             self.deployment_service.update_service_discovery_metadata(
@@ -1033,7 +1237,8 @@ class CommandRouter:
             )
 
         job = self.job_manager.start(
-            spec,
+            spec=spec,
+            runner=lambda job: primer.execute_load_model(job, self.primer),
             on_completed=update_cortex_discovery,
         )
 
@@ -1043,7 +1248,7 @@ class CommandRouter:
             f"alias: {alias}\n"
             f"model: {model['model_id']}\n"
             f"engine: {model['engine']}\n\n"
-            f"Use /load_status {job.job_id} to check status.\n"
+            f"Use /job_status {job.job_id} to check status.\n"
             f"Use /attach to follow Cortex logs.\n"
         )
 
@@ -1051,7 +1256,7 @@ class CommandRouter:
         job_id = args.strip()
 
         if not job_id:
-            return "Missing job id.\n\nUsage:\n  /load_status <job_id>\n"
+            return "Missing job id.\n\nUsage:\n  /job_status <job_id>\n"
 
         job = self.job_manager.get(job_id)
 
@@ -1059,71 +1264,6 @@ class CommandRouter:
             return f"Job not found: {job_id}\n"
 
         return json.dumps(job.to_dict(), indent=2, ensure_ascii=False) + "\n"
-
-    async def _load_model_stream(self, args: str):
-        parsed = self._parse_load_model_args(args)
-
-        if isinstance(parsed, str):
-            yield parsed
-            return
-
-        alias = parsed.model_alias
-        model = MODEL_ALIASES.get(alias)
-
-        if not model:
-            yield f"Unknown model alias: {alias}\n"
-            yield "Use /models to list available aliases.\n"
-            return
-
-        yield f"Loading model alias: {alias}\n"
-        yield f"engine: {model['engine']}\n"
-
-        current_engine = self.primer.status().get("engine")
-
-        if current_engine != model["engine"]:
-            yield f"Switching engine to {model['engine']}...\n"
-            await self.primer.load_engine(model["engine"])
-            yield "engine ready.\n"
-
-        async for msg in self.primer.load_model_stream(
-            provider=model["provider"],
-            model_id=model["model_id"],
-            repo_id=model.get("repo_id"),
-            filename=model.get("filename"),
-            revision=model.get("revision", "main"),
-            tokenizer_id=model.get("tokenizer_id"),
-            force_reload=parsed.force_reload,
-        ):
-            yield msg
-
-        yield "\nModel load complete.\n"
-        yield f"{self.primer.status()}\n"
-
-        try:
-            service_name = self._service_name_from_target("cortex")
-
-            updated = self.deployment_service.update_service_discovery_metadata(
-                service_name=service_name,
-                model=model["model_id"],
-            )
-
-            yield (
-                "\nDiscovery metadata updated:\n"
-                f"  service={self.deployment_service.namespace}/{service_name}\n"
-                f"  orin.ai/model={model['model_id']}\n"
-            )
-
-            if isinstance(updated, dict):
-                for key, value in updated.items():
-                    if key == "orin.ai/model":
-                        continue
-                    yield f"  {key}={value}\n"
-
-        except Exception as exc:
-            yield (
-                "\nWarning: model loaded, but failed to update discovery metadata:\n"
-                f"  {exc}\n"
-            )
 
     async def handle_unload_model(self, args: str) -> str:
         await self.primer.stop()
@@ -1240,16 +1380,16 @@ class CommandRouter:
             namespace = self.deployment_service.namespace
 
             if parsed.alias:
-                app_name = normalize_name_part(parsed.alias)
+                app_name = pod_naming.normalize_name_part(parsed.alias)
 
-                assert_pod_app_name_available(
+                pod_naming.assert_pod_app_name_available(
                     self.deployment_service.core,
                     self.deployment_service.apps,
                     namespace=namespace,
                     app_name=app_name,
                 )
             else:
-                app_name = next_available_pod_app_name(
+                app_name = pod_naming.next_available_pod_app_name(
                     self.deployment_service.core,
                     self.deployment_service.apps,
                     namespace=namespace,
@@ -1263,14 +1403,14 @@ class CommandRouter:
                 explicit_node_alias=parsed.node,
             )
 
-            deployment, service = create_pod_app_specs(
+            deployment, service = pod_factory.create_pod_app_specs(
                 role=role,
                 app_name=app_name,
                 platform=placement.platform,
                 defaults=self.deployment_service.pod_factory_defaults,
                 node_selector=placement.node_selector,
                 affinity=placement.affinity,
-                pvc_size=pvc_size_for_profile(storage_profile),
+                pvc_size=pod_template.pvc_size_for_profile(storage_profile),
             )
 
             self.deployment_service.deploy_pod_app(
@@ -1320,7 +1460,7 @@ class CommandRouter:
             )
 
         try:
-            app_name = normalize_name_part(parsed.name)
+            app_name = pod_naming.normalize_name_part(parsed.name)
             namespace = parsed.namespace or self.deployment_service.namespace
 
             result = self.deployment_service.delete_pod_app(
@@ -1503,10 +1643,10 @@ class CommandRouter:
             return "Invalid usage: use either --gpu or --no-gpu, not both.\n"
 
         try:
-            alias = normalize_name_part(parsed.alias)
+            alias = pod_naming.normalize_name_part(parsed.alias)
 
             k3s_node_name = (
-                normalize_name_part(parsed.k3s_node_name)
+                pod_naming.normalize_name_part(parsed.k3s_node_name)
                 if parsed.k3s_node_name
                 else alias
             )
@@ -1563,7 +1703,7 @@ class CommandRouter:
             return "Missing alias.\n\nUsage:\n  /remove_node <alias>\n"
 
         try:
-            alias = normalize_name_part(parsed.alias)
+            alias = pod_naming.normalize_name_part(parsed.alias)
 
             existing = self.deployment_service.get_node(alias)
 
@@ -1891,10 +2031,8 @@ class CommandRouter:
         if parsed.raw:
             return "\n".join(str(backend.to_dict()) for backend in backends)
 
-        return self._format_backend_list(
-            backends,
-            role_filter=parsed.role,
-            verbose=parsed.verbose,
+        return formatting.format_backend_list(
+            backends=backends, role_filter=parsed.role, verbose=parsed.verbose
         )
 
     async def handle_backend_update_discovery_meta(self, backend, args: str) -> str:
@@ -2011,57 +2149,6 @@ class CommandRouter:
 
         return "\n".join(lines) + "\n"
 
-    async def dispatch_static_command(
-        self,
-        command: str,
-        args: str,
-        *,
-        prefer_stream: bool = False,
-    ):
-        entry = self.handlers.get(command)
-
-        if entry is None:
-            visible_commands = self._get_visible_command_names()
-
-            if command in visible_commands:
-                return f"Command {command} is visible but has no registered handler."
-
-            return (
-                f"Unknown command in current folder: {command}\n\n"
-                f"Use /commands or /help to see available commands."
-            )
-
-        visible_commands = self._get_visible_command_names()
-
-        if command not in visible_commands:
-            return (
-                f"Command not available in current folder: {command}\n\n"
-                f"Use /commands or /help to see available commands."
-            )
-
-        handler = None
-
-        if prefer_stream:
-            handler = entry.get("stream") or entry.get("text")
-        else:
-            handler = entry.get("text") or entry.get("stream")
-
-        if handler is None:
-            return f"Command {command} has no usable handler."
-
-        result = handler(args)
-
-        if inspect.isawaitable(result):
-            result = await result
-
-        if inspect.isasyncgen(result) and not prefer_stream:
-            chunks: list[str] = []
-            async for chunk in result:
-                chunks.append(chunk)
-            return "".join(chunks)
-
-        return result
-
     async def handle_backend_health(self, backend, args: str) -> str:
         health_path = getattr(backend, "health_path", None) or "/health"
 
@@ -2143,3 +2230,65 @@ class CommandRouter:
             "Example:\n"
             "  /deploy_pod llm --node orin-node-1\n"
         )
+    
+    # ---------------------------------------------------------------------------
+    # Execute Functions
+    # ---------------------------------------------------------------------------
+
+    async def execute_harness_action(
+        self,
+        action: str,
+        *,
+        mode: CommandMode,
+        args: str = "",
+    ) -> str:
+        command = self._find_harness_action(
+            action=action,
+            mode=mode,
+        )
+
+        if command is None:
+            raise ValueError(f"No available harness action: {action}")
+
+        if not command.safe_info_action:
+            raise ValueError(f"Harness action is not safe to execute: {action}")
+
+        if command.suggest_only:
+            raise ValueError(f"Harness action is suggest-only: {action}")
+
+        result = command.handler(args)
+
+        if inspect.isawaitable(result):
+            result = await result
+
+        if inspect.isasyncgen(result):
+            chunks: list[str] = []
+            async for chunk in result:
+                chunks.append(str(chunk))
+            return "".join(chunks)
+
+        return str(result)
+    
+    def _find_harness_action(
+        self,
+        *,
+        action: str,
+        mode: CommandMode,
+    ) -> Command | None:
+        action = action.strip()
+
+        if not action:
+            return None
+
+        for _, command in self._walk_commands(self.root_folder):
+            if mode not in command.modes:
+                continue
+
+            if command.harness_action == action:
+                return command
+
+            # Optional convenience: allow "/list_pods" as well as "list_pods".
+            if command.command == action:
+                return command
+
+        return None

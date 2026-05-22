@@ -2,6 +2,23 @@ from __future__ import annotations
 from typing import Any, Literal
 from pydantic import BaseModel, Field
 
+MEMORY_OPERATIONS = Literal[
+    'create_summary',
+    'list_summaries',
+    'create_note',
+    'list_notes',
+    'list_memory_events',
+    'create_memory_claim',
+    'list_memory_claims',
+    'search_memory_claims',
+    'retrieve',
+    'prompt_context',
+    'upsert_user',
+    'create_session',
+    'resolve_session',
+    'create_message',
+    'list_recent_messages']
+
 RUNTIMEPROFILES = {"conservative": 0.5, "balanced": 0.7, "aggressive": 0.85}
 RESERVE_SIZE = 1024 * 1024 * 1024
 SAFETY_SIZE = 1024 * 1024 * 1024
@@ -28,6 +45,7 @@ TEMPERATURE_POLICY = {
     "inspect": 0.1,
 }
 
+ModelFormat = Literal["gguf", "unknown"]
 
 class SystemConstraints(BaseModel):
     cpu_count: int
@@ -35,9 +53,6 @@ class SystemConstraints(BaseModel):
     ram_available_bytes: int
     gpu_total_bytes: int
     gpu_free_bytes: int
-
-
-ModelFormat = Literal["gguf", "unknown"]
 
 
 class ModelMetadata(BaseModel):
@@ -138,10 +153,3 @@ class Profile(BaseModel):
         if profile:
             return profile
         raise ValueError(f"Profile: {self.current_profile} not found")
-
-
-class LoadSettings(BaseModel):
-    n_gpu_layers: int
-    n_batch: int
-    n_ctx: int
-    n_threads: int

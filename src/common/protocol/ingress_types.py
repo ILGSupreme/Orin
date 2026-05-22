@@ -45,3 +45,30 @@ class LoadModelRequest(BaseModel):
 
 class LoadBackendRequest(BaseModel):
     engine: Literal["vllm", "gguf"]
+
+
+def is_terminal_command(req: InferenceSession) -> bool:
+    latest_user_message = get_latest_message(req)
+
+    if not latest_user_message:
+        return False
+
+    if latest_user_message.data.startswith("/"):
+        return True
+
+    return False
+
+
+def get_latest_message(req: InferenceSession):
+    runtime_message = req.content[0] if req.content else None
+    if not runtime_message:
+        return None
+    message = runtime_message.parts[0] if runtime_message.parts else None
+
+    if not message:
+        return None
+
+    if message.type == "text":
+        return message
+    else:
+        return None

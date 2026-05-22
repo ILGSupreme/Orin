@@ -134,7 +134,6 @@ class OpenAIStyleMessageAdapter:
                                 type="text",
                                 data=visible,
                                 encoding="plain",
-                                mime_type="text/plain",
                             )
                         ],
                         metadata={
@@ -178,7 +177,6 @@ class OpenAIStyleMessageAdapter:
                                 type="text",
                                 data=str(visible),
                                 encoding="plain",
-                                mime_type="text/plain",
                             )
                         ],
                         metadata={
@@ -198,7 +196,6 @@ class OpenAIStyleMessageAdapter:
                             type="text",
                             data=reasoning,
                             encoding="plain",
-                            mime_type="text/plain",
                         )
                     ],
                     metadata={
@@ -231,7 +228,6 @@ class OpenAIStyleMessageAdapter:
                     type="text",
                     data=content,
                     encoding="plain",
-                    mime_type="text/plain",
                 )
             ]
         elif isinstance(content, list):
@@ -244,7 +240,6 @@ class OpenAIStyleMessageAdapter:
                     type="text",
                     data=str(content),
                     encoding="plain",
-                    mime_type="text/plain",
                 )
             ]
 
@@ -270,7 +265,6 @@ class OpenAIStyleMessageAdapter:
                         type="text",
                         data=str(block),
                         encoding="plain",
-                        mime_type="text/plain",
                     )
                 )
                 continue
@@ -283,7 +277,6 @@ class OpenAIStyleMessageAdapter:
                         type="text",
                         data=str(block.get("text", "")),
                         encoding="plain",
-                        mime_type="text/plain",
                     )
                 )
             elif block_type == "image":
@@ -292,7 +285,6 @@ class OpenAIStyleMessageAdapter:
                         type="image",
                         data=str(block.get("image", "")),
                         encoding="base64",
-                        mime_type="image/*",
                     )
                 )
             else:
@@ -301,7 +293,6 @@ class OpenAIStyleMessageAdapter:
                         type="text",
                         data=str(block),
                         encoding="plain",
-                        mime_type="application/json",
                         metadata={"source_block_type": block_type},
                     )
                 )

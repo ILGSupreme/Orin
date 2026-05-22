@@ -7,7 +7,9 @@ from typing import Any
 from common.engine.gguf import GGUFPrimerEngine
 from common.engine.vllm import VLLMPrimerEngine
 from common.hf_downloader import HFDownloader
+from common.jobs import Job
 from common.protocol.adapter.openai_adapter import OpenAIStyleMessageAdapter
+from common.protocol.routing_types import WorkResult
 from common.protocol.unified_types import RuntimeMessage
 from common.types import MAX_TOKENS_POLICY, SAFETY_TOKEN_SIZE
 from common.types import Profile
@@ -107,16 +109,6 @@ class Primer:
 
         return self._engine.count_tokens(messages=rendered_messages)
 
-    # async def start_background(self) -> None:
-    #     if self._engine is None:
-    #         raise ValueError("engine is not assigned")
-    #     await self._engine.start_background()
-
-    # async def ensure_ready(self) -> None:
-    #     if self._engine is None:
-    #         raise ValueError("engine is not assigned")
-    #     await self._engine.ensure_ready()
-
     async def stop(self) -> None:
         if self._engine is None:
             return
@@ -155,7 +147,7 @@ class Primer:
                     profile_factors=self._profile.runtime_profiles
                 )
             self._profile.set_profiles(profiles=profiles)
-            kwargs['current_profile'] = self._profile.get_current_profile()
+            kwargs['profile'] = self._profile.get_current_profile()
 
         await self.load_message_adapter("openai", nothink=True)
         await self._engine.load_model(*args, **kwargs)
@@ -243,7 +235,40 @@ class Primer:
             grammar=grammar,
         )
 
-    async def chat_text(self, **kwargs: Any) -> list[RuntimeMessage]:
+    async def chat_text(self, **kwargs: Any) -> str:
+        if self._engine is None:
+            raise ValueError("engine is not assigned")
+        if self._message_adapter is None:
+            raise ValueError("No adapter set")
+
+        constraints = kwargs.get("constraints", {})
+        operation = kwargs.get("operation", "chat")
+        max_new_tokens = MAX_TOKENS_POLICY.get(operation, 128) + SAFETY_TOKEN_SIZE
+        temperature = 0.9
+        grammar = None
+        if constraints:
+            temperature = constraints.get("temperature", 0.9)
+            grammar = constraints.get("grammar", None)
+
+        messages = kwargs.get("messages", [])
+        if not messages:
+            raise ValueError("Something is wrong with messages")
+
+        rendered_messages = self._message_adapter.render_messages(
+            messages=messages, operation=operation, constraints=constraints
+        )
+
+        async with self._generation_lock:
+            content = await self._engine.chat_text(
+                messages=rendered_messages,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                grammar=grammar,
+            )
+
+        return content
+    
+    async def chat_text_message(self, **kwargs: Any) -> list[RuntimeMessage]:
         if self._engine is None:
             raise ValueError("engine is not assigned")
         if self._message_adapter is None:
@@ -276,7 +301,37 @@ class Primer:
 
         return self._message_adapter.parse_response(content=content, role="assistant")
 
-    async def chat_json(self, **kwargs: Any) -> list[RuntimeMessage]:
+    async def chat_json(self, **kwargs: Any) -> dict:
+        if self._engine is None:
+            raise ValueError("engine is not assigned")
+        if self._message_adapter is None:
+            raise ValueError("No adapter set")
+
+        constraints = kwargs.get("constraints", {})
+        operation = kwargs.get("operation", "chat")
+        max_new_tokens = MAX_TOKENS_POLICY.get(operation, 128) + SAFETY_TOKEN_SIZE
+        temperature = 0.9
+        grammar = None
+        if constraints:
+            temperature = constraints.get("temperature", 0.9)
+            grammar = constraints.get("grammar", None)
+
+        messages = kwargs.get("messages", [])
+        if not messages:
+            raise ValueError("Something is wrong with messages")
+
+        rendered_messages = self._message_adapter.render_messages(
+            messages=messages, operation=operation, constraints=constraints
+        )
+        async with self._generation_lock:
+            return await self._engine.chat_json(
+                messages=rendered_messages,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                grammar=grammar,
+            )
+    
+    async def chat_json_message(self, **kwargs: Any) -> list[RuntimeMessage]:
         if self._engine is None:
             raise ValueError("engine is not assigned")
         if self._message_adapter is None:
@@ -341,3 +396,30 @@ class Primer:
                 temperature=temperature,
             ):
                 yield chunk
+
+
+
+# ---------------------------------------------------------------------------
+# Job Execute Functions
+# ---------------------------------------------------------------------------
+
+async def execute_load_model(job: Job, primer: Primer):
+    arguments = dict(job.spec.payload)
+
+    engine = arguments.pop("engine", None)
+    model_id = arguments.get("model_id")
+
+    if engine:
+        await primer.load_engine(engine)
+
+    await primer.load_model(**arguments)
+
+    return WorkResult(
+        status="completed",
+        work_id=job.job_id,
+        metadata={
+            "model_id": model_id,
+            "engine": engine,
+            "status": "loaded",
+        },
+    )

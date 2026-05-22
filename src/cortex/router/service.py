@@ -91,33 +91,33 @@ class RouterService:
             )
 
     async def retrieve_work(
-        self, packet: WorkPacket, backend: dict[str, Any]
+        self, work_id: str, work_type:WorkType, operation: str, backend: dict[str, Any]
     ) -> WorkResult:
         if backend is None:
             return WorkResult(
                 status="failed",
-                work_id=packet.work_id,
+                work_id=work_id,
                 error="No suitable backend found",
             )
 
         try:
             rsp_result = await self.backend_client.retrieve_work(
-                backend=backend, work_id=packet.work_id
+                backend=backend, work_id=work_id
             )
 
             return WorkResult.model_validate(rsp_result)
 
         except Exception as exc:
-            logging.exception("Router execution failed for work_id=%s", packet.work_id)
+            logging.exception("Router execution failed for work_id=%s", work_id)
             return WorkResult(
                 status="failed",
-                work_id=packet.work_id,
+                work_id=work_id,
                 backend_name=getattr(backend, "name", None),
                 backend_model=getattr(backend, "model", None),
                 error=str(exc),
                 metadata={
-                    "work_type": packet.work_type,
-                    "operation": packet.operation,
+                    "work_type": work_type,
+                    "operation": operation,
                 },
             )
 

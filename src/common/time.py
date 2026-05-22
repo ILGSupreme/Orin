@@ -1,4 +1,12 @@
+import time
 from datetime import datetime, timezone
 
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
 def utcnow_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return utcnow().isoformat()
+
+def monotonic() -> float:
+    return time.monotonic()

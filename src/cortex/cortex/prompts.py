@@ -1,7 +1,17 @@
 import json
 from typing import Any
+from typing import Literal
 
-from common.protocol.unified_types import ContentPart, RuntimeMessage
+from common.protocol import unified_types
+from common.protocol.unified_types import (
+    ContentPart,
+    RuntimeMessage,
+    embed_system_message_user_dict,
+)
+from cortex.cortex.harness_types import (
+    LightweightIngressInterpretationModel,
+    render_ingress_instruction,
+)
 
 JSON_REPAIR_PROMPT = """
 You are a JSON repair assistant.
@@ -909,25 +919,28 @@ Output:
 """.strip()
 
 FAST_RESPONSE_PROMPT = """
-You are Orin in fast-response mode.
+You are Orin in immediate-response mode.
 
-Your job is to respond immediately with a useful partial answer.
+Your job is to give the best safe response using only the information available in this turn.
 
 Rules:
-- Start answering immediately without waiting for full analysis.
-- Assume that deeper reasoning and external work may still be in progress.
-- Prefer short, clear bursts of information.
-- Do not try to fully solve complex problems in one response.
-- Do not mention background processing unless necessary.
-- If the task is complex, give the most useful starting point or direction.
+- Answer immediately when the request can be answered from the conversation, memory context, system information, or provided action results.
+- Do not invent live system state, cluster state, node lists, pod lists, backend state, model paths, job status, tool results, or command results.
+- If the user asks for live/system/terminal information and no action result is provided, say that the information has not been retrieved.
+- If background work has been started, briefly acknowledge that it is being worked on.
+- Do not claim background work is running unless the runtime context provides a background job id or active job status.
+- Do not claim that background work is complete unless a completed result is provided.
+- For complex requests, give a short useful starting point only if it does not require inventing missing facts.
 
 Style:
 - concise
 - direct
-- incremental
-- avoid long explanations unless asked
+- honest about missing information
+- no internal schemas
+- no raw ingress interpretation
+- no invented analysis sections
 
-You are the first pass, not the final answer.
+You are the immediate response, not the final background result.
 """.strip()
 
 COMMAND_HELP_PROMPT = """
@@ -1121,36 +1134,109 @@ ws ::= [ \t\n\r]*
 def build_fast_response_messages(
     *,
     messages: list[RuntimeMessage],
+    ingress_interpretation: LightweightIngressInterpretationModel | None = None,
     last_assistant_message: RuntimeMessage | None = None,
-    background_task: dict | None = None,
+    prompt_mode: Literal["terminal", "chat"] = "chat",
+    system_information: str | None = None,
+    background_job_id: str | None = None,
 ) -> list[RuntimeMessage]:
-    system_text = (
-        ASSISTANT_RESPONSE_PROMPT
-        + "\n\n"
-        + FAST_RESPONSE_PROMPT
-        + "\n\n"
-        + COMMAND_HELP_PROMPT
-    )
+    system_parts: list[str] = [
+        ASSISTANT_RESPONSE_PROMPT,
+        FAST_RESPONSE_PROMPT,
+    ]
 
-    if background_task:
-        system_text += (
-            "\n\nBackground task context:\n"
-            "The user submitted a background task with /task.\n"
-            "Respond only with a brief acknowledgement that the task was accepted.\n"
-            "Do not answer, solve, summarize, or partially complete the task in this response.\n"
-            "Do not include task results unless they were explicitly provided in runtime context.\n"
+    instruction = render_ingress_instruction(
+        ingress_interpretation=ingress_interpretation
+    )
+    if instruction:
+        system_parts.append(instruction)
+
+    if prompt_mode == "terminal":
+      system_parts.append(COMMAND_HELP_PROMPT)
+      system_parts.append(
+          "\n".join(
+              [
+                  "Terminal mode:",
+                  "Use terminal action results as the source of truth.",
+                  "Never invent cluster state, nodes, pods, services, backends, models, logs, or job status.",
+                  "If no terminal action result is present, say the information was not retrieved.",
+                  "When suggesting commands, include the leading slash, for example /show or /list_nodes.",
+              ]
+          )
+      )
+
+    elif prompt_mode == "chat":
+        system_parts.append(
+            "\n".join(
+                [
+                    "Chat mode:",
+                    "Normal questions should be answered directly.",
+                    "Only mention background work if a background job id or active job status is provided.",
+                    "Do not invent completed background results.",
+                ]
+            )
         )
 
-    last_user_text = ""
+    else:
+        raise ValueError(f"Unsupported prompt_mode: {prompt_mode}")
 
-    for msg in reversed(messages):
-        if msg.role == "user":
-            for part in msg.parts:
-                if part.type == "text":
-                    last_user_text = part.data
-                    break
-            if last_user_text:
-                break
+    if ingress_interpretation:
+        system_parts.append(
+            "Ingress interpretation:\n"
+            + json.dumps(
+                ingress_interpretation.model_dump(mode="json"),
+                ensure_ascii=False,
+            )
+        )
+
+        if ingress_interpretation.mode == "terminal":
+            if ingress_interpretation.action == "terminal_info_action":
+                system_parts.append(
+                    "\n".join(
+                        [
+                            "Terminal action context:",
+                            f"The interpreter selected terminal_action={ingress_interpretation.terminal_action!r}.",
+                            "If the action result is not present in system information, explain that the system needs to inspect it.",
+                            "Do not invent live cluster state.",
+                        ]
+                    )
+                )
+
+            elif ingress_interpretation.action == "report_job_status":
+                system_parts.append(
+                    "The user is asking about job/background status. Answer using system information only."
+                )
+
+        elif ingress_interpretation.mode == "chat":
+            if ingress_interpretation.action == "report_job_status":
+                system_parts.append(
+                    "The user is asking about job/background status. Answer using system information only."
+                )
+
+            elif ingress_interpretation.action == "start_pipeline":
+                system_parts.append(
+                    "The user asked for deeper work. Answer briefly now and acknowledge that background work is being started."
+                )
+
+    if system_information:
+        system_parts.append("System information:\n" + system_information)
+
+    if background_job_id:
+        system_parts.append(
+            "\n".join(
+                [
+                    "Background work context:",
+                    f"A background job has been started: {background_job_id}.",
+                    "Mention briefly that a more comprehensive response is being worked on.",
+                    "Do not claim the background result is complete.",
+                    "Tell the user they can ask for status or results later.",
+                ]
+            )
+        )
+
+    system_text = "\n\n".join(system_parts)
+
+    last_user_text = unified_types.extract_last_user_text(messages)
 
     runtime_messages = [
         RuntimeMessage(
@@ -1160,7 +1246,6 @@ def build_fast_response_messages(
                     type="text",
                     data=system_text,
                     encoding="plain",
-                    mime_type="text/plain",
                 )
             ],
         )
@@ -1177,13 +1262,261 @@ def build_fast_response_messages(
                     type="text",
                     data=last_user_text,
                     encoding="plain",
-                    mime_type="text/plain",
                 )
             ],
         )
     )
 
     return runtime_messages
+
+
+def build_lightweight_ingress_interpretation_messages(
+    *,
+    messages: list[RuntimeMessage],
+    prompt_mode: Literal["terminal", "chat"],
+    system_information: str | None = None,
+) -> list[RuntimeMessage]:
+    match prompt_mode:
+        case "terminal":
+            return build_terminal_interpretation_messages(
+                messages=messages, system_information=system_information
+            )
+        case "chat":
+            return build_chat_interpretation_messages(
+                messages=messages, system_information=system_information
+            )
+        case _:
+            raise ValueError(f"unknown prompt mode : {prompt_mode}")
+
+
+def build_terminal_interpretation_messages(
+    *, messages: list[RuntimeMessage], system_information: str | None = None
+) -> list[RuntimeMessage]:
+    last_user_text = unified_types.extract_last_user_text(messages)
+
+    system_text = """
+You are the Orin Harness lightweight terminal interpreter.
+
+Return only valid JSON.
+Do not answer the user.
+Choose one action from the available terminal actions.
+
+Terminal purpose:
+Help the user navigate, inspect, and understand the Orin cluster/CLI.
+
+Use the visible commands/actions from system_information.
+If the user asks what commands exist or what they do, choose answer_only with intent terminal_help.
+If the user asks about jobs/background work, choose report_job_status.
+If the user asks for live cluster/system information, choose terminal_info_action and select a visible terminal_action.
+If no visible action matches, choose answer_only.
+
+Output schema:
+{
+  "mode": "terminal",
+  "intent": "terminal_help" | "system_status" | "job_status" | "normal_chat" | "unknown",
+  "action": "answer_only" | "terminal_info_action" | "report_job_status",
+  "terminal_action": string | null
+}
+
+Only use terminal_action values that appear in system_information.
+If no visible terminal_action matches the user request, use action="answer_only" and terminal_action=null.
+Examples:
+
+User: "What commands can I use?"
+Output:
+{
+  "mode": "terminal",
+  "intent": "terminal_help",
+  "action": "answer_only",
+  "terminal_action": null
+}
+
+User: "What does /deploy_pod do?"
+Output:
+{
+  "mode": "terminal",
+  "intent": "terminal_help",
+  "action": "answer_only",
+  "terminal_action": null
+}
+
+User: "Show me the pods"
+Output:
+{
+  "mode": "terminal",
+  "intent": "system_status",
+  "action": "terminal_info_action",
+  "terminal_action": "list_pods"
+}
+
+User: "What nodes are in the cluster?"
+Output:
+{
+  "mode": "terminal",
+  "intent": "system_status",
+  "action": "terminal_info_action",
+  "terminal_action": "list_nodes"
+}
+
+User: "how is the cluster doing"
+Output:
+{
+  "mode": "terminal",
+  "intent": "system_status",
+  "action": "terminal_info_action",
+  "terminal_action": "show_cluster"
+}
+
+User: "Is the model loaded?"
+Output:
+{
+  "mode": "terminal",
+  "intent": "system_status",
+  "action": "terminal_info_action",
+  "terminal_action": "model_status"
+}
+
+User: "How is the load job going?"
+Output:
+{
+  "mode": "terminal",
+  "intent": "job_status",
+  "action": "report_job_status",
+  "terminal_action": null
+}
+
+User: "Deploy an llm pod"
+Output:
+{
+  "mode": "terminal",
+  "intent": "terminal_help",
+  "action": "answer_only",
+  "terminal_action": null
+}
+
+User: "Delete the pod"
+Output:
+{
+  "mode": "terminal",
+  "intent": "terminal_help",
+  "action": "answer_only",
+  "terminal_action": null
+}
+Return only the JSON object. No markdown. No explanation.
+""".strip()
+
+    payload = {
+        "mode": "terminal",
+        "latest_user_text": last_user_text,
+        "system_information": system_information or "",
+    }
+
+    return embed_system_message_user_dict(system_text, payload)
+
+
+def build_chat_interpretation_messages(
+    *,
+    messages: list[RuntimeMessage],
+    system_information: str | None = None,
+) -> list[RuntimeMessage]:
+    last_user_text = unified_types.extract_last_user_text(messages)
+
+    system_text = """
+You are the Orin Harness lightweight chat interpreter.
+
+Return only valid JSON.
+Do not answer the user.
+Choose what Harness should do next.
+
+Rules:
+- Normal questions -> answer_only.
+- Explicit detailed/researched/verified/current/multi-step requests -> start_pipeline.
+- Questions about background jobs/status -> report_job_status.
+- If unsure -> answer_only.
+
+Output schema:
+{
+  "mode": "chat",
+  "action": "answer_only" | "start_pipeline" | "report_job_status",
+  "pipeline": "chat" | null
+}
+Only choose start_pipeline when the user explicitly asks for detailed, researched, verified, current, comprehensive, multi-step, or background work.
+If unsure, choose answer_only.
+Examples:
+
+User: "What is Pythagoras?"
+Output:
+{
+  "mode": "chat",
+  "action": "answer_only",
+  "pipeline": null
+}
+
+User: "Explain Pythagoras' theorem"
+Output:
+{
+  "mode": "chat",
+  "action": "answer_only",
+  "pipeline": null
+}
+
+User: "Make a detailed summary of Pythagoras' theorem"
+Output:
+{
+  "mode": "chat",
+  "action": "start_pipeline",
+  "pipeline": "chat"
+}
+
+User: "Research whether this information is up to date"
+Output:
+{
+  "mode": "chat",
+  "action": "start_pipeline",
+  "pipeline": "chat"
+}
+
+User: "Can you compare llama.cpp and vLLM in detail?"
+Output:
+{
+  "mode": "chat",
+  "action": "start_pipeline",
+  "pipeline": "chat"
+}
+
+User: "How is the background work going?"
+Output:
+{
+  "mode": "chat",
+  "action": "report_job_status",
+  "pipeline": null
+}
+
+User: "Any update on the task?"
+Output:
+{
+  "mode": "chat",
+  "action": "report_job_status",
+  "pipeline": null
+}
+
+User: "Thanks"
+Output:
+{
+  "mode": "chat",
+  "action": "answer_only",
+  "pipeline": null
+}
+Return only the JSON object. No markdown. No explanation.
+""".strip()
+
+    payload = {
+        "mode": "chat",
+        "latest_user_text": last_user_text,
+        "system_information": system_information or "",
+    }
+
+    return embed_system_message_user_dict(system_text, payload)
 
 
 def build_turn_interpretation_messages(
@@ -1341,3 +1674,7 @@ def build_final_response_messages(
     )
 
     return [merged_system, *non_system_messages]
+
+
+def get_commands(prompt_mode: str) -> str:
+    return ""

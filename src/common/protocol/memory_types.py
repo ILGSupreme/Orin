@@ -70,7 +70,7 @@ class PromptContextRequest(BaseModel):
     include_chunks: bool = True
 
 
-class PromptContextResponse(BaseModel):
+class BasePromptContextResponse(BaseModel):
     recent_messages: list[dict[str, Any]]
     claims: list[dict[str, Any]]
     summaries: list[dict[str, Any]]
@@ -80,3 +80,22 @@ class PromptContextResponse(BaseModel):
 
 class ResolveSessionRequest(BaseModel):
     max_idle_minutes: int = 60
+
+
+class BaseRuntimeMemoryRequest(BaseModel):
+    user_id: str
+    session_id: str | None = None
+    channel: str = "api"
+    request: (
+        Summary
+        | Note
+        | MemoryEvent
+        | MemoryClaim
+        | ListMemoryClaim
+        | User
+        | Session
+        | dict[str, Any]
+        | RetrievalRequest
+        | PromptContextRequest
+        | ResolveSessionRequest
+    )

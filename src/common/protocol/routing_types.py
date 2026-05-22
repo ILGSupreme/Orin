@@ -5,7 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from common.protocol.unified_types import RuntimeMemoryRequest, RuntimeMessage
+from common.protocol.unified_types import RuntimeMessage
+from common.protocol.memory_types import BaseRuntimeMemoryRequest
 
 
 class WorkOrigin(str, Enum):
@@ -37,7 +38,7 @@ class CanonicalTask(BaseModel):
     work_type: WorkType
     operation: str
     messages: list[RuntimeMessage] = Field(default_factory=list)
-    memory_request: RuntimeMemoryRequest | None = None
+    memory_request: BaseRuntimeMemoryRequest | None = None
     inputs: dict[str, Any] = Field(default_factory=dict)
     constraints: dict[str, Any] = Field(default_factory=dict)
     routing_hints: RoutingHints = Field(default_factory=RoutingHints)

@@ -1,7 +1,7 @@
 import logging
 from contextlib import asynccontextmanager
 import httpx
-from fastapi import FastAPI, HTTPException,Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 import io
 from common.jobs import JobManager
@@ -18,6 +18,7 @@ from cortex.cluster.deployment.service import DeploymentService
 from cortex.cluster.discovery.client import BackendClient
 from cortex.cluster.discovery.policy import BackendRoutingPolicy
 from cortex.cluster.discovery.services import DiscoveryService
+from cortex.cortex.harness import Harness
 from cortex.cortex.mailbox import CortexMailbox
 from cortex.cortex.runtime import CortexRuntime
 from cortex.router.planner import Planner
@@ -33,8 +34,7 @@ root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)
 
 has_stdout_handler = any(
-    isinstance(h, logging.StreamHandler)
-    and not isinstance(h, LogStreamHandler)
+    isinstance(h, logging.StreamHandler) and not isinstance(h, LogStreamHandler)
     for h in root_logger.handlers
 )
 
@@ -45,10 +45,7 @@ if not has_stdout_handler:
     )
     root_logger.addHandler(stdout_handler)
 
-has_attach_handler = any(
-    isinstance(h, LogStreamHandler)
-    for h in root_logger.handlers
-)
+has_attach_handler = any(isinstance(h, LogStreamHandler) for h in root_logger.handlers)
 
 if not has_attach_handler:
     attach_handler = LogStreamHandler(log_stream)
@@ -84,8 +81,7 @@ async def lifespan(app: FastAPI):
         external_http=app.state.external_http,
     )
 
-    app.state.job_manager = JobManager(
-    )
+    app.state.job_manager = JobManager()
 
     app.state.deployment_service = DeploymentService()
 
@@ -125,6 +121,13 @@ async def lifespan(app: FastAPI):
         planner=app.state.planner,
     )
 
+    app.state.harness = Harness(
+        primer=app.state.primer,
+        router=app.state.router,
+        job_manager=app.state.job_manager,
+        command_router=app.state.command_router
+    )
+
     app.state.cortex_mailbox = CortexMailbox(
         router=app.state.router,
     )
@@ -134,8 +137,8 @@ async def lifespan(app: FastAPI):
     )
 
     app.state.cortex_runtime = CortexRuntime(
-        mailbox=app.state.cortex_mailbox,
-        backend_services=app.state.discovery_service,
+        harness=app.state.harness,
+        discovery_service=app.state.discovery_service,
         primer=app.state.primer,
         command_router=app.state.command_router,
     )
@@ -158,24 +161,31 @@ app = FastAPI(title="cortex", lifespan=lifespan)
 # Dependency helpers
 # ---------------------------------------------------------------------------
 
+
 def cortex(request: Request) -> CortexRuntime:
     return request.app.state.cortex_runtime
+
 
 def primer(request: Request) -> Primer:
     return request.app.state.primer
 
+
 def discovery(request: Request) -> DiscoveryService:
     return request.app.state.discovery_service
+
 
 def policy(request: Request) -> BackendRoutingPolicy:
     return request.app.state.routing_policy
 
+
 def job_manager(request: Request) -> JobManager:
     return request.app.state.job_manager
+
 
 # ---------------------------------------------------------------------------
 # Basic service endpoints
 # ---------------------------------------------------------------------------
+
 
 @app.get("/live")
 async def live():
@@ -191,13 +201,16 @@ async def ready(request: Request):
         "primer": _primer.status(),
     }
 
+
 @app.get("/health")
 async def health():
     return {"ok": True}
 
+
 # ---------------------------------------------------------------------------
 # Network endpoints
 # ---------------------------------------------------------------------------
+
 
 @app.post("/terminal_chat")
 async def terminal_chat(req: InferenceSession, request: Request):
@@ -205,7 +218,7 @@ async def terminal_chat(req: InferenceSession, request: Request):
 
     if req.stream:
         return await cortex_runtime.handle_session_stream(req)
-    
+
     ### PROFILER
     profiler = cProfile.Profile()
     profiler.enable()
@@ -218,15 +231,13 @@ async def terminal_chat(req: InferenceSession, request: Request):
     total_buffer = io.StringIO()
     cumulative_buffer = io.StringIO()
 
-    pstats.Stats(profiler, stream=total_buffer) \
-        .strip_dirs() \
-        .sort_stats("tottime") \
-        .print_stats(25)
+    pstats.Stats(profiler, stream=total_buffer).strip_dirs().sort_stats(
+        "tottime"
+    ).print_stats(25)
 
-    pstats.Stats(profiler, stream=cumulative_buffer) \
-        .strip_dirs() \
-        .sort_stats("cumtime") \
-        .print_stats(25)
+    pstats.Stats(profiler, stream=cumulative_buffer).strip_dirs().sort_stats(
+        "cumtime"
+    ).print_stats(25)
 
     logging.info("terminal_chat profile by tottime:\n%s", total_buffer.getvalue())
     logging.info("terminal_chat profile by cumtime:\n%s", cumulative_buffer.getvalue())
@@ -235,7 +246,7 @@ async def terminal_chat(req: InferenceSession, request: Request):
 
 
 @app.post("/work")
-async def submit_work(req: WorkPacket, request:Request):
+async def submit_work(req: WorkPacket, request: Request):
 
     cortex_runtime = cortex(request=request)
     _primer = primer(request=request)
@@ -269,7 +280,7 @@ async def chat_test(req: InferenceSession, request: Request):
 
 
 @app.get("/network")
-async def get_backends(request:Request):
+async def get_backends(request: Request):
     discovery_service = discovery(request=request)
     backend_descriptors = discovery_service.get_registry().list_backends()
 
@@ -277,7 +288,7 @@ async def get_backends(request:Request):
 
 
 @app.get("/network/{role}")
-async def get_backends_by_role(role: str, request:Request):
+async def get_backends_by_role(role: str, request: Request):
     routing_policy = policy(request=request)
     candidates = routing_policy.get_all_candidates(role=role)
 
