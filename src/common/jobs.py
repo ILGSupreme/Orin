@@ -5,6 +5,7 @@ import inspect
 import logging
 import time as monotonic_time
 import traceback
+import logging
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal
@@ -176,9 +177,14 @@ class JobManager:
             else self.list_jobs()
         )
 
-        active = [job for job in jobs if job.status in ("accepted", "running")]
+        active = [
+            job for job in jobs
+            if job.status in ("accepted", "running")
+        ]
+
         recent_done = [
-            job for job in jobs if job.status in ("completed", "failed")
+            job for job in jobs
+            if job.status in ("completed", "failed")
         ][-5:]
 
         lines: list[str] = []
@@ -191,17 +197,30 @@ class JobManager:
                     if job.current_stage
                     else "no stage"
                 )
+
                 lines.append(
-                    f"- {job.job_id}: {job.status}, stage={stage}, "
-                    f"message={job.progress_message or ''}"
+                    f"- {job.job_id}: status={job.status}, "
+                    f"stage={stage}, kind={job.spec.kind}"
                 )
 
         if recent_done:
             lines.append("Recent background jobs:")
             for job in recent_done:
-                lines.append(
-                    f"- {job.job_id}: {job.status}, error={job.error or ''}"
-                )
+                if job.status == "failed":
+                    lines.append(
+                        f"- {job.job_id}: status=failed, "
+                        f"kind={job.spec.kind}, "
+                        f"error={job.error or 'unknown error'}"
+                    )
+                else:
+                    lines.append(
+                        f"- {job.job_id}: status=completed, "
+                        f"kind={job.spec.kind}, "
+                        f"result={job.spec.payload}"
+                    )
+
+        if not lines:
+            return "No active or recent background jobs."
 
         return "\n".join(lines)
 
@@ -489,6 +508,8 @@ class JobManager:
         count: int,
         result: WorkResult,
     ) -> WorkResult:
+        
+        logging.info(f"Wait for stage: result is :{result}")
         if result.status in ("completed", "failed"):
             return result
 
@@ -521,6 +542,7 @@ class JobManager:
         latest = result
 
         while latest.status in ("accepted", "running"):
+            logging.info(f"Polling stage: result is :{latest}")
             if monotonic_time.monotonic() >= deadline:
                 return WorkResult(
                     status="failed",

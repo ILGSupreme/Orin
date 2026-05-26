@@ -59,7 +59,9 @@ class GGUFPrimerEngine:
 
     def status(self) -> dict[str, Any]:
         return {
+            "ready": self.is_ready(),
             "state": self._state,
+            "model_id": self.model_id,
             "model_path": self.model_path,
             "tokenizer_id": self.tokenizer_id,
             "error": self._error,
@@ -69,28 +71,6 @@ class GGUFPrimerEngine:
             "effective_n_ctx": self.max_model_len,
             "runtime_profile": self.current_profile,
         }
-
-    # async def start_background(self) -> None:
-    #     if self._state in {"loading", "ready"}:
-    #         return
-
-    #     self._state = "loading"
-    #     self._error = None
-    #     self._ready_event.clear()
-
-    #     self._load_task = asyncio.create_task(self._load())
-
-    # async def ensure_ready(self) -> None:
-    #     if self._state == "ready":
-    #         return
-
-    #     if self._state == "unloaded":
-    #         await self.start_background()
-
-    #     await self._ready_event.wait()
-
-    #     if self._state != "ready":
-    #         raise RuntimeError(self._error or "Primer failed to load")
 
     async def load_model(
         self,
@@ -250,11 +230,11 @@ class GGUFPrimerEngine:
         max_new_tokens: int | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
-        grammar: str | None = None,
+        grammar: str | LlamaGrammar |  None = None,
     ) -> str:
 
         grammar_llama = None
-        if grammar:
+        if grammar and isinstance(grammar,str):
             grammar_llama = LlamaGrammar.from_string(grammar=grammar)
 
         if self.engine is None:

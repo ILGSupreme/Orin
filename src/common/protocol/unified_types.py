@@ -164,3 +164,14 @@ def extract_last_user_text(messages: list[RuntimeMessage]) -> str:
                 return part.data
 
     return ""
+
+def extract_last_assistant_text(messages: list[RuntimeMessage]) -> str:
+    for msg in reversed(messages):
+        if msg.role != "assistant":
+            continue
+
+        for part in msg.parts:
+            if part.type == "text":
+                return part.data
+
+    return ""

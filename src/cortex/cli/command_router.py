@@ -98,6 +98,15 @@ MODEL_ALIASES = {
         "tokenizer_id": "Qwen/Qwen3.5-0.8B",
         "revision": "main",
     },
+    "qwen35-2B": {
+        "provider": "huggingface",
+        "engine": "gguf",
+        "model_id": "qwen35-2b",
+        "repo_id": "unsloth/Qwen3.5-2B-GGUF",
+        "filename": "Qwen3.5-2B-Q4_K_M.gguf",
+        "tokenizer_id": "Qwen/Qwen3.5-2B",
+        "revision": "main"
+    }
 }
 
 
@@ -283,6 +292,14 @@ class CommandRouter:
                             self.handle_show,
                             modes={"terminal"},
                             harness_action="show_cluster",
+                            safe_info_action=True,
+                        ),
+                        self._cmd(
+                            "/cluster_snapshot",
+                            "Show a compact cluster snapshot",
+                            self.handle_cluster_snapshot,
+                            modes={"terminal"},
+                            harness_action="cluster_snapshot",
                             safe_info_action=True,
                         ),
                     ],
@@ -2034,6 +2051,53 @@ class CommandRouter:
         return formatting.format_backend_list(
             backends=backends, role_filter=parsed.role, verbose=parsed.verbose
         )
+    
+    async def handle_cluster_snapshot(self, args: str = "") -> str:
+        backends = self._list_discovered_backends()
+
+        lines: list[str] = [
+            "Cluster snapshot",
+            "================",
+            "",
+            "Backends:",
+        ]
+
+        if not backends:
+            lines.append("  -")
+        else:
+            for backend in sorted(backends, key=lambda b: b.name):
+                health = getattr(backend, "health", None)
+                status = getattr(health, "status", "unknown") if health else "unknown"
+                ready = getattr(health, "ready_endpoints", "-") if health else "-"
+
+                role = getattr(backend, "role", "-")
+                model = getattr(backend, "model", None) or "-"
+                service = getattr(backend, "service_name", "-")
+                namespace = getattr(backend, "namespace", "-")
+
+                lines.append(
+                    f"  - {namespace}/{service}: "
+                    f"role={role}, health={status}, ready_endpoints={ready}, model={model}"
+                )
+
+        jobs = self.job_manager.list_active_jobs()
+
+        lines.extend(["", "Active jobs:"])
+
+        if not jobs:
+            lines.append("  -")
+        else:
+            for job in jobs:
+                stage = (
+                    f"{job.stage_index}/{job.stage_count} {job.current_stage}"
+                    if getattr(job, "current_stage", None)
+                    else "-"
+                )
+                lines.append(
+                    f"  - {job.job_id}: status={job.status}, kind={job.spec.kind}, stage={stage}"
+                )
+
+        return "\n".join(lines)
 
     async def handle_backend_update_discovery_meta(self, backend, args: str) -> str:
         args = f"{backend.service_name} --service {args}".strip()
