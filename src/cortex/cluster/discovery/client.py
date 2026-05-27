@@ -28,7 +28,6 @@ class BackendClient:
     ) -> dict[str, Any]:
         url = self._build_packet_url(backend)
 
-        #async with httpx.AsyncClient(timeout=self.timeout) as client:
         response = await self.http.post(url, json=packet.model_dump())
         response.raise_for_status()
         data = response.json()
@@ -43,7 +42,6 @@ class BackendClient:
     async def retrieve_work(self, *, backend, work_id) -> dict[str, Any]:
         url = self._build_packet_url(backend).rstrip("/") + f"/{work_id}"
 
-        #async with httpx.AsyncClient(timeout=self.timeout) as client:
         response = await self.http.get(url)
         response.raise_for_status()
         data = response.json()

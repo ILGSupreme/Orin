@@ -5,7 +5,6 @@ import inspect
 import logging
 import time as monotonic_time
 import traceback
-import logging
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal
@@ -119,18 +118,24 @@ class Job:
             "updated_at": self.updated_at,
         }
 
+@dataclass(slots=True)
+class BatchWork():
+    job_ids: list[str] = field(default_factory=list)
+    batch_id: str = ""
 
 class JobManager:
     def __init__(
         self,
         *,
         max_jobs: int = 256,
-        max_concurrent_jobs: int = 1,
+        max_concurrent_jobs: int = 4,
     ) -> None:
         self.jobs: dict[str, Job] = {}
         self.pipelines: dict[str, PipelineDefinition] = {}
         self.max_jobs = max_jobs
-        self.semaphore = asyncio.Semaphore(max_concurrent_jobs)
+        self.batch : dict[str, BatchWork] = {}
+        self.job_semaphore = asyncio.Semaphore(max_concurrent_jobs)
+        self.pipeline_semaphore = asyncio.Semaphore(max_concurrent_jobs)
 
     # -------------------------------------------------------------------------
     # Job inspection
@@ -223,6 +228,64 @@ class JobManager:
             return "No active or recent background jobs."
 
         return "\n".join(lines)
+    
+    def create_batch(self, jobs: list[Job]) -> str:
+        batch_id = uuid.uuid4().hex[:8]
+
+        self.batch[batch_id] = BatchWork(
+            job_ids=[job.job_id for job in jobs],
+            batch_id=batch_id,
+        )
+
+        return batch_id
+    
+    async def batch_progress(
+        self,
+        batch_id: str,
+        *,
+        blocking: bool = True,
+        poll_interval_seconds: float = 1.0,
+        timeout_seconds: float = 300.0,
+    ) -> list[dict[str,Any]]:
+        
+
+        batch_work = self.batch.get(batch_id)
+        logging.info(f" batch work : {batch_work}")
+
+        if not batch_work:
+            raise ValueError(f"No batch found for id: {batch_id}")
+
+        if not blocking:
+            return self.batch_check(batch_work=batch_work)
+
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+
+        while True:
+            logging.info(f" {batch_work} ")
+            results = self.batch_check(batch_work=batch_work)
+            logging.info(f" {results} ")
+
+            if len(results) == len(batch_work.job_ids):
+                return results
+
+            if asyncio.get_running_loop().time() >= deadline:
+                raise TimeoutError(f"Batch timed out: {batch_id}")
+
+            await asyncio.sleep(poll_interval_seconds)
+        
+    def batch_check(self, batch_work: BatchWork) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+
+        for job_id in batch_work.job_ids:
+            job = self.get(job_id=job_id)
+
+            if not job:
+                raise ValueError(f"Job id in batch not found: {job_id}")
+
+            if job.status in ("completed", "failed"):
+                results.append(job.result)
+
+        return results
 
     # -------------------------------------------------------------------------
     # Pipeline definition
@@ -328,7 +391,7 @@ class JobManager:
     ) -> None:
         job = self.jobs[job_id]
 
-        async with self.semaphore:
+        async with self.job_semaphore:
             try:
                 job.update_status("running")
                 job.update_stage(
@@ -406,7 +469,7 @@ class JobManager:
     ) -> None:
         job = self.jobs[job_id]
 
-        async with self.semaphore:
+        async with self.pipeline_semaphore:
             try:
                 job.update_status("running")
 

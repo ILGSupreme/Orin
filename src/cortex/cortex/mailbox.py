@@ -23,7 +23,7 @@ class CortexMailbox:
         self._lock = asyncio.Lock()
 
     async def submit(self, packet: WorkPacket) -> WorkResult:
-        return await self.router.execute(packet)
+        return await self.router.send(packet)
 
     async def retrieve(self, packet: WorkPacket, backend: dict[str, Any]) -> WorkResult:
         return await self.router.retrieve_work(packet=packet, backend=backend)
@@ -124,7 +124,7 @@ class CortexMailbox:
                 "parent_work_id": packet.work_id,
             },
         )
-        return await self.router.execute(child_packet)
+        return await self.router.send(child_packet)
 
     def get_work_state(self, work_id: str) -> dict[str, Any] | None:
         return self._task_state.get(work_id)

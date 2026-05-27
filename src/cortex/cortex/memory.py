@@ -22,7 +22,7 @@ async def upsert_user(
         memory_request=User(external_id=inference_object.user_id),
     )
 
-    response = await router.execute(packet=packet)
+    response = await router.send(packet=packet)
 
     if response.status == "completed":
         return response.metadata
@@ -40,7 +40,7 @@ async def resolve_session(
         memory_request=ResolveSessionRequest(max_idle_minutes=60),
     )
 
-    response = await router.execute(packet=packet)
+    response = await router.send(packet=packet)
 
     if response.status == "completed":
         return response.metadata
@@ -61,7 +61,7 @@ async def insert_message(
             memory_request=msg.model_dump(),
         )
 
-        response = await router.execute(packet=packet)
+        response = await router.send(packet=packet)
 
         responses.append(response)
 
@@ -86,7 +86,7 @@ async def get_prompts_context(
         ),
     )
 
-    response = await router.execute(packet=packet)
+    response = await router.send(packet=packet)
 
     if response.status == "completed":
         return PromptContextResponse.model_validate(response.metadata)

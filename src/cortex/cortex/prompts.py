@@ -444,15 +444,21 @@ Do NOT generate raw endpoint field mappings.
 Do NOT generate request bodies for specific tools or model providers.
 Do NOT assume knowledge of all endpoint schemas.
 
-Execution families are limited to exactly these task roles:
+Execution roles are limited to exactly these task roles:
 - llm
 - tool
 - cortex
 
 Meanings:
-- llm = send to a language model or multimodal language model
-- tool = send to a discovered host tool/capability
-- cortex = deferred/background work handled by Cortex
+- llm = the task should be executed by a language model or multimodal language model.
+- tool = the task should be executed by a discovered host tool/capability.
+- cortex = the task requires Cortex itself as the semantic executor, such as orchestration, work-result coordination, system-level coordination, or multi-step decomposition that cannot be represented as direct llm/tool work.
+
+Important distinction:
+- task_role means who executes the shaped task.
+- deferred means whether the task should run in the background.
+- A background job is usually owned by Harness/Cortex, but that does not mean task_role should be cortex.
+- For example, a background summarization task is still task_role="llm", task_operation="summarize", deferred=true.
 
 Important:
 - You do not know any capabilities by default.
@@ -529,9 +535,12 @@ Allowed values:
 - "cortex"
 
 Selection rules:
-- Use "llm" when the task is primarily to have a language model render, transform, summarize, classify, extract, analyze, or produce a final answer.
+- Use "llm" when the task is primarily to render, transform, summarize, classify, extract, analyze, explain, or produce natural-language output.
 - Use "tool" only when capability_summary explicitly lists a matching capability under the tool role.
-- Use "cortex" only when capability_summary supports it and deferred/background handling is available and appropriate.
+- Use "cortex" only when the semantic task itself requires Cortex coordination and cannot be faithfully represented as direct llm or tool work.
+- Do NOT use "cortex" merely because the user requested background/deferred execution.
+- Do NOT use "cortex" merely because the pipeline is running inside Harness/Cortex.
+- If the user asks for background execution of an LLM-suitable task, use task_role="llm" and deferred=true.
 
 4. task_operation
 Allowed values:
@@ -556,10 +565,13 @@ Rules:
 - Use "inspect" for backend/system/capability/status inspection tasks when a matching capability exists.
 
 5. deferred
-- true when the task should be handled as deferred/background work.
+- true when the user explicitly requested background/deferred execution, or when the interpreted item requires background execution.
 - false when the task should be attempted in the immediate request flow.
-- If task_role is "cortex", deferred should usually be true.
-- Do not set deferred = true unless deferred/background handling is available.
+- deferred does not determine task_role.
+- task_role="llm" with deferred=true is valid.
+- task_role="tool" with deferred=true is valid if the tool task should run in the background.
+- task_role="cortex" with deferred=true is valid only for Cortex-semantic coordination work.
+- Do not set deferred=true unless capability_summary indicates deferred_available=true.
 
 6. task_message
 - The compact executable content that should be sent onward.
@@ -1448,12 +1460,13 @@ Rules:
 - Normal questions -> answer_only.
 - Explicit detailed/researched/verified/current/multi-step requests -> start_pipeline.
 - Questions about background jobs/status -> report_job_status.
+- Questions/Query for results of background jobs -> get_job_result
 - If unsure -> answer_only.
 
 Output schema:
 {
   "mode": "chat",
-  "action": "answer_only" | "start_pipeline" | "report_job_status",
+  "action": "answer_only" | "start_pipeline" | "report_job_status" | get_job_result,
   "pipeline": "chat" | null
 }
 Only choose start_pipeline when the user explicitly asks for detailed, researched, verified, current, comprehensive, multi-step, or background work.
@@ -1645,17 +1658,11 @@ def build_task_messages(
 def build_final_response_messages(
     *,
     messages: list[RuntimeMessage],
-    prompt_context: dict[str, Any],
-    sync_results: list[dict[str, Any]],
-    deferred_results: list[dict[str, Any]],
-    clarification_questions: list[str],
+    prompt_context: dict[str, Any] | None = None,
+    collated_results: dict[str, Any] | None = None,
 ) -> list[RuntimeMessage]:
-    runtime_block = {
-        "prompt_context": prompt_context,
-        "sync_results": sync_results,
-        "deferred_results": deferred_results,
-        "clarification_questions": clarification_questions,
-    }
+    prompt_context = prompt_context or {}
+    collated_results = collated_results or {}
 
     original_system_parts: list[str] = []
     non_system_messages: list[RuntimeMessage] = []
@@ -1668,12 +1675,32 @@ def build_final_response_messages(
         else:
             non_system_messages.append(msg)
 
-    final_response_policy = "Return only the final user-facing response. "
+    runtime_block = {
+        "prompt_context": prompt_context,
+        "collated_results": collated_results,
+    }
+
+    final_response_policy = "\n".join(
+        [
+            "Final response mode:",
+            "Return only the final user-facing response.",
+            "Use collated_results as the source of truth for completed work.",
+            "Do not invent results that are not present in collated_results.",
+            "If some work failed, mention it briefly and use the successful results where possible.",
+            "If clarification questions are present, ask them clearly.",
+            "Do not expose raw JSON, internal schemas, job metadata, routing details, or backend internals unless the user is developing/debugging the system.",
+        ]
+    )
 
     system_parts = [
         ASSISTANT_RESPONSE_PROMPT,
         final_response_policy,
-        f"Runtime context:\n{runtime_block}",
+        "Runtime context:\n"
+        + json.dumps(
+            runtime_block,
+            ensure_ascii=False,
+            default=str,
+        ),
         *original_system_parts,
     ]
 
@@ -1684,7 +1711,6 @@ def build_final_response_messages(
                 type="text",
                 data="\n\n".join(part for part in system_parts if part),
                 encoding="plain",
-                mime_type="text/plain",
             )
         ],
     )

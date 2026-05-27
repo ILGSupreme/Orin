@@ -176,7 +176,7 @@ async def load_model(req: LoadModelRequest, request: Request):
     payload["engine"] = engine
 
     spec = JobSpec(
-        kind="cortex.load_model",
+        kind="llm.load_model",
         payload=payload,
     )
 

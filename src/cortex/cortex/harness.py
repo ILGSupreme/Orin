@@ -5,6 +5,7 @@ import logging
 from typing import Any, Literal, Union, overload
 
 from fastapi.responses import StreamingResponse
+from pydantic import TypeAdapter
 
 from common.factory import packing
 from common.jobs import Job, JobManager, JobSpec, PipelineStage
@@ -33,6 +34,7 @@ from cortex.cortex.harness_types import (
 from cortex.cortex.prompts import (
     TASK_SHAPING_GRAMMAR,
     TURN_INTERPRETATION_GRAMMAR,
+    build_final_response_messages,
     build_task_messages,
     build_task_shaping_messages,
 )
@@ -68,19 +70,40 @@ class Harness:
                     runner=lambda job: execute_interpret_turn(
                         job, self.router, self.primer
                     ),
-                    poller=lambda job, result: execute_read_interpret(job, self.router, result),
+                    poller=lambda job, result: execute_read_interpret(
+                        job, self.router, result
+                    ),
                     timeout_seconds=90,
-                    poll_interval_seconds=1.0,
+                    poll_interval_seconds=2.0,
                 ),
                 PipelineStage(
                     name="shape_turn",
                     runner=lambda job: execute_shape_tasks(
                         job, self.router, self.primer
                     ),
-                    poller=lambda job, result: execute_read_shaping(job, self.router, result),
+                    poller=lambda job, result: execute_read_shaping(
+                        job, self.router, result
+                    ),
                     timeout_seconds=180,
-                    poll_interval_seconds=1.0,
+                    poll_interval_seconds=2.0,
                 ),
+                PipelineStage(
+                    name="build_packets",
+                    runner=lambda job : execute_build_work_packets(job, self.router, self.primer),
+                    timeout_seconds=180,
+                ),
+                PipelineStage(
+                    name="read_and_send_packets",
+                    runner=lambda job: execute_read_and_send_packets(job, self.router, self.job_manager),
+                    timeout_seconds=180,
+                ),
+                PipelineStage(
+                    name="build_final_response_message",
+                    runner=lambda job: execute_final_response(job, self.router, self.primer),
+                    poller=lambda job, result: execute_read_final_packet(job, self.router, result),
+                    timeout_seconds=180,
+                    poll_interval_seconds=2.0
+                )
             ],
         )
 
@@ -537,73 +560,152 @@ def _can_fit_request(
     total_estimated_nr_ctx = prompt_tokens + reserved_output_tokens + SAFETY_TOKEN_SIZE
     return total_estimated_nr_ctx <= effective_n_ctx
 
+
 async def _build_work_packets(
-        user_id: str, shaped_tasks: list[dict[str, Any]], primer:Primer
-    ) -> list[WorkPacket]:
-        packets: list[WorkPacket] = []
-        for task in shaped_tasks:
-            packets.append(
-                await _build_work_packet(
-                    user_id=user_id,
-                    shaped=task,
-                    primer=primer
-                )
-            )
-        return packets
+    user_id: str, shaped_tasks: list[dict[str, Any]], primer: Primer
+) -> list[WorkPacket]:
+    packets: list[WorkPacket] = []
+    for task in shaped_tasks:
+        packets.append(
+            await _build_work_packet(user_id=user_id, shaped=task, primer=primer)
+        )
+    return packets
+
 
 async def _build_work_packet(
-        user_id: str, shaped: dict[str, Any], primer: Primer
-    ) -> WorkPacket:
+    user_id: str, shaped: dict[str, Any], primer: Primer
+) -> WorkPacket:
 
-        work_type = shaped.get("task_type", "llm")
-        operation = shaped.get("task_operation", "chat")
-        message = shaped.get("task_message", "")
-        role = shaped.get("task_role")
-        objective = shaped.get("task_objective")
-        disposition = (
-            WorkDisposition.DEFERRED
-            if shaped.get("deferred", False)
-            else WorkDisposition.DIRECT
-        )
-        privacy = shaped.get("privacy_mode")
-        context = shaped.get("context_minimum", "")
+    work_type = shaped.get("task_type", "llm")
+    operation = shaped.get("task_operation", "chat")
+    message = shaped.get("task_message", "")
+    role = shaped.get("task_role")
+    objective = shaped.get("task_objective")
+    disposition = (
+        WorkDisposition.DEFERRED
+        if shaped.get("deferred", False)
+        else WorkDisposition.DIRECT
+    )
+    privacy = shaped.get("privacy_mode")
+    context = shaped.get("context_minimum", "")
 
-        messages = build_task_messages(message=message, context=context)
-        reserved_tokens = MAX_TOKENS_POLICY.get(operation, 256)
-        estimated_tokens = _get_total_token_estimation(
-            messages=messages,
-            reserved_output_tokens=reserved_tokens,
-            primer=primer
-        )
-        constraints = {
-            "temperature": TEMPERATURE_POLICY.get(operation, 0.1),
-            "stream": False
-            }
+    messages = build_task_messages(message=message, context=context)
+    reserved_tokens = MAX_TOKENS_POLICY.get(operation, 256)
+    estimated_tokens = _get_total_token_estimation(
+        messages=messages, reserved_output_tokens=reserved_tokens, primer=primer
+    )
+    constraints = {
+        "temperature": TEMPERATURE_POLICY.get(operation, 0.1),
+        "stream": False,
+    }
 
-        ctask = packing.create_canonical_task_messages(
-            work_type=work_type,
-            operation=operation,
-            messages=messages,
-            constraints=constraints,
-            inputs={
-                "objective": objective,
-                "privacy": privacy,
-            },
-            routing_hints=RoutingHints(
-                role=role,
-                required_capabilities=shaped.get("required_capabilities", ["chat"]),
-                required_modalities=shaped.get("required_modalities", ["text"]),
-                runtime_preference=[{"effective_n_ctx": estimated_tokens}],
-            ),
+    ctask = packing.create_canonical_task_messages(
+        work_type=work_type,
+        operation=operation,
+        messages=messages,
+        constraints=constraints,
+        inputs={
+            "objective": objective,
+            "privacy": privacy,
+        },
+        routing_hints=RoutingHints(
+            role=role,
+            required_capabilities=shaped.get("required_capabilities", ["chat"]),
+            required_modalities=shaped.get("required_modalities", ["text"]),
+            runtime_preference=[{"effective_n_ctx": estimated_tokens}],
+        ),
+    )
+
+    wpacket = packing.create_workpacket(
+        id=f"{user_id}:task",
+        disposition=disposition,
+        metadata={"origin_stage": "main_ingress", "phase": "executing task"},
+        task=ctask,
+    )
+    return wpacket
+
+def _extract_shaped_task_list(value: Any, capability_summary: dict[str,Any]) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        if isinstance(value.get("task_items"), list):
+            value = value["task_items"]
+        elif isinstance(value.get("items"), list):
+            value = value["items"]
+        elif isinstance(value.get("tasks"), list):
+            value = value["tasks"]
+        else:
+            raise ValueError(
+                "Shaped task JSON object must contain a 'task_items', 'items', or 'tasks' list."
+            )
+
+    if not isinstance(value, list):
+        raise ValueError(
+            f"Shaped task JSON must be a list or object with task_items/items/tasks. "
+            f"Got: {type(value).__name__}"
         )
 
-        wpacket = packing.create_workpacket(
-            id=f"{user_id}:task",
-            disposition=disposition,
-            metadata={"origin_stage": "main_ingress", "phase": "executing task"},
-            task=ctask,
-        )
-        return wpacket
+    tasks: list[dict[str, Any]] = []
+
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"Shaped task at index {index} must be an object. "
+                f"Got: {type(item).__name__}: {item!r}"
+            )
+        normalized_item = _normalize_task_role(item=item, capability_summary=capability_summary)
+
+        tasks.append(normalized_item)
+
+    return tasks
+
+
+def _normalize_task_role(
+    item: dict[str, Any],
+    capability_summary: dict[str, Any],
+) -> dict[str, Any]:
+    item = dict(item)
+
+    LLM_OPERATIONS = ["chat","summarize","classify","extract","analyze"]
+
+    operation = str(item.get("task_operation") or "").strip().lower()
+    role = str(item.get("task_role") or "").strip().lower()
+
+    capabilities_by_role = capability_summary.get("capabilities_by_role", {})
+    llm_caps = set(capabilities_by_role.get("llm") or [])
+    tool_caps = set(capabilities_by_role.get("tool") or [])
+
+    # Background/deferred is not a reason to route to Cortex.
+    if role == "cortex" and operation in LLM_OPERATIONS:
+        role = "llm"
+
+    if role == "llm":
+        required = item.get("required_capabilities") or []
+
+        if not required or required == ["cortex"]:
+            if operation in llm_caps:
+                required = [operation]
+            elif "chat" in llm_caps:
+                required = ["chat"]
+            else:
+                required = []
+
+        item["task_role"] = "llm"
+        item["required_capabilities"] = required
+        item["required_modalities"] = item.get("required_modalities") or ["text"]
+
+    elif role == "tool":
+        required = item.get("required_capabilities") or []
+
+        # Do not silently invent tool capabilities.
+        required = [cap for cap in required if cap in tool_caps]
+
+        item["task_role"] = "tool"
+        item["required_capabilities"] = required
+
+    else:
+        item["task_role"] = role
+
+    item["task_operation"] = operation
+    return item
 
 # ---------------------------------------------------------------------------
 # Job Execute Functions
@@ -673,7 +775,7 @@ async def execute_interpret_turn(job: Job, router: RouterService, primer: Primer
         task=cpacket,
     )
 
-    return await router.execute(packet=packet)
+    return await router.send(packet=packet)
 
 
 async def execute_read_interpret(job: Job, router: RouterService, response: WorkResult):
@@ -747,10 +849,10 @@ async def execute_shape_tasks(job: Job, router: RouterService, primer: Primer):
         task=cpacket,
     )
 
-    return await router.execute(packet=packet)
+    return await router.send(packet=packet)
 
 
-async def execute_read_shaping(job: Job, router: RouterService, response : WorkResult):
+async def execute_read_shaping(job: Job, router: RouterService, response: WorkResult):
     backend = response.metadata.get("backend_ref", {})
     if not backend:
         return WorkResult(
@@ -771,30 +873,239 @@ async def execute_read_shaping(job: Job, router: RouterService, response : WorkR
     return result
 
 
-async def execute_build_work_packets(job: Job, router: RouterService, primer:Primer):
+async def execute_build_work_packets(job: Job, router: RouterService, primer: Primer):
     inference_object = InferenceObject.model_validate(
         job.spec.payload.get("inference_object")
     )
 
+    _capabilities_summary = router.backend_services.get_capability_summary()
+
     payload_result = WorkResult.model_validate(job.spec.payload.get("response"))
     shaped = unified_types.extract_last_assistant_text(payload_result.content)
 
-    try:
-        shaped_tasks = json.loads(shaped)
-    except json.JSONDecodeError as e:
-        raise e
+    logging.info(shaped)
 
-    work_packets = await _build_work_packets(
-        user_id=inference_object.user_id,
-        shaped_tasks=shaped_tasks,
-        primer=primer
+    try:
+        shaped_raw = json.loads(shaped)
+        shaped_tasks = _extract_shaped_task_list(shaped_raw, capability_summary=_capabilities_summary)
+    except json.JSONDecodeError as e:
+        return WorkResult(
+            status="failed",
+            work_id=f"{inference_object.user_id}:build_packets",
+            error=e.msg,
         )
     
-    results: list[WorkResult] = []
-    for packet in work_packets:
-        results.append(await router.execute(packet=packet))
+    logging.info(shaped_tasks)
 
-    return WorkResult(status="completed", work_id=f"{inference_object.user_id}:build_packets", metadata={"work_packet_results": results})
+    work_packets = await _build_work_packets(
+        user_id=inference_object.user_id, shaped_tasks=shaped_tasks, primer=primer
+    )
 
-async def execute_check_work_packets(job: Job, router: RouterService, primer: Primer):
-    pass
+    logging.info(f"work packets: {work_packets}")
+
+    batch_id = await router.send_many(work_packets)
+
+    return WorkResult(
+        status="completed",
+        work_id=f"{inference_object.user_id}:build_packets",
+        metadata={"batch_id": batch_id},
+    )
+
+
+async def execute_read_and_send_packets(
+    job: Job, router: RouterService, job_manager: JobManager
+):
+    inference_object = InferenceObject.model_validate(
+        job.spec.payload.get("inference_object")
+    )
+
+    batch_result_adapter = TypeAdapter(list[WorkResult])
+
+    payload_response = WorkResult.model_validate(job.spec.payload.get("response"))
+
+    send_batch_id = payload_response.metadata.get("batch_id", None)
+
+    if not send_batch_id:
+        return WorkResult(
+            status="failed",
+            work_id=f"{inference_object.user_id}:read_and_send_packets",
+            error="batch id not found",
+        )
+    
+    logging.info("batch sequence")
+
+    batch_results_raw = await job_manager.batch_progress(batch_id=send_batch_id)
+
+    batch_results = batch_result_adapter.validate_python(batch_results_raw)
+
+    logging.info("batch sequence second part")
+
+    retrieve_batch_id = await router.retrieve_many(results=batch_results)
+
+    final_batch_results = await job_manager.batch_progress(batch_id=retrieve_batch_id)
+
+    return WorkResult(
+        status="completed",
+        work_id=f"{inference_object.user_id}:read_and_send_packets",
+        metadata={"packet_results": final_batch_results},
+    )
+
+async def execute_read_packet_results(
+    job: Job,
+):
+    inference_object = InferenceObject.model_validate(
+        job.spec.payload.get("inference_object")
+    )
+
+    batch_result_adapter = TypeAdapter(list[WorkResult])
+
+    payload_response = WorkResult.model_validate(
+        job.spec.payload.get("response")
+    )
+
+    results = payload_response.metadata.get("packet_results", None)
+
+    if results is None:
+        return WorkResult(
+            status="failed",
+            work_id=f"{inference_object.user_id}:read_results",
+            error="No result found",
+        )
+
+    batch_results = batch_result_adapter.validate_python(results)
+
+    completed: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+    running: list[dict[str, Any]] = []
+
+    for result in batch_results:
+        dumped = result.model_dump(mode="json")
+
+        item = {
+            "work_id": dumped.get("work_id"),
+            "status": dumped.get("status"),
+            "backend_name": dumped.get("backend_name"),
+            "backend_model": dumped.get("backend_model"),
+            "content": dumped.get("content") or [],
+            "error": dumped.get("error"),
+            "metadata": dumped.get("metadata") or {},
+        }
+
+        if result.status == "completed":
+            completed.append(item)
+        elif result.status == "failed":
+            failed.append(item)
+        else:
+            running.append(item)
+
+    collated_results = {
+        "summary": {
+            "total": len(batch_results),
+            "completed": len(completed),
+            "failed": len(failed),
+            "running": len(running),
+        },
+        "completed": completed,
+        "failed": failed,
+        "running": running,
+    }
+
+    return WorkResult(
+        status="completed",
+        work_id=f"{inference_object.user_id}:read_results",
+        metadata={
+            "collated_results": collated_results,
+        },
+    )
+
+
+async def execute_final_response(job:Job, router: RouterService, primer: Primer):
+
+    inference_object = InferenceObject.model_validate(
+        job.spec.payload.get("inference_object")
+    )
+
+    payload_response = WorkResult.model_validate(
+        job.spec.payload.get("response")
+    )
+
+    collated_results = payload_response.metadata.get("collated_results")
+
+    prompt_context_instance: PromptContextResponse | None = await memory.get_prompts_context(
+        router=router, inference_object=inference_object, limit=6
+    )
+
+    prompt_context = {}
+    if prompt_context_instance:
+        prompt_context = prompt_context_instance.model_dump(mode="json")
+
+    messages = build_final_response_messages(
+            messages=inference_object.content,
+            prompt_context=prompt_context,
+            collated_results=collated_results
+        )
+
+    constraints = {
+        "temperature":TEMPERATURE_POLICY.get("analyze", 0),
+        "stream":False,
+    }
+
+    effective_tokens = _get_total_token_estimation(
+            reserved_output_tokens=MAX_TOKENS_POLICY.get("analyze", 1024),
+            messages=messages,
+            primer=primer
+        )
+
+    ctask = packing.create_canonical_task_messages(
+            work_type=WorkType.LLM,
+            operation="analyze",
+            messages=messages,
+            inputs={},
+            constraints=constraints,
+            routing_hints=RoutingHints(
+                role=WorkType.LLM,
+                required_capabilities=["chat"],
+                required_modalities=["text"],
+                runtime_preference=[{"effective_n_ctx": effective_tokens}],
+            ),
+        )
+    ptask = packing.create_workpacket(
+            id=f"{inference_object.user_id}:final:{job.job_id}",
+            disposition=WorkDisposition.DIRECT,
+            metadata={
+                "origin_stage": "main_ingress",
+                "phase": "final_response",
+            },
+            task=ctask,
+        )
+    
+    return await router.send(packet=ptask)
+
+
+async def execute_read_final_packet(
+    job: Job,
+    router: RouterService,
+    response: WorkResult,
+):
+    if response.status in ("completed", "failed"):
+        return response
+
+    backend = response.metadata.get("backend_ref", {})
+    if not backend:
+        return WorkResult(
+            status="failed",
+            work_id=response.work_id,
+            error="No backend found for accepted/running final response packet",
+        )
+
+    result = await router.retrieve_work(
+        work_id=response.work_id,
+        work_type=WorkType.LLM,
+        operation="analyze",
+        backend=backend,
+    )
+
+    if result.status in ("accepted", "running"):
+        result.metadata.setdefault("backend_ref", backend)
+
+    return result

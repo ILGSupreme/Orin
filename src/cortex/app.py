@@ -118,6 +118,7 @@ async def lifespan(app: FastAPI):
     app.state.router = RouterService(
         backend_client=app.state.backend_client,
         backend_services=app.state.discovery_service,
+        job_manager=app.state.job_manager,
         planner=app.state.planner,
     )
 
