@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import logging
 from typing import Any, Literal, Union, overload
@@ -8,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import TypeAdapter
 
 from common.factory import packing
+from common.presentation import formatting
 from common.jobs import Job, JobManager, JobSpec, PipelineStage
 from common.primer import Primer
 from common.protocol import unified_types
@@ -21,7 +23,11 @@ from common.protocol.routing_types import (
     WorkResult,
     WorkType,
 )
-from common.protocol.unified_types import PromptContextResponse, RuntimeMessage
+from common.protocol.unified_types import (
+    ContentPart,
+    PromptContextResponse,
+    RuntimeMessage,
+)
 from common.types import MAX_TOKENS_POLICY, SAFETY_TOKEN_SIZE, TEMPERATURE_POLICY
 from cortex.cli.command_router import CommandRouter
 from cortex.cortex import memory
@@ -32,8 +38,6 @@ from cortex.cortex.harness_types import (
     LightweightIngressInterpretationModel,
 )
 from cortex.cortex.prompts import (
-    TASK_SHAPING_GRAMMAR,
-    TURN_INTERPRETATION_GRAMMAR,
     build_final_response_messages,
     build_task_messages,
     build_task_shaping_messages,
@@ -42,6 +46,15 @@ from cortex.router.service import RouterService
 
 SystemInformationMode = Literal["lightweight", "response", "full"]
 SystemInformationPurpose = Literal["interpretation", "response"]
+
+
+@dataclass(slots=True)
+class ResponsePlan:
+    system_summary: str
+    ingress_interpretation: LightweightIngressInterpretationModel
+    background_job: Job | None = None
+    direct_text: str | None = None
+    respond_directly: bool = False
 
 
 class Harness:
@@ -89,21 +102,29 @@ class Harness:
                 ),
                 PipelineStage(
                     name="build_packets",
-                    runner=lambda job : execute_build_work_packets(job, self.router, self.primer),
+                    runner=lambda job: execute_build_work_packets(
+                        job, self.router, self.primer
+                    ),
                     timeout_seconds=180,
                 ),
                 PipelineStage(
                     name="read_and_send_packets",
-                    runner=lambda job: execute_read_and_send_packets(job, self.router, self.job_manager),
+                    runner=lambda job: execute_read_and_send_packets(
+                        job, self.router, self.job_manager
+                    ),
                     timeout_seconds=180,
                 ),
                 PipelineStage(
                     name="build_final_response_message",
-                    runner=lambda job: execute_final_response(job, self.router, self.primer),
-                    poller=lambda job, result: execute_read_final_packet(job, self.router, result),
+                    runner=lambda job: execute_final_response(
+                        job, self.router, self.primer
+                    ),
+                    poller=lambda job, result: execute_read_final_packet(
+                        job, self.router, result
+                    ),
                     timeout_seconds=180,
-                    poll_interval_seconds=2.0
-                )
+                    poll_interval_seconds=2.0,
+                ),
             ],
         )
 
@@ -188,26 +209,58 @@ class Harness:
         inference_object: InferenceObject,
         prompt_mode: Literal["terminal", "chat"],
     ):
-
         match prompt_mode:
             case "terminal":
-                (
-                    response_system_summary,
-                    ingress_interpretation,
-                    background_job,
-                ) = await self._response_terminal(
-                    inference_object=inference_object, prompt_mode="terminal"
+                plan = await self._response_terminal(
+                    inference_object=inference_object,
+                    prompt_mode="terminal",
                 )
             case "chat":
-                (
-                    response_system_summary,
-                    ingress_interpretation,
-                    background_job,
-                ) = await self._response_chat(
-                    inference_object=inference_object, prompt_mode="chat"
+                plan = await self._response_chat(
+                    inference_object=inference_object,
+                    prompt_mode="chat",
                 )
             case _:
                 raise ValueError("unknown prompt mode")
+
+        if plan.respond_directly:
+            if inference_object.stream:
+                return StreamingResponse(
+                    _output_generator(plan.direct_text),
+                    media_type="text/plain",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "X-Accel-Buffering": "no",
+                        "Session-Id": inference_object.session_id
+                        if inference_object.session_id
+                        else "",
+                    },
+                )
+            else:
+                return EgressResponse(
+                    content=[
+                        RuntimeMessage(
+                            role="assistant",
+                            parts=[
+                                ContentPart(
+                                    type="text",
+                                    data=plan.direct_text or "",
+                                    encoding="plain",
+                                    mime_type="text/plain",
+                                )
+                            ],
+                            metadata={
+                                "visibility": "user",
+                                "kind": "final",
+                            },
+                        )
+                    ],
+                    session_id=inference_object.session_id,
+                    metadata={
+                        "stream": False,
+                        "mode": "direct_response",
+                    },
+                )
 
         prompt_context = await memory.get_prompts_context(
             router=self.router,
@@ -224,18 +277,23 @@ class Harness:
             messages=inference_object.content,
             last_assistant_message=last_assistant_message,
             prompt_mode=prompt_mode,
-            ingress_interpretation=ingress_interpretation,
-            system_information=response_system_summary,
-            background_job_id=background_job.job_id if background_job else None,
+            ingress_interpretation=plan.ingress_interpretation,
+            system_information=plan.system_summary,
+            background_job_id=plan.background_job.job_id
+            if plan.background_job
+            else None,
         )
 
         reserved_output_tokens = MAX_TOKENS_POLICY.get("chat", 256)
+
         effective_tokens = _get_total_token_estimation(
             reserved_output_tokens=reserved_output_tokens,
             messages=runtime_messages,
             primer=self.primer,
         )
+
         logging.info(f"estimated tokens: {effective_tokens}")
+
         fits = _can_fit_request(
             effective_n_ctx=self.primer.status()["effective_n_ctx"],
             reserved_output_tokens=reserved_output_tokens,
@@ -262,25 +320,27 @@ class Harness:
                     else "",
                 },
             )
-        else:
-            response_messages = await self.primer.chat_text_message(
-                messages=runtime_messages,
-                constraints={"temperature": TEMPERATURE_POLICY.get("chat")},
-                operation="chat",
-            )
-            return EgressResponse(
-                content=response_messages,
-                session_id=inference_object.session_id,
-                metadata={
-                    "stream": False,
-                    "mode": "fast_response",
-                },
-            )
+
+        response_messages = await self.primer.chat_text_message(
+            messages=runtime_messages,
+            constraints={"temperature": TEMPERATURE_POLICY.get("chat")},
+            operation="chat",
+        )
+
+        return EgressResponse(
+            content=response_messages,
+            session_id=inference_object.session_id,
+            metadata={
+                "stream": False,
+                "mode": "fast_response",
+            },
+        )
 
     async def _response_terminal(
-        self, inference_object: InferenceObject, prompt_mode: IngressMode
-    ):
-
+        self,
+        inference_object: InferenceObject,
+        prompt_mode: IngressMode,
+    ) -> ResponsePlan:
         system_summary = await self.collate_system_information(
             inference_object=inference_object,
             prompt_mode=prompt_mode,
@@ -309,22 +369,65 @@ class Harness:
                     )
                 )
 
-        return (
-            await self.collate_system_information(
-                inference_object=inference_object,
-                prompt_mode=prompt_mode,
-                purpose="response",
-                terminal_action_result=terminal_action_result,
-                background_job_id="",
-            ),
-            ingress_interpretation,
-            None,
+                return ResponsePlan(
+                    system_summary="",
+                    ingress_interpretation=ingress_interpretation,
+                    direct_text=terminal_action_result,
+                    respond_directly=True,
+                )
+
+            if ingress_interpretation.action == "report_job_status":
+                if not inference_object.session_id:
+                    raise ValueError("No session id")
+
+                jobs = self.job_manager.list_jobs_for_session(
+                    session_id=inference_object.session_id
+                )
+
+                text = formatting.format_session_job_status(jobs=jobs)
+
+                return ResponsePlan(
+                    system_summary="",
+                    ingress_interpretation=ingress_interpretation,
+                    direct_text=text,
+                    respond_directly=True,
+                )
+
+            if ingress_interpretation.action == "get_job_result":
+                if not inference_object.session_id:
+                    raise ValueError("No session id")
+
+                jobs = self.job_manager.list_jobs_for_session(
+                    session_id=inference_object.session_id
+                )
+
+                text = formatting.format_latest_job_result(jobs=jobs)
+
+                return ResponsePlan(
+                    system_summary="",
+                    ingress_interpretation=ingress_interpretation,
+                    direct_text=text,
+                    respond_directly=True,
+                )
+
+        response_summary = await self.collate_system_information(
+            inference_object=inference_object,
+            prompt_mode=prompt_mode,
+            purpose="response",
+            terminal_action_result=terminal_action_result,
+            background_job_id="",
+        )
+
+        return ResponsePlan(
+            system_summary=response_summary,
+            ingress_interpretation=ingress_interpretation,
         )
 
     async def _response_chat(
-        self, inference_object: InferenceObject, prompt_mode: IngressMode
-    ):
-
+        self,
+        inference_object: InferenceObject,
+        prompt_mode: IngressMode,
+    ) -> ResponsePlan:
         system_summary = await self.collate_system_information(
             inference_object=inference_object,
             prompt_mode=prompt_mode,
@@ -338,7 +441,7 @@ class Harness:
         )
 
         background_job = None
-        terminal_action_result = None
+
         if ingress_interpretation.mode == "chat":
             if ingress_interpretation.action == "start_pipeline":
                 pipeline = ingress_interpretation.pipeline
@@ -359,16 +462,65 @@ class Harness:
                     pipeline=pipeline,
                 )
 
-        return (
-            await self.collate_system_information(
-                inference_object=inference_object,
-                prompt_mode=prompt_mode,
-                purpose="response",
-                terminal_action_result=terminal_action_result,
-                background_job_id=background_job.job_id if background_job else "",
-            ),
-            ingress_interpretation,
-            background_job,
+                text = (
+                    f"A deeper response is being worked on. "
+                    f"Background job `{background_job.job_id}` has been started. "
+                    "Ask for the status or result later."
+                )
+
+                return ResponsePlan(
+                    system_summary="",
+                    ingress_interpretation=ingress_interpretation,
+                    background_job=background_job,
+                    direct_text=text,
+                    respond_directly=True,
+                )
+
+            if ingress_interpretation.action == "report_job_status":
+                if not inference_object.session_id:
+                    raise ValueError("No session id")
+
+                jobs = self.job_manager.list_jobs_for_session(
+                    session_id=inference_object.session_id
+                )
+
+                text = formatting.format_session_job_status(jobs=jobs)
+
+                return ResponsePlan(
+                    system_summary="",
+                    ingress_interpretation=ingress_interpretation,
+                    direct_text=text,
+                    respond_directly=True,
+                )
+
+            if ingress_interpretation.action == "get_job_result":
+                if not inference_object.session_id:
+                    raise ValueError("No session id")
+
+                jobs = self.job_manager.list_jobs_for_session(
+                    session_id=inference_object.session_id
+                )
+
+                text = formatting.format_latest_job_result(jobs=jobs)
+
+                return ResponsePlan(
+                    system_summary="",
+                    ingress_interpretation=ingress_interpretation,
+                    direct_text=text,
+                    respond_directly=True,
+                )
+
+        response_summary = await self.collate_system_information(
+            inference_object=inference_object,
+            prompt_mode=prompt_mode,
+            purpose="response",
+            background_job_id=background_job.job_id if background_job else "",
+        )
+
+        return ResponsePlan(
+            system_summary=response_summary,
+            ingress_interpretation=ingress_interpretation,
+            background_job=background_job,
         )
 
     async def _lightweight_interpret(
@@ -538,7 +690,7 @@ class Harness:
 
 
 # ---------------------------------------------------------------------------
-# Private Functions
+# Private Free Functions
 # ---------------------------------------------------------------------------
 
 
@@ -624,7 +776,10 @@ async def _build_work_packet(
     )
     return wpacket
 
-def _extract_shaped_task_list(value: Any, capability_summary: dict[str,Any]) -> list[dict[str, Any]]:
+
+def _extract_shaped_task_list(
+    value: Any, capability_summary: dict[str, Any]
+) -> list[dict[str, Any]]:
     if isinstance(value, dict):
         if isinstance(value.get("task_items"), list):
             value = value["task_items"]
@@ -651,7 +806,9 @@ def _extract_shaped_task_list(value: Any, capability_summary: dict[str,Any]) -> 
                 f"Shaped task at index {index} must be an object. "
                 f"Got: {type(item).__name__}: {item!r}"
             )
-        normalized_item = _normalize_task_role(item=item, capability_summary=capability_summary)
+        normalized_item = _normalize_task_role(
+            item=item, capability_summary=capability_summary
+        )
 
         tasks.append(normalized_item)
 
@@ -664,7 +821,7 @@ def _normalize_task_role(
 ) -> dict[str, Any]:
     item = dict(item)
 
-    LLM_OPERATIONS = ["chat","summarize","classify","extract","analyze"]
+    LLM_OPERATIONS = ["chat", "summarize", "classify", "extract", "analyze"]
 
     operation = str(item.get("task_operation") or "").strip().lower()
     role = str(item.get("task_role") or "").strip().lower()
@@ -706,6 +863,15 @@ def _normalize_task_role(
 
     item["task_operation"] = operation
     return item
+
+
+def _output_generator(output_string: str | None):
+    output_string = "" if output_string is None else output_string
+
+    chunk_size = 64  # smaller = nicer streaming feel
+    for i in range(0, len(output_string), chunk_size):
+        yield output_string[i : i + chunk_size]
+
 
 # ---------------------------------------------------------------------------
 # Job Execute Functions
@@ -887,14 +1053,16 @@ async def execute_build_work_packets(job: Job, router: RouterService, primer: Pr
 
     try:
         shaped_raw = json.loads(shaped)
-        shaped_tasks = _extract_shaped_task_list(shaped_raw, capability_summary=_capabilities_summary)
+        shaped_tasks = _extract_shaped_task_list(
+            shaped_raw, capability_summary=_capabilities_summary
+        )
     except json.JSONDecodeError as e:
         return WorkResult(
             status="failed",
             work_id=f"{inference_object.user_id}:build_packets",
             error=e.msg,
         )
-    
+
     logging.info(shaped_tasks)
 
     work_packets = await _build_work_packets(
@@ -931,7 +1099,7 @@ async def execute_read_and_send_packets(
             work_id=f"{inference_object.user_id}:read_and_send_packets",
             error="batch id not found",
         )
-    
+
     logging.info("batch sequence")
 
     batch_results_raw = await job_manager.batch_progress(batch_id=send_batch_id)
@@ -950,6 +1118,7 @@ async def execute_read_and_send_packets(
         metadata={"packet_results": final_batch_results},
     )
 
+
 async def execute_read_packet_results(
     job: Job,
 ):
@@ -959,9 +1128,7 @@ async def execute_read_packet_results(
 
     batch_result_adapter = TypeAdapter(list[WorkResult])
 
-    payload_response = WorkResult.model_validate(
-        job.spec.payload.get("response")
-    )
+    payload_response = WorkResult.model_validate(job.spec.payload.get("response"))
 
     results = payload_response.metadata.get("packet_results", None)
 
@@ -1019,19 +1186,19 @@ async def execute_read_packet_results(
     )
 
 
-async def execute_final_response(job:Job, router: RouterService, primer: Primer):
+async def execute_final_response(job: Job, router: RouterService, primer: Primer):
 
     inference_object = InferenceObject.model_validate(
         job.spec.payload.get("inference_object")
     )
 
-    payload_response = WorkResult.model_validate(
-        job.spec.payload.get("response")
-    )
+    payload_response = WorkResult.model_validate(job.spec.payload.get("response"))
 
     collated_results = payload_response.metadata.get("collated_results")
 
-    prompt_context_instance: PromptContextResponse | None = await memory.get_prompts_context(
+    prompt_context_instance: (
+        PromptContextResponse | None
+    ) = await memory.get_prompts_context(
         router=router, inference_object=inference_object, limit=6
     )
 
@@ -1040,45 +1207,45 @@ async def execute_final_response(job:Job, router: RouterService, primer: Primer)
         prompt_context = prompt_context_instance.model_dump(mode="json")
 
     messages = build_final_response_messages(
-            messages=inference_object.content,
-            prompt_context=prompt_context,
-            collated_results=collated_results
-        )
+        messages=inference_object.content,
+        prompt_context=prompt_context,
+        collated_results=collated_results,
+    )
 
     constraints = {
-        "temperature":TEMPERATURE_POLICY.get("analyze", 0),
-        "stream":False,
+        "temperature": TEMPERATURE_POLICY.get("analyze", 0),
+        "stream": False,
     }
 
     effective_tokens = _get_total_token_estimation(
-            reserved_output_tokens=MAX_TOKENS_POLICY.get("analyze", 1024),
-            messages=messages,
-            primer=primer
-        )
+        reserved_output_tokens=MAX_TOKENS_POLICY.get("analyze", 1024),
+        messages=messages,
+        primer=primer,
+    )
 
     ctask = packing.create_canonical_task_messages(
-            work_type=WorkType.LLM,
-            operation="analyze",
-            messages=messages,
-            inputs={},
-            constraints=constraints,
-            routing_hints=RoutingHints(
-                role=WorkType.LLM,
-                required_capabilities=["chat"],
-                required_modalities=["text"],
-                runtime_preference=[{"effective_n_ctx": effective_tokens}],
-            ),
-        )
+        work_type=WorkType.LLM,
+        operation="analyze",
+        messages=messages,
+        inputs={},
+        constraints=constraints,
+        routing_hints=RoutingHints(
+            role=WorkType.LLM,
+            required_capabilities=["chat"],
+            required_modalities=["text"],
+            runtime_preference=[{"effective_n_ctx": effective_tokens}],
+        ),
+    )
     ptask = packing.create_workpacket(
-            id=f"{inference_object.user_id}:final:{job.job_id}",
-            disposition=WorkDisposition.DIRECT,
-            metadata={
-                "origin_stage": "main_ingress",
-                "phase": "final_response",
-            },
-            task=ctask,
-        )
-    
+        id=f"{inference_object.user_id}:final:{job.job_id}",
+        disposition=WorkDisposition.DIRECT,
+        metadata={
+            "origin_stage": "main_ingress",
+            "phase": "final_response",
+        },
+        task=ctask,
+    )
+
     return await router.send(packet=ptask)
 
 

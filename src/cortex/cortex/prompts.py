@@ -6,7 +6,6 @@ from common.protocol import unified_types
 from common.protocol.unified_types import (
     ContentPart,
     RuntimeMessage,
-    embed_system_message_user_dict,
 )
 from cortex.cortex.harness_types import (
     LightweightIngressInterpretationModel,
@@ -1439,7 +1438,7 @@ Return only the JSON object. No markdown. No explanation.
         "system_information": system_information or "",
     }
 
-    return embed_system_message_user_dict(system_text, payload)
+    return unified_types.embed_system_message_user_dict(system_text, payload)
 
 
 def build_chat_interpretation_messages(
@@ -1545,7 +1544,7 @@ Return only the JSON object. No markdown. No explanation.
         "system_information": system_information or "",
     }
 
-    return embed_system_message_user_dict(system_text, payload)
+    return unified_types.embed_system_message_user_dict(system_text, payload)
 
 
 def build_turn_interpretation_messages(

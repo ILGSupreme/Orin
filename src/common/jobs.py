@@ -8,7 +8,7 @@ import traceback
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal
-
+from common.presentation import formatting
 from common import time
 from common.protocol.routing_types import WorkResult
 
@@ -406,7 +406,7 @@ class JobManager:
                 if inspect.isawaitable(result):
                     result = await result
 
-                normalized = self._normalize_result(result)
+                normalized =formatting.as_dict(result)
                 job.latest_result = normalized
                 job.result = normalized
 
@@ -494,7 +494,7 @@ class JobManager:
                         result=result,
                     )
 
-                    normalized = self._normalize_result(result)
+                    normalized = formatting.as_dict(result)
                     latest_result = result
 
                     job.stage_results[stage.name] = normalized
@@ -529,7 +529,7 @@ class JobManager:
 
                 job.result = {
                     "status": "completed",
-                    "latest_result": self._normalize_result(latest_result),
+                    "latest_result": formatting.as_dict(latest_result),
                     "stage_results": job.stage_results,
                 }
 
@@ -633,28 +633,13 @@ class JobManager:
             polled: WorkResult = await stage.poller(job, latest)
 
             latest = polled
-            job.latest_result = self._normalize_result(latest)
+            job.latest_result = formatting.as_dict(latest)
 
         return latest
 
     # -------------------------------------------------------------------------
     # Helpers
     # -------------------------------------------------------------------------
-
-    def _normalize_result(self, result: Any) -> dict[str, Any]:
-        if result is None:
-            return {}
-
-        if isinstance(result, dict):
-            return result
-
-        if hasattr(result, "model_dump"):
-            return result.model_dump()
-
-        if hasattr(result, "to_dict"):
-            return result.to_dict()
-
-        return {"value": result}
 
     def _merge_stage_result_into_payload(
         self,
