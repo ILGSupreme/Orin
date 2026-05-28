@@ -13,10 +13,13 @@ from common.protocol.routing_types import WorkResult
 from common.protocol.unified_types import RuntimeMessage
 from common.types import MAX_TOKENS_POLICY, SAFETY_TOKEN_SIZE
 from common.types import Profile
-from common.system import profiler
+from common.system import configuration, profiler
+
 
 class Primer:
-    def __init__(self, external_http: httpx.AsyncClient) -> None:
+    def __init__(
+        self, external_http: httpx.AsyncClient, cfg: configuration.ServiceFileType
+    ) -> None:
         self._engine = None
         self.engine_type = None
         self._message_adapter = None
@@ -26,18 +29,30 @@ class Primer:
         self._external_http_client = external_http
         self._profile = Profile()
         self._generation_lock = asyncio.Lock()
+        self.cfg: configuration.ServiceFileType = cfg
 
         self.load_profile()
-    
+
     def load_profile(self):
         self._profile.set_machine_info(info=profiler.get_linux_info())
+
+    def primer_config(self):
+        match self.cfg:
+            case "cortex":
+                return configuration.get_configuration("cortex").primer
+            case "llm":
+                return configuration.get_configuration("llm").primer
+            case _:
+                raise RuntimeError(f"Unsupported Primer config type: {self.cfg}")
 
     async def load_model_provider(self, model_provider_type: str) -> None:
         if self.model_provider_type == model_provider_type and self._model_provider:
             return
 
         if model_provider_type == "huggingface":
-            self._model_provider = HFDownloader(external_http=self._external_http_client)
+            self._model_provider = HFDownloader(
+                external_http=self._external_http_client
+            )
         else:
             raise ValueError(f"Unsupported model provider = {model_provider_type}")
 
@@ -50,9 +65,9 @@ class Primer:
         await self.stop()
 
         if engine_type == "gguf":
-            self._engine = GGUFPrimerEngine()
+            self._engine = GGUFPrimerEngine(cfg=self.primer_config())
         elif engine_type == "vllm":
-            self._engine = VLLMPrimerEngine()
+            self._engine = VLLMPrimerEngine(cfg=self.primer_config())
         else:
             raise ValueError(f"Unsupported engine={engine_type}")
 
@@ -139,15 +154,15 @@ class Primer:
 
             kwargs["path"] = str(path)
 
-        if kwargs['path']:
+        if kwargs["path"]:
             profiles = profiler.get_model_profile(
-                    path=kwargs["path"],
-                    reserve_size=self._profile.reserve_size, 
-                    safety_size=self._profile.safety_size, 
-                    profile_factors=self._profile.runtime_profiles
-                )
+                path=kwargs["path"],
+                reserve_size=self._profile.reserve_size,
+                safety_size=self._profile.safety_size,
+                profile_factors=self._profile.runtime_profiles,
+            )
             self._profile.set_profiles(profiles=profiles)
-            kwargs['profile'] = self._profile.get_current_profile()
+            kwargs["profile"] = self._profile.get_current_profile()
 
         await self.load_message_adapter("openai", nothink=True)
         await self._engine.load_model(*args, **kwargs)
@@ -267,7 +282,7 @@ class Primer:
             )
 
         return content
-    
+
     async def chat_text_message(self, **kwargs: Any) -> list[RuntimeMessage]:
         if self._engine is None:
             raise ValueError("engine is not assigned")
@@ -330,7 +345,7 @@ class Primer:
                 temperature=temperature,
                 grammar=grammar,
             )
-    
+
     async def chat_json_message(self, **kwargs: Any) -> list[RuntimeMessage]:
         if self._engine is None:
             raise ValueError("engine is not assigned")
@@ -398,10 +413,10 @@ class Primer:
                 yield chunk
 
 
-
 # ---------------------------------------------------------------------------
 # Job Execute Functions
 # ---------------------------------------------------------------------------
+
 
 async def execute_load_model(job: Job, primer: Primer):
     arguments = dict(job.spec.payload)

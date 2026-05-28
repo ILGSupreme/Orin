@@ -168,7 +168,9 @@ def check_context_limit(
         return
 
     if not isinstance(constraints, dict):
-        raise InvalidFederatedPacketError("Federated packet task.constraints is invalid")
+        raise InvalidFederatedPacketError(
+            "Federated packet task.constraints is invalid"
+        )
 
     requested_context = _first_int(
         constraints,
@@ -201,7 +203,9 @@ def check_result_limit(
         return
 
     if not isinstance(constraints, dict):
-        raise InvalidFederatedPacketError("Federated packet task.constraints is invalid")
+        raise InvalidFederatedPacketError(
+            "Federated packet task.constraints is invalid"
+        )
 
     requested_result_tokens = _first_int(
         constraints,

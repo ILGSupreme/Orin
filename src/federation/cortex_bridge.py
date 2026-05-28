@@ -79,25 +79,25 @@ class CortexBridge:
         now = utc_now()
 
         record = FederationWorkRecord(
-        network_id=network.network_id,
-        work_id=result_work_id,
-        request_id=request_id,
-        origin_cluster_id=member.cluster_id,
-        target_cluster_id=target_cluster_id,
-        status=status,
-        result=result if status in {"completed", "failed"} else None,
-        error=self._extract_error(result),
-        created_at=now,
-        updated_at=now,
-        completed_at=now if status in {"completed", "failed"} else None,
-        metadata={
-            "source": "cortex_bridge",
-            "network_slug": network.slug,
-            "origin_cluster_id": member.cluster_id,
-            "cortex_status": status,
-            "cortex_metadata": result.get("metadata", {}),
-        },
-    )
+            network_id=network.network_id,
+            work_id=result_work_id,
+            request_id=request_id,
+            origin_cluster_id=member.cluster_id,
+            target_cluster_id=target_cluster_id,
+            status=status,
+            result=result if status in {"completed", "failed"} else None,
+            error=self._extract_error(result),
+            created_at=now,
+            updated_at=now,
+            completed_at=now if status in {"completed", "failed"} else None,
+            metadata={
+                "source": "cortex_bridge",
+                "network_slug": network.slug,
+                "origin_cluster_id": member.cluster_id,
+                "cortex_status": status,
+                "cortex_metadata": result.get("metadata", {}),
+            },
+        )
 
         return record
 
@@ -179,7 +179,9 @@ class CortexBridge:
 
         if isinstance(status, str):
             if status not in {"accepted", "running", "completed", "failed"}:
-                raise CortexBridgeStatusError(f"Unsupported Cortex result status: {status}")
+                raise CortexBridgeStatusError(
+                    f"Unsupported Cortex result status: {status}"
+                )
             return status
 
         if result.get("ok") is False:

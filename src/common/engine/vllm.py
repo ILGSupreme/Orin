@@ -16,8 +16,7 @@ PrimerState = Literal["unloaded", "loading", "ready", "error"]
 
 
 class VLLMPrimerEngine:
-    def __init__(self) -> None:
-        cfg = configuration.get_configuration("cortex").primer
+    def __init__(self, cfg: configuration.PrimerConfiguration) -> None:
         self.model_id = cfg.model_id
         self.max_new_tokens = cfg.max_new_tokens
         self.temperature = cfg.temperature

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 from common.system import configuration
 
-from pydantic import BaseModel,field_validator
+from pydantic import BaseModel, field_validator
 
 
 FederationVisibility = Literal["public", "unlisted", "private"]
@@ -86,7 +86,11 @@ class FederationSettings(BaseModel):
         return Path(value).expanduser().resolve()
 
     @field_validator(
-        "memory_work_path","cortex_work_path","cortex_work_result_path","cortex_network_path")
+        "memory_work_path",
+        "cortex_work_path",
+        "cortex_work_result_path",
+        "cortex_network_path",
+    )
     @classmethod
     def _path_must_start_with_slash(cls, value: str) -> str:
         if not value.startswith("/"):
@@ -125,7 +129,7 @@ class FederationSettings(BaseModel):
     def cortex_work_result_url(self, work_id: str) -> str:
         path = self.cortex_work_result_path.format(work_id=work_id)
         return f"{self.cortex_base_url}{path}"
-    
+
     def cortex_network_url(self) -> str:
         return f"{self.cortex_base_url}{self.cortex_network_path}"
 

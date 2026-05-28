@@ -91,8 +91,12 @@ class MemberService:
             member.public_key = public_key
             member.role = role
             member.status = status
-            member.allowed_work_types = list(allowed_work_types or member.allowed_work_types)
-            member.allowed_operations = list(allowed_operations or member.allowed_operations)
+            member.allowed_work_types = list(
+                allowed_work_types or member.allowed_work_types
+            )
+            member.allowed_operations = list(
+                allowed_operations or member.allowed_operations
+            )
             member.advertised_capabilities = list(
                 advertised_capabilities or member.advertised_capabilities
             )

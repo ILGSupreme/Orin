@@ -11,6 +11,7 @@ from common.log import LogStream, LogStreamHandler
 from common.primer import Primer
 from common.protocol.ingress_types import LoadBackendRequest, LoadModelRequest
 from common.protocol.routing_types import WorkPacket
+from common.system import configuration
 from llm.runtime import GenerativeModelRuntime
 
 log_stream = LogStream()
@@ -46,6 +47,9 @@ if not has_attach_handler:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+
+    configuration.load_configuration_defaults("llm")
+
     app.state.internal_http = httpx.AsyncClient(
         timeout=httpx.Timeout(180.0, connect=2.0),
         limits=httpx.Limits(
@@ -64,7 +68,7 @@ async def lifespan(app: FastAPI):
         follow_redirects=True,
     )
 
-    app.state.primer = Primer(external_http=app.state.external_http)
+    app.state.primer = Primer(external_http=app.state.external_http, cfg="llm")
     app.state.job_manager = JobManager()
     app.state.generative_runtime = GenerativeModelRuntime(primer=app.state.primer, job_manager=app.state.job_manager)
 

@@ -97,6 +97,9 @@ LOCAL_REGISTRY_ENDPOINT=""
 
 ASSUME_YES="false"
 
+FEDERATION_NODE_PORT="30081"
+FEDERATION_PVC_SIZE="1Gi"
+
 
 parse_args() {
   while [ "$#" -gt 0 ]; do
@@ -427,6 +430,11 @@ write_configuration() {
   local platform="$1"
   local nvidia_gpu="$2"
 
+  local primer_n_gpu_layer=0
+  if [ "$nvidia_gpu" = "true" ]; then
+    primer_n_gpu_layer=-1
+  fi
+
   mkdir -p "$(dirname "$CONFIG_PATH")"
 
   tee "$CONFIG_PATH" >/dev/null <<EOF
@@ -451,12 +459,63 @@ write_configuration() {
   "deployment": {
     "default_port": 8080,
     "cortex_node_port": ${CORTEX_NODE_PORT},
+    "federation_node_port": ${FEDERATION_NODE_PORT},
     "pvc_size": "30Gi",
     "pvc_storage_class_name": "local-path",
     "pvc_mount_path": "/models/huggingface",
     "image_pull_policy": "Always",
     "runtime_class_name": "nvidia",
     "cortex_service_account_name": "${CORTEX_SERVICE_ACCOUNT}"
+  },
+
+  "primer": {
+    "backend": "",
+    "model_id": "",
+    "model_path": "",
+    "tokenizer_path": "",
+    "max_new_tokens": 1400,
+    "temperature": 0.1,
+    "top_p": 0.95,
+    "max_model_len": 4096,
+    "n_gpu_layer": ${primer_n_gpu_layer},
+    "n_threads": 6,
+    "n_batch": 512,
+    "verbose": false,
+    "gpu_memory_util": 0.50,
+    "tensor_parallel_size": 1
+  },
+
+  "federation": {
+    "app_name": "orin-federation",
+    "protocol_version": "v1",
+    "host": "0.0.0.0",
+    "port": 8080,
+    "cluster_id": "",
+    "data_dir": "/data/federation",
+    "private_key_path": "/data/federation/identity/ed25519_private.key",
+    "public_key_path": "/data/federation/identity/ed25519_public.key",
+
+    "memory_base_url": "http://memory-service.${ORIN_NAMESPACE}.svc.cluster.local:8080",
+    "memory_work_path": "/work",
+
+    "public_base_url": "http://${HOST_IP}:${FEDERATION_NODE_PORT}",
+
+    "cortex_base_url": "http://cortex-service.${ORIN_NAMESPACE}.svc.cluster.local:8080",
+    "cortex_work_path": "/work",
+    "cortex_work_result_path": "/work/{work_id}",
+    "cortex_network_path": "/network",
+
+    "default_network_visibility": "public",
+    "default_join_mode": "token",
+
+    "request_ttl_seconds": 300,
+    "allowed_clock_skew_seconds": 60,
+    "nonce_ttl_seconds": 600,
+    "max_request_bytes": 1000000,
+
+    "enable_remote_work_submission": true,
+    "enable_capability_publish": true,
+    "enable_member_heartbeat": true
   }
 }
 EOF
@@ -658,6 +717,7 @@ label_host_node() {
     orin.role.backend=true \
     orin.backend.cortex=true \
     orin.backend.memory=true \
+    orin.backend.federation=true \
     "orin.backend.${CORTEX_SIZE}=true" \
     "orin.platform=${DETECTED_PLATFORM}" \
     --overwrite
@@ -905,6 +965,121 @@ spec:
 EOF
 }
 
+deploy_federation() {
+  local federation_image
+  federation_image="$(image_for federation "$DETECTED_PLATFORM")"
+
+  if [ "$federation_image" = "unsupported" ]; then
+    echo "Unsupported platform for federation image: $DETECTED_PLATFORM"
+    exit 1
+  fi
+
+  k3s kubectl -n "$ORIN_NAMESPACE" apply -f - <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: federation-pvc
+  namespace: ${ORIN_NAMESPACE}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: ${FEDERATION_PVC_SIZE}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: federation
+  namespace: ${ORIN_NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: federation
+  template:
+    metadata:
+      labels:
+        app: federation
+    spec:
+      nodeSelector:
+        orin.role.backend: "true"
+        orin.backend.federation: "true"
+        orin.platform: "${DETECTED_PLATFORM}"
+      enableServiceLinks: false
+      containers:
+        - name: federation
+          image: ${federation_image}
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 8
+          startupProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 120
+          volumeMounts:
+            - name: deployment-configuration
+              mountPath: /data/configuration
+              subPath: configuration
+              readOnly: true
+            - name: federation-data
+              mountPath: /data/federation
+      volumes:
+        - name: deployment-configuration
+          configMap:
+            name: deployment-configuration
+        - name: federation-data
+          persistentVolumeClaim:
+            claimName: federation-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: federation-service
+  namespace: ${ORIN_NAMESPACE}
+  labels:
+    app: federation
+    orin.ai/role: "federation"
+  annotations:
+    orin.ai/kind: "federation"
+    orin.ai/role: "federation"
+    orin.ai/visibility: "external"
+    orin.ai/health_path: "/health"
+spec:
+  selector:
+    app: federation
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      nodePort: ${FEDERATION_NODE_PORT}
+      protocol: TCP
+  type: NodePort
+EOF
+}
+
 wait_for_memory() {
   echo "Waiting for Memory deployment to become available..."
 
@@ -929,6 +1104,21 @@ wait_for_cortex() {
      k3s kubectl -n "$ORIN_NAMESPACE" get pods -l app=cortex -o wide || true
      k3s kubectl -n "$ORIN_NAMESPACE" describe pod -l app=cortex || true
      k3s kubectl -n "$ORIN_NAMESPACE" logs -l app=cortex --tail=100 || true
+    return 1
+  }
+}
+
+wait_for_federation() {
+  echo "Waiting for Federation deployment to become available..."
+
+  k3s kubectl -n "$ORIN_NAMESPACE" get pods -l app=federation -o wide || true
+
+  k3s kubectl -n "$ORIN_NAMESPACE" rollout status deployment/federation --timeout=20m || {
+    echo
+    echo "Federation rollout failed or timed out. Debug info:"
+    k3s kubectl -n "$ORIN_NAMESPACE" get pods -l app=federation -o wide || true
+    k3s kubectl -n "$ORIN_NAMESPACE" describe pod -l app=federation || true
+    k3s kubectl -n "$ORIN_NAMESPACE" logs -l app=federation --tail=100 || true
     return 1
   }
 }
@@ -968,13 +1158,17 @@ main() {
   wait_for_memory
   deploy_cortex
   wait_for_cortex
+  deploy_federation
+  wait_for_federation
 
   echo
-  echo "success: Cortex deployed"
-  echo "endpoint: http://${HOST_IP}:${CORTEX_NODE_PORT}"
+  echo "success: Orin deployed"
+  echo "cortex endpoint:     http://${HOST_IP}:${CORTEX_NODE_PORT}"
+  echo "federation endpoint: http://${HOST_IP}:${FEDERATION_NODE_PORT}"
   echo
   echo "test:"
   echo "  curl -s http://${HOST_IP}:${CORTEX_NODE_PORT}/health"
+  echo "  curl -s http://${HOST_IP}:${FEDERATION_NODE_PORT}/health"
 }
 
 main "$@"

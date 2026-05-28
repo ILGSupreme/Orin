@@ -290,4 +290,6 @@ class NetworkRegistry:
             raise NetworkRegistryError("FederationNetwork name cannot be empty")
 
         if not network.owner_cluster_id.strip():
-            raise NetworkRegistryError("FederationNetwork owner_cluster_id cannot be empty")
+            raise NetworkRegistryError(
+                "FederationNetwork owner_cluster_id cannot be empty"
+            )

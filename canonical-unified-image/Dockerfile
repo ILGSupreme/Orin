@@ -76,18 +76,3 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/venv /opt/venv
-
-# Optional default runtime envs for Primer-capable services
-ENV PRIMER_BACKEND=
-ENV PRIMER_MODEL_ID=
-ENV PRIMER_MODEL_PATH=
-ENV PRIMER_TOKENIZER_ID=
-ENV PRIMER_MAX_MODEL_LEN=4096
-ENV PRIMER_MAX_NEW_TOKENS=1400
-ENV PRIMER_TEMPERATURE=0.1
-ENV PRIMER_TOP_P=0.95
-ENV PRIMER_GPU_MEMORY_UTILIZATION=0.50
-ENV PRIMER_TENSOR_PARALLEL_SIZE=1
-ENV PRIMER_N_GPU_LAYERS=-1
-ENV PRIMER_N_THREADS=6
-ENV PRIMER_N_BATCH=512

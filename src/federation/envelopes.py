@@ -8,7 +8,6 @@ from uuid import uuid4
 
 from federation.identity import (
     ClusterIdentity,
-    InvalidSignatureError,
     canonical_json_bytes,
     require_valid_signature,
 )
@@ -181,8 +180,7 @@ def validate_envelope_version(
 
     if envelope.federation_version != settings.protocol_version:
         raise EnvelopeVersionError(
-            "Unsupported federation version: "
-            f"{envelope.federation_version}"
+            f"Unsupported federation version: {envelope.federation_version}"
         )
 
 

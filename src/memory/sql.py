@@ -324,6 +324,21 @@ class MemoryDB:
                     FOREIGN KEY(source_event_id) REFERENCES memory_events(id),
                     FOREIGN KEY(supersedes_id) REFERENCES memory_claims(id)
                 );
+                CREATE TABLE IF NOT EXISTS federation_records (
+                    record_type TEXT NOT NULL,
+                    record_id TEXT NOT NULL,
+
+                    parent_id TEXT,
+                    slug TEXT,
+
+                    value_json TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+
+                    PRIMARY KEY (record_type, record_id)
+                );
                 """
             )
 
@@ -352,6 +367,15 @@ class MemoryDB:
 
                 CREATE INDEX IF NOT EXISTS idx_note_index_user_updated
                 ON note_index(user_id, updated_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_federation_records_type_updated
+                ON federation_records(record_type, updated_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_federation_records_type_parent_updated
+                ON federation_records(record_type, parent_id, updated_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_federation_records_type_slug
+                ON federation_records(record_type, slug);
                 """
             )
 
@@ -879,3 +903,153 @@ class MemoryDB:
             items.append(item)
 
         return items
+    
+    # ------------------------- federation records -------------------------
+
+    def put_federation_record(
+        self,
+        record_type: str,
+        record_id: str,
+        value: dict[str, Any],
+        parent_id: str | None = None,
+        slug: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        now = utc_now()
+        value_json = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True)
+
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO federation_records (
+                    record_type,
+                    record_id,
+                    parent_id,
+                    slug,
+                    value_json,
+                    metadata_json,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(record_type, record_id)
+                DO UPDATE SET
+                    parent_id = excluded.parent_id,
+                    slug = excluded.slug,
+                    value_json = excluded.value_json,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    record_type,
+                    record_id,
+                    parent_id,
+                    slug,
+                    value_json,
+                    metadata_json,
+                    now,
+                    now,
+                ),
+            )
+
+            row = conn.execute(
+                """
+                SELECT *
+                FROM federation_records
+                WHERE record_type = ?
+                AND record_id = ?
+                """,
+                (record_type, record_id),
+            ).fetchone()
+
+        if row is None:
+            raise RuntimeError("Failed to read federation record after upsert")
+
+        return self._parse_federation_record(row)
+
+
+    def get_federation_record(
+        self,
+        record_type: str,
+        record_id: str,
+    ) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM federation_records
+                WHERE record_type = ?
+                AND record_id = ?
+                """,
+                (record_type, record_id),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return self._parse_federation_record(row)
+
+
+    def list_federation_records(
+        self,
+        record_type: str,
+        parent_id: str | None = None,
+        slug: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        query = """
+            SELECT *
+            FROM federation_records
+            WHERE record_type = ?
+        """
+        params: list[Any] = [record_type]
+
+        if parent_id is not None:
+            query += " AND parent_id = ?"
+            params.append(parent_id)
+
+        if slug is not None:
+            query += " AND slug = ?"
+            params.append(slug)
+
+        query += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(limit)
+
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+
+        return [self._parse_federation_record(row) for row in rows]
+
+
+    def delete_federation_record(
+        self,
+        record_type: str,
+        record_id: str,
+    ) -> dict[str, Any]:
+        existing = self.get_federation_record(
+            record_type=record_type,
+            record_id=record_id,
+        )
+
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                DELETE FROM federation_records
+                WHERE record_type = ?
+                AND record_id = ?
+                """,
+                (record_type, record_id),
+            )
+
+        return {
+            "deleted": cur.rowcount > 0,
+            "record": existing,
+        }
+
+
+    def _parse_federation_record(self, row: sqlite3.Row) -> dict[str, Any]:
+        item = dict(row)
+        item["value"] = json.loads(item.pop("value_json"))
+        item["metadata"] = json.loads(item.pop("metadata_json"))
+        return item

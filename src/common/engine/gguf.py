@@ -16,13 +16,10 @@ PrimerState = Literal["unloaded", "loading", "ready", "error"]
 
 
 class GGUFPrimerEngine:
-    def __init__(self) -> None:
-
-        cfg = configuration.get_configuration("cortex").primer
-
+    def __init__(self, cfg: configuration.PrimerConfiguration) -> None:
         self.model_id = cfg.model_id
         self.model_path = cfg.model_path
-        self.tokenizer_id = cfg.tokenizer_path
+        self.tokenizer_id = cfg.tokenizer_id
         self.max_new_tokens = cfg.max_new_tokens
         self.temperature = cfg.temperature
         self.top_p = cfg.top_p

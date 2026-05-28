@@ -9,7 +9,7 @@ from typing import Any, Literal, overload, cast
 from pydantic import BaseModel, Field, field_validator
 
 
-ServiceFileType = Literal["cortex", "federation"]
+ServiceFileType = Literal["cortex", "llm", "federation"]
 
 ImagePullPolicy = Literal["IfNotPresent", "Always", "Never"]
 RuntimeClassName = Literal["nvidia", "runc"]
@@ -42,20 +42,25 @@ class DeploymentConfiguration(BaseModel):
     cortex_service_account_name: str = "cortex"
 
 class PrimerConfiguration(BaseModel):
-    model_id : str = ""
-    model_path : str = ""
-    tokenizer_path : str = ""
-    max_new_tokens : int = 0
+    backend: str = ""
+
+    model_id: str = ""
+    model_path: str = ""
+    tokenizer_id: str = ""
+
+    max_new_tokens: int = 1400
     temperature: float = 0.1
-    top_p: float = 0.0
-    max_model_len: int = 0
-    n_gpu_layer: int = 0
-    n_threads: int = 0
-    n_batch: int = 0
+    top_p: float = 0.95
+    max_model_len: int = 4096
+
+    n_gpu_layer: int = -1
+    n_threads: int = 6
+    n_batch: int = 512
     verbose: bool = False
-    ### VLLM
+
+    # vLLM
     gpu_memory_util: float = 0.50
-    tensor_parallel_size: int = 1 
+    tensor_parallel_size: int = 1
 
 class CortexConfiguration(BaseModel):
     namespace: str = "orin"
@@ -77,6 +82,14 @@ class CortexConfiguration(BaseModel):
 
     images: ImageConfiguration = Field(default_factory=ImageConfiguration)
     deployment: DeploymentConfiguration = Field(default_factory=DeploymentConfiguration)
+    primer: PrimerConfiguration = Field(default_factory=PrimerConfiguration)
+
+
+class LLMConfiguration(BaseModel):
+    namespace: str = "orin"
+    port: int = 8080
+    in_cluster: bool = True
+
     primer: PrimerConfiguration = Field(default_factory=PrimerConfiguration)
 
 
@@ -150,12 +163,13 @@ class FederationConfiguration(BaseModel):
         return f"{self.cortex_base_url}{path}"
 
 
-ConfigurationFile = CortexConfiguration | FederationConfiguration
+ConfigurationFile = CortexConfiguration | LLMConfiguration | FederationConfiguration
 
 
 DEFAULT_CONFIGURATION_PATHS: dict[ServiceFileType, Path] = {
     "cortex": Path("/data/configuration"),
-    "federation": Path("/data/federation/configuration"),
+    "llm": Path("/data/configuration"),
+    "federation": Path("/data/configuration"),
 }
 
 
@@ -222,6 +236,47 @@ def load_configuration_file(
         case "federation":
             config = FederationConfiguration.model_validate(raw_config)
 
+        case "llm":
+            config = LLMConfiguration()
+
+        case _:
+            raise ConfigurationError(f"Unsupported service type: {service_type}")
+
+    _CONFIGURATION_FILE = config
+    _CONFIGURATION_SERVICE_TYPE = service_type
+
+    return config
+
+
+@overload
+def load_configuration_defaults(service_type: Literal["cortex"]) -> CortexConfiguration:
+    ...
+
+
+@overload
+def load_configuration_defaults(service_type: Literal["llm"]) -> LLMConfiguration:
+    ...
+
+
+@overload
+def load_configuration_defaults(service_type: Literal["federation"]) -> FederationConfiguration:
+    ...
+
+
+def load_configuration_defaults(service_type: ServiceFileType) -> ConfigurationFile:
+    global _CONFIGURATION_FILE
+    global _CONFIGURATION_SERVICE_TYPE
+
+    match service_type:
+        case "cortex":
+            config = CortexConfiguration()
+
+        case "llm":
+            config = LLMConfiguration()
+
+        case "federation":
+            config = FederationConfiguration()
+
         case _:
             raise ConfigurationError(f"Unsupported service type: {service_type}")
 
@@ -233,6 +288,10 @@ def load_configuration_file(
 
 @overload
 def get_configuration(service_type: Literal["cortex"]) -> CortexConfiguration:
+    ...
+
+@overload
+def get_configuration(service_type: Literal["llm"]) -> LLMConfiguration:
     ...
 
 
@@ -263,5 +322,8 @@ def get_configuration(
 
     if service_type == "federation":
         return cast(FederationConfiguration, _CONFIGURATION_FILE)
+    
+    if service_type == "llm":
+        return cast(LLMConfiguration, _CONFIGURATION_FILE)
 
     return _CONFIGURATION_FILE

@@ -7,7 +7,6 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
-from pydantic import BaseModel
 
 from .envelopes import create_envelope, envelope_to_json
 from .identity import ClusterIdentity
@@ -275,11 +274,7 @@ class FederationClient:
 
         payload = {
             "network_id": network_id,
-            "body": {
-                key: value
-                for key, value in body.items()
-                if key != "signature"
-            },
+            "body": {key: value for key, value in body.items() if key != "signature"},
         }
 
         body["signature"] = self.identity.sign_json(payload)
@@ -292,7 +287,9 @@ class FederationClient:
         try:
             response = await self.http.get(url)
         except httpx.HTTPError as exc:
-            raise FederationClientHttpError(f"Federation GET failed: {url}: {exc}") from exc
+            raise FederationClientHttpError(
+                f"Federation GET failed: {url}: {exc}"
+            ) from exc
 
         return self._handle_response(response, context=f"GET {url}")
 
@@ -304,7 +301,9 @@ class FederationClient:
         try:
             response = await self.http.post(url, json=payload)
         except httpx.HTTPError as exc:
-            raise FederationClientHttpError(f"Federation POST failed: {url}: {exc}") from exc
+            raise FederationClientHttpError(
+                f"Federation POST failed: {url}: {exc}"
+            ) from exc
 
         return self._handle_response(response, context=f"POST {url}")
 

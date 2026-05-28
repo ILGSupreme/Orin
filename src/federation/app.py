@@ -30,7 +30,6 @@ from .models import (
     CreateNetworkRequest,
     CreateNetworkResponse,
     FederatedWorkEnvelope,
-    FederationWorkRecord,
     GetFederatedWorkResponse,
     HeartbeatRequest,
     HeartbeatResponse,
@@ -154,8 +153,10 @@ def members(request: Request) -> MemberService:
 def nonce_store(request: Request) -> LocalNonceStore:
     return request.app.state.nonce_store
 
+
 def capabilities(request: Request) -> CapabilityService:
     return request.app.state.capabilities
+
 
 def cortex_bridge(request: Request) -> CortexBridge:
     return request.app.state.cortex_bridge
@@ -249,7 +250,10 @@ async def list_networks(request: Request) -> dict[str, Any]:
 
     return {
         "ok": True,
-        "networks": [registry.public_view(network).model_dump(mode="json") for network in networks],
+        "networks": [
+            registry.public_view(network).model_dump(mode="json")
+            for network in networks
+        ],
     }
 
 
@@ -384,6 +388,7 @@ async def get_network(
             detail=str(exc),
         ) from exc
 
+
 @app.get("/federation/networks/{slug}/capabilities")
 async def get_network_capabilities(
     request: Request,
@@ -414,7 +419,8 @@ async def get_network_capabilities(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(exc),
         ) from exc
-    
+
+
 @app.post("/federation/networks/{slug}/capabilities/refresh")
 async def refresh_network_capabilities(
     request: Request,
@@ -452,6 +458,7 @@ async def refresh_network_capabilities(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+
 
 # ---------------------------------------------------------------------------
 # Member/private endpoints
@@ -542,7 +549,12 @@ async def publish_capabilities(
             accepted_count=len(updated.advertised_capabilities),
         )
 
-    except (NetworkRegistryError, MemberError, IdentityError, FederationPolicyError) as exc:
+    except (
+        NetworkRegistryError,
+        MemberError,
+        IdentityError,
+        FederationPolicyError,
+    ) as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),

@@ -57,6 +57,9 @@ if not has_attach_handler:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+
+    configuration.load_configuration_file("cortex")
+
     app.state.internal_http = httpx.AsyncClient(
         timeout=httpx.Timeout(180.0, connect=2.0),
         limits=httpx.Limits(
@@ -75,10 +78,8 @@ async def lifespan(app: FastAPI):
         follow_redirects=True,
     )
 
-    configuration.load_configuration_file("cortex")
-
     app.state.primer = Primer(
-        external_http=app.state.external_http,
+        external_http=app.state.external_http, cfg="cortex"
     )
 
     app.state.job_manager = JobManager()

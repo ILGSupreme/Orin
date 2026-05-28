@@ -125,12 +125,16 @@ class CapabilityService:
             response = await self.http.get(url)
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise CapabilitySourceError(f"Failed to read Cortex network state: {exc}") from exc
+            raise CapabilitySourceError(
+                f"Failed to read Cortex network state: {exc}"
+            ) from exc
 
         try:
             payload = response.json()
         except ValueError as exc:
-            raise CapabilitySourceError("Cortex /network returned invalid JSON") from exc
+            raise CapabilitySourceError(
+                "Cortex /network returned invalid JSON"
+            ) from exc
 
         return extract_backend_list(payload)
 
@@ -296,7 +300,8 @@ def merge_capability_summaries(
             CapabilitySummary(
                 work_type=work_type,
                 operations=operations,
-                modalities=modalities or DEFAULT_MODALITIES_BY_WORK_TYPE.get(
+                modalities=modalities
+                or DEFAULT_MODALITIES_BY_WORK_TYPE.get(
                     work_type,
                     ["text"],
                 ),

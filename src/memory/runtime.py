@@ -20,6 +20,12 @@ from common.protocol.routing_types import (
 from common.protocol.unified_types import RuntimeMessage
 from memory.sql import DB_PATH, NOTES_DIR, SUMMARIES_DIR, FileMemory, MemoryDB
 
+FEDERATION_RECORD_OPS = {
+    "federation_put_record",
+    "federation_get_record",
+    "federation_list_records",
+    "federation_delete_record",
+}
 
 class MemoryRuntime:
     def __init__(self) -> None:
@@ -31,10 +37,17 @@ class MemoryRuntime:
         memory_request = req.task.memory_request
         inputs = req.task.inputs
 
-        if not memory_request:
-            raise ValueError("Memory Request is not set")
-
         try:
+            if op in FEDERATION_RECORD_OPS:
+                return self._handle_federation_record_operation(
+                    req=req,
+                    op=op,
+                    inputs=inputs,
+                )
+
+            if not memory_request:
+                raise ValueError("Memory Request is not set")
+            
             match op:
                 case "create_summary":
                     if not isinstance(memory_request.request, Summary):
@@ -325,6 +338,9 @@ class MemoryRuntime:
 
                     metadata_response = []
 
+                    if not memory_request.session_id:
+                        raise ValueError("Session Id not set")
+
                     for part in memory_message_request.parts:
                         message = self._memoryDB.create_chat_message(
                             session_id=memory_request.session_id,
@@ -338,6 +354,10 @@ class MemoryRuntime:
                     return self._ok(req=req, message=metadata_response)
 
                 case "list_recent_messages":
+
+                    if not memory_request.session_id:
+                        raise ValueError("Session Id not set")
+
                     messages = self._memoryDB.list_recent_chat_messages(
                         user_id=memory_request.user_id,
                         session_id=memory_request.session_id,
@@ -357,6 +377,174 @@ class MemoryRuntime:
 
     async def handle_egress(self, work_id: str):
         return {"status": True}
+    
+    def _handle_federation_record_operation(
+        self,
+        req: WorkPacket,
+        op: str,
+        inputs: dict[str, Any],
+    ) -> WorkResult:
+        match op:
+            case "federation_put_record":
+                return self._handle_federation_put_record(req=req, inputs=inputs)
+
+            case "federation_get_record":
+                return self._handle_federation_get_record(req=req, inputs=inputs)
+
+            case "federation_list_records":
+                return self._handle_federation_list_records(req=req, inputs=inputs)
+
+            case "federation_delete_record":
+                return self._handle_federation_delete_record(req=req, inputs=inputs)
+
+            case _:
+                raise ValueError(f"Unsupported federation record operation: {op}")
+    
+    def _require_str_input(
+        self,
+        inputs: dict[str, Any],
+        name: str,
+        *aliases: str,
+    ) -> str:
+        value = inputs.get(name)
+
+        if value is None:
+            for alias in aliases:
+                value = inputs.get(alias)
+                if value is not None:
+                    break
+
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"Missing or invalid input: {name}")
+
+        return value.strip()
+
+
+    def _optional_str_input(
+        self,
+        inputs: dict[str, Any],
+        name: str,
+        *aliases: str,
+    ) -> str | None:
+        value = inputs.get(name)
+
+        if value is None:
+            for alias in aliases:
+                value = inputs.get(alias)
+                if value is not None:
+                    break
+
+        if value is None:
+            return None
+
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"Invalid input: {name}")
+
+        return value.strip()
+
+
+    def _handle_federation_put_record(
+        self,
+        req: WorkPacket,
+        inputs: dict[str, Any],
+    ) -> WorkResult:
+        record_type = self._require_str_input(inputs, "record_type", "type")
+        record_id = self._require_str_input(inputs, "record_id", "id", "key")
+
+        value = inputs.get("value", inputs.get("record"))
+        if not isinstance(value, dict):
+            raise ValueError("Missing or invalid input: value")
+
+        parent_id = self._optional_str_input(inputs, "parent_id", "network_id")
+        slug = self._optional_str_input(inputs, "slug")
+
+        metadata = inputs.get("metadata") or {}
+        if not isinstance(metadata, dict):
+            raise ValueError("Invalid input: metadata")
+
+        record = self._memoryDB.put_federation_record(
+            record_type=record_type,
+            record_id=record_id,
+            value=value,
+            parent_id=parent_id,
+            slug=slug,
+            metadata=metadata,
+        )
+
+        return self._ok(
+            req=req,
+            record=record,
+        )
+
+
+    def _handle_federation_get_record(
+        self,
+        req: WorkPacket,
+        inputs: dict[str, Any],
+    ) -> WorkResult:
+        record_type = self._require_str_input(inputs, "record_type", "type")
+        record_id = self._require_str_input(inputs, "record_id", "id", "key")
+
+        record = self._memoryDB.get_federation_record(
+            record_type=record_type,
+            record_id=record_id,
+        )
+
+        return self._ok(
+            req=req,
+            found=record is not None,
+            record=record,
+        )
+
+
+    def _handle_federation_list_records(
+        self,
+        req: WorkPacket,
+        inputs: dict[str, Any],
+    ) -> WorkResult:
+        record_type = self._require_str_input(inputs, "record_type", "type")
+        parent_id = self._optional_str_input(inputs, "parent_id", "network_id")
+        slug = self._optional_str_input(inputs, "slug")
+
+        limit_raw = inputs.get("limit", 100)
+        try:
+            limit = int(limit_raw)
+        except (TypeError, ValueError):
+            raise ValueError("Invalid input: limit")
+
+        limit = max(1, min(limit, 500))
+
+        records = self._memoryDB.list_federation_records(
+            record_type=record_type,
+            parent_id=parent_id,
+            slug=slug,
+            limit=limit,
+        )
+
+        return self._ok(
+            req=req,
+            records=records,
+            count=len(records),
+        )
+
+
+    def _handle_federation_delete_record(
+        self,
+        req: WorkPacket,
+        inputs: dict[str, Any],
+    ) -> WorkResult:
+        record_type = self._require_str_input(inputs, "record_type", "type")
+        record_id = self._require_str_input(inputs, "record_id", "id", "key")
+
+        result = self._memoryDB.delete_federation_record(
+            record_type=record_type,
+            record_id=record_id,
+        )
+
+        return self._ok(
+            req=req,
+            **result,
+        )
 
     def _ok(self, req: WorkPacket, **metadata: Any) -> WorkResult:
         return WorkResult(
