@@ -11,15 +11,14 @@ from uuid import uuid4
 import httpx
 from pydantic import BaseModel
 
+from common import time
 from federation.models import (
     FederationNetwork,
     FederationWorkRecord,
     JoinToken,
     NetworkMember,
 )
-from common import time
 from federation.settings import FederationSettings, get_settings
-
 
 RecordType = Literal["network", "join_token", "member", "work"]
 

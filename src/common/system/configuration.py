@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Literal, overload, cast
+from typing import Any, Literal, cast, overload
 
 from pydantic import BaseModel, Field, field_validator
-
 
 ServiceFileType = Literal["cortex", "llm", "federation"]
 

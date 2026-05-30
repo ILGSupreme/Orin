@@ -1,12 +1,13 @@
 from __future__ import annotations
-import httpx
+
 import logging
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from common.jobs import JobManager,JobSpec
+from common.jobs import JobManager, JobSpec
 from common.log import LogStream, LogStreamHandler
 from common.primer import Primer
 from common.protocol.ingress_types import LoadBackendRequest, LoadModelRequest

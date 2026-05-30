@@ -1,18 +1,23 @@
+import cProfile
+import io
 import logging
+import pstats
 from contextlib import asynccontextmanager
+
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-import io
-from common.jobs import JobManager
+
+from common.jobs import Job, JobManager, JobSpec
 from common.log import LogStream, LogStreamHandler
-from common.primer import Primer
+from common.primer import Primer, execute_load_model
 from common.protocol.ingress_types import (
     InferenceSession,
     LoadBackendRequest,
     LoadModelRequest,
 )
 from common.protocol.routing_types import WorkPacket
+from common.system import configuration
 from cortex.cli.command_router import CommandRouter
 from cortex.cluster.deployment.service import DeploymentService
 from cortex.cluster.discovery.client import BackendClient
@@ -22,11 +27,7 @@ from cortex.cortex.harness import Harness
 from cortex.cortex.mailbox import CortexMailbox
 from cortex.cortex.runtime import CortexRuntime
 from cortex.router.planner import Planner
-from common.system import configuration
-from common.jobs import JobSpec
 from cortex.router.service import RouterService
-import cProfile
-import pstats
 
 log_stream = LogStream()
 
@@ -78,9 +79,7 @@ async def lifespan(app: FastAPI):
         follow_redirects=True,
     )
 
-    app.state.primer = Primer(
-        external_http=app.state.external_http, cfg="cortex"
-    )
+    app.state.primer = Primer(external_http=app.state.external_http, cfg="cortex")
 
     app.state.job_manager = JobManager()
 
@@ -121,7 +120,7 @@ async def lifespan(app: FastAPI):
         primer=app.state.primer,
         router=app.state.router,
         job_manager=app.state.job_manager,
-        command_router=app.state.command_router
+        command_router=app.state.command_router,
     )
 
     app.state.cortex_mailbox = CortexMailbox(
@@ -170,12 +169,20 @@ def discovery(request: Request) -> DiscoveryService:
     return request.app.state.discovery_service
 
 
+def deployment(request: Request) -> DeploymentService:
+    return request.app.state.deployment_service
+
+
 def policy(request: Request) -> BackendRoutingPolicy:
     return request.app.state.routing_policy
 
 
 def job_manager(request: Request) -> JobManager:
     return request.app.state.job_manager
+
+
+def command_router(request: Request) -> CommandRouter:
+    return request.app.state.command_router
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +289,8 @@ async def get_backends_by_role(role: str, request: Request):
 async def load_model(req: LoadModelRequest, request: Request):
     _primer = primer(request=request)
     _job_manager = job_manager(request=request)
-    runtime = cortex(request=request)
+    _deployment = deployment(request=request)
+    _command_router = command_router(request=request)
 
     engine = req.engine or _primer.status().get("engine")
 
@@ -304,6 +312,17 @@ async def load_model(req: LoadModelRequest, request: Request):
             },
         )
 
+    def update_cortex_discovery(job: Job):
+        metadata = job.latest_result.get("metadata", {})
+        model_id = metadata.get("model_id")
+
+        service_name = _command_router._service_name_from_target("cortex")
+
+        _deployment.update_service_discovery_metadata(
+            service_name=service_name,
+            model=model_id,
+        )
+
     payload = req.model_dump(mode="python")
     payload["engine"] = engine
 
@@ -314,7 +333,8 @@ async def load_model(req: LoadModelRequest, request: Request):
 
     job = _job_manager.start(
         spec=spec,
-        runner=runtime.run_load_model_job,
+        runner=lambda job: execute_load_model(job, _primer),
+        on_completed=update_cortex_discovery,
     )
 
     return JSONResponse(

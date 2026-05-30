@@ -12,7 +12,6 @@ from uuid import uuid4
 from .models import JoinToken
 from .storage import MemoryFederationStorage
 
-
 _TOKEN_PREFIX = "orin_join_"
 
 

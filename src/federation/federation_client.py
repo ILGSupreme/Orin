@@ -13,10 +13,8 @@ from .identity import ClusterIdentity
 from .models import (
     CapabilitySummary,
     GetFederatedWorkResponse,
-    HeartbeatRequest,
     HeartbeatResponse,
     JoinNetworkResponse,
-    PublishCapabilitiesRequest,
     PublishCapabilitiesResponse,
     SubmitFederatedWorkResponse,
 )

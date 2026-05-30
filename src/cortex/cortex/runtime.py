@@ -1,26 +1,21 @@
 from __future__ import annotations
 
-import logging
-from typing import Any, Literal, overload
+from typing import Literal, overload
+
 from fastapi.responses import StreamingResponse
-from common.jobs import Job, JobSpec
+
 from common.primer import Primer
-from common.protocol import ingress_types
+from common.protocol import ingress_types, unified_types
 from common.protocol.egress_types import EgressResponse
-from common.protocol.ingress_types import InferenceSession, LoadModelRequest
+from common.protocol.ingress_types import InferenceSession
 from common.protocol.routing_types import (
     WorkPacket,
     WorkResult,
 )
-
-from common.protocol import unified_types
-
 from common.protocol.unified_types import (
     ContentPart,
     RuntimeMessage,
-    Visibility,
 )
-from common.types import SAFETY_TOKEN_SIZE
 from cortex.cli.command_router import CommandRouter
 from cortex.cluster.discovery.services import DiscoveryService
 from cortex.cortex.harness import Harness
@@ -118,12 +113,14 @@ class CortexRuntime:
             media_type="text/plain",
             headers={"Cache-Control": "no-cache", "Session-Id": session_id},
         )
-    
+
     @overload
     def _primer_not_ready_response(self, stream: Literal[False]) -> EgressResponse: ...
 
     @overload
-    def _primer_not_ready_response(self, stream: Literal[True]) -> StreamingResponse: ...
+    def _primer_not_ready_response(
+        self, stream: Literal[True]
+    ) -> StreamingResponse: ...
 
     def _primer_not_ready_response(
         self, stream: bool
@@ -159,77 +156,3 @@ class CortexRuntime:
                     "primer": self.primer.status(),
                 },
             )
-
-    async def run_load_model_job(self, job: Job) -> dict[str, Any]:
-        req = LoadModelRequest.model_validate(job.spec.payload)
-
-        model_id = req.model_id
-        provider = req.provider or "huggingface"
-        engine = req.engine
-        repo_id = req.repo_id
-        filename = req.filename
-        revision = req.revision or "main"
-        tokenizer_id = req.tokenizer_id
-        force_reload = req.force_reload
-
-        if not engine:
-            raise ValueError("No engine selected for model load job")
-
-        current_engine = self.primer.status().get("engine")
-
-        if current_engine != engine:
-            logging.info(
-                "Switching engine: %s -> %s",
-                current_engine,
-                engine,
-            )
-            await self.primer.load_engine(engine)
-
-        active_engine = self.primer.status().get("engine")
-
-        if active_engine != engine:
-            raise RuntimeError(
-                f"Engine switch failed: requested={engine}, active={active_engine}"
-            )
-
-        if active_engine == "gguf":
-            if not repo_id or not filename:
-                raise ValueError("GGUF engine requires repo_id and filename")
-
-            logging.info(
-                "Loading GGUF model: model=%s repo=%s file=%s revision=%s",
-                model_id,
-                repo_id,
-                filename,
-                revision,
-            )
-
-            await self.primer.load_model(
-                provider=provider,
-                model_id=model_id,
-                repo_id=repo_id,
-                filename=filename,
-                revision=revision,
-                tokenizer_id=tokenizer_id,
-                force_reload=force_reload,
-            )
-
-        else:
-            logging.info(
-                "Loading model: model=%s engine=%s provider=%s",
-                model_id,
-                active_engine,
-                provider,
-            )
-
-            await self.primer.load_model(
-                model_id=model_id,
-                provider=provider,
-                force_reload=force_reload,
-            )
-
-        return {
-            "model_id": model_id,
-            "engine": active_engine,
-            "primer": self.primer.status(),
-        }

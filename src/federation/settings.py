@@ -5,10 +5,10 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
-from common.system import configuration
 
 from pydantic import BaseModel, field_validator
 
+from common.system import configuration
 
 FederationVisibility = Literal["public", "unlisted", "private"]
 JoinMode = Literal["token", "approval", "open", "closed"]

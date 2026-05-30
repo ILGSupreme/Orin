@@ -1,16 +1,16 @@
 from __future__ import annotations
+
+import logging
+from typing import Any
+
+from common.jobs import Job, JobManager, JobSpec
 from common.primer import Primer
+from common.protocol.ingress_types import LoadModelRequest
 from common.protocol.routing_types import (
     WorkPacket,
     WorkResult,
 )
 
-from common.protocol.ingress_types import LoadModelRequest
-
-import logging
-
-from common.jobs import JobManager,JobSpec,Job
-from typing import Any
 
 class GenerativeModelRuntime:
     def __init__(self, *, primer: Primer, job_manager: JobManager) -> None:

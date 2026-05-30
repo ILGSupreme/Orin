@@ -11,6 +11,7 @@ from federation.identity import (
     canonical_json_bytes,
     require_valid_signature,
 )
+
 from .models import FederatedWorkEnvelope
 from .settings import FederationSettings, get_settings
 from .storage import LocalNonceStore

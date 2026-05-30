@@ -1,6 +1,5 @@
-from typing import Literal
+from typing import Literal, TypeAlias
 
-from typing import TypeAlias
 from pydantic import BaseModel, TypeAdapter, model_validator
 
 IngressMode = Literal["terminal", "chat"]

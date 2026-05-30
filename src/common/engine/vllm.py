@@ -6,11 +6,13 @@ import logging
 import re
 import uuid
 from typing import Any, AsyncIterator, Literal
-from common.system import configuration
+
 from transformers import AutoTokenizer
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
 from vllm.sampling_params import SamplingParams
+
+from common.system import configuration
 
 PrimerState = Literal["unloaded", "loading", "ready", "error"]
 
@@ -180,46 +182,6 @@ class VLLMPrimerEngine:
         self._ready_event.clear()
         self._load_task = None
 
-    async def send_work_to_thread(
-        self,
-        *,
-        messages: list[dict[str, Any]],
-        max_new_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
-        stream: bool | None = None,
-        grammar: str | None = None,
-    ):
-
-        if self.engine is None:
-            raise RuntimeError("Primer engine is not initialized")
-        if self.tokenizer is None:
-            raise RuntimeError("Primer tokenizer is not initialized")
-
-        max_new_tokens = max_new_tokens or self.max_new_tokens
-        temperature = self.temperature if temperature is None else temperature
-        top_p = self.top_p if top_p is None else top_p
-
-        prompt = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-
-        sampling_params = SamplingParams(
-            temperature=temperature,
-            top_p=top_p,
-            max_tokens=max_new_tokens,
-        )
-
-        request_id = f"primer-{uuid.uuid4()}"
-
-        return self.engine.generate(
-            prompt,
-            sampling_params,
-            request_id,
-        )
-
     async def chat_text(
         self,
         *,
@@ -263,6 +225,7 @@ class VLLMPrimerEngine:
         max_new_tokens: int | None = None,
         temperature: float | None = None,
         top_p: float | None = None,
+        grammar: str | None = None,
     ) -> AsyncIterator[str]:
         await (
             self.ensure_ready()

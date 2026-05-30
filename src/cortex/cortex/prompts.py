@@ -1,6 +1,5 @@
 import json
-from typing import Any
-from typing import Literal
+from typing import Any, Literal
 
 from common.protocol import unified_types
 from common.protocol.unified_types import (

@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any, Literal, Union, overload
 
 from fastapi.responses import StreamingResponse
 from pydantic import TypeAdapter
 
 from common.factory import packing
-from common.presentation import formatting
 from common.jobs import Job, JobManager, JobSpec, PipelineStage
+from common.presentation import formatting
 from common.primer import Primer
 from common.protocol import unified_types
 from common.protocol.egress_types import EgressResponse
@@ -28,10 +28,9 @@ from common.protocol.unified_types import (
     PromptContextResponse,
     RuntimeMessage,
 )
-from common.types import MAX_TOKENS_POLICY, SAFETY_TOKEN_SIZE, TEMPERATURE_POLICY
+from common.types import MAX_TOKENS_POLICY, TEMPERATURE_POLICY
 from cortex.cli.command_router import CommandRouter
-from cortex.cortex import memory
-from cortex.cortex import prompts
+from cortex.cortex import memory, prompts
 from cortex.cortex.harness_types import (
     LIGHTWEIGHT_INGRESS_ADAPTER,
     IngressMode,
@@ -129,19 +128,20 @@ class Harness:
         )
 
         ## work pipeline
-        self.job_manager.define_pipeline("work_pipeline", stages=[
-            PipelineStage(
+        self.job_manager.define_pipeline(
+            "work_pipeline",
+            stages=[
+                PipelineStage(
                     name="work_packet",
-                    runner=lambda job: execute_work_packet(
-                        job, self.router
-                    ),
+                    runner=lambda job: execute_work_packet(job, self.router),
                     poller=lambda job, result: execute_retrieve_work_packet(
                         job, self.router, result
                     ),
                     timeout_seconds=90,
                     poll_interval_seconds=2.0,
                 ),
-            ])
+            ],
+        )
 
     @overload
     async def ingression(
@@ -174,13 +174,13 @@ class Harness:
 
     async def handle_work_packet(self, packet: WorkPacket):
         if packet.task.work_type == "llm":
-            job = self.job_manager.start_pipeline(spec=JobSpec(
-                            kind="harness.work",
-                            payload={
-                                "packet": packet.model_dump(mode="json")
-                            },
-                        ),
-                        pipeline="work_pipeline",)
+            job = self.job_manager.start_pipeline(
+                spec=JobSpec(
+                    kind="harness.work",
+                    payload={"packet": packet.model_dump(mode="json")},
+                ),
+                pipeline="work_pipeline",
+            )
             return WorkResult(
                 status="accepted",
                 work_id=job.job_id,
@@ -190,8 +190,10 @@ class Harness:
                     "kind": job.spec.kind,
                 },
             )
-        return WorkResult(status="failed", work_id=packet.work_id, error="unknown work type")
-    
+        return WorkResult(
+            status="failed", work_id=packet.work_id, error="unknown work type"
+        )
+
     async def retrieve_work_packet(self, work_id: str) -> WorkResult:
         job = self.job_manager.get(job_id=work_id)
 
@@ -596,17 +598,15 @@ class Harness:
 
         reserved_output_tokens = MAX_TOKENS_POLICY.get("inspect", 256)
         temperature_policy = TEMPERATURE_POLICY.get("inspect")
-        total_tokens = _get_total_token_estimation(
+        total_tokens = self.primer._get_total_token_estimation(
             reserved_output_tokens=reserved_output_tokens,
             messages=runtime_messages,
-            primer=self.primer,
         )
         logging.info(f"estimated tokens: {total_tokens}")
-        fits = _can_fit_request(
+        fits = self.primer._can_fit_request(
             effective_n_ctx=effective_tokens,
             reserved_output_tokens=reserved_output_tokens,
             messages=runtime_messages,
-            primer=self.primer,
         )
         if fits:
             output = await self.primer.chat_json(
@@ -752,25 +752,6 @@ class Harness:
 # ---------------------------------------------------------------------------
 
 
-def _get_total_token_estimation(
-    reserved_output_tokens: int, messages: list[RuntimeMessage], primer: Primer
-):
-    prompt_tokens = primer.count_tokens(messages)
-    total_tokens = prompt_tokens + reserved_output_tokens + SAFETY_TOKEN_SIZE
-    return total_tokens
-
-
-def _can_fit_request(
-    effective_n_ctx: int,
-    reserved_output_tokens: int,
-    messages: list[RuntimeMessage],
-    primer: Primer,
-):
-    prompt_tokens = primer.count_tokens(messages)
-    total_estimated_nr_ctx = prompt_tokens + reserved_output_tokens + SAFETY_TOKEN_SIZE
-    return total_estimated_nr_ctx <= effective_n_ctx
-
-
 async def _build_work_packets(
     user_id: str, shaped_tasks: list[dict[str, Any]], primer: Primer
 ) -> list[WorkPacket]:
@@ -801,18 +782,19 @@ async def _build_work_packet(
 
     messages = build_task_messages(message=message, context=context)
     reserved_tokens = MAX_TOKENS_POLICY.get(operation, 256)
-    estimated_tokens = _get_total_token_estimation(
-        messages=messages, reserved_output_tokens=reserved_tokens, primer=primer
+    estimated_tokens = primer._get_total_token_estimation(
+        messages=messages,
+        reserved_output_tokens=reserved_tokens,
     )
     constraints = {
         "temperature": TEMPERATURE_POLICY.get(operation, 0.1),
         "stream": False,
     }
 
-    ctask = packing.create_canonical_task_messages(
+    ctask = packing.create_canonical_task(
         work_type=work_type,
         operation=operation,
-        messages=messages,
+        content=messages,
         constraints=constraints,
         inputs={
             "objective": objective,
@@ -935,9 +917,11 @@ def _output_generator(output_string: str | None):
 # Job Execute Functions
 # ---------------------------------------------------------------------------
 
+
 async def execute_work_packet(job: Job, router: RouterService) -> WorkResult:
     packet = WorkPacket.model_validate(job.spec.payload["packet"])
     return await router.send(packet=packet)
+
 
 async def execute_retrieve_work_packet(
     job: Job,
@@ -948,7 +932,7 @@ async def execute_retrieve_work_packet(
         return response
 
     backend = response.metadata.get("backend_ref")
-    work_details: dict[str,Any] = response.metadata.get("work_details", {})
+    work_details: dict[str, Any] = response.metadata.get("work_details", {})
 
     if not backend:
         return WorkResult(
@@ -987,6 +971,7 @@ async def execute_retrieve_work_packet(
     result.metadata.setdefault("work_details", work_details)
     return result
 
+
 async def execute_get_prompt(job: Job, router: RouterService):
     _inference_object = InferenceObject.model_validate(
         job.spec.payload.get("inference_object")
@@ -1015,16 +1000,15 @@ async def execute_interpret_turn(job: Job, router: RouterService, primer: Primer
 
     reserved_output_tokens = MAX_TOKENS_POLICY.get("inspect", 256)
     temperature_policy = TEMPERATURE_POLICY.get("inspect")
-    total_tokens = _get_total_token_estimation(
+    total_tokens = primer._get_total_token_estimation(
         reserved_output_tokens=reserved_output_tokens,
         messages=runtime_messages,
-        primer=primer,
     )
     logging.info(f"estimated tokens: {total_tokens}")
-    cpacket = packing.create_canonical_task_messages(
+    cpacket = packing.create_canonical_task(
         work_type=WorkType.LLM,
         operation="inspect",
-        messages=runtime_messages,
+        content=runtime_messages,
         inputs={},
         constraints={
             "temperature": temperature_policy,
@@ -1102,13 +1086,13 @@ async def execute_shape_tasks(job: Job, router: RouterService, primer: Primer):
 
     reserved_output_tokens = MAX_TOKENS_POLICY.get("inspect", 256)
     temperature_policy = TEMPERATURE_POLICY.get("inspect")
-    total_tokens = _get_total_token_estimation(
-        reserved_output_tokens=reserved_output_tokens, messages=messages, primer=primer
+    total_tokens = primer._get_total_token_estimation(
+        reserved_output_tokens=reserved_output_tokens, messages=messages
     )
-    cpacket = packing.create_canonical_task_messages(
+    cpacket = packing.create_canonical_task(
         work_type=WorkType.LLM,
         operation="inspect",
-        messages=messages,
+        content=messages,
         inputs={},
         constraints={
             "temperature": temperature_policy,
@@ -1337,16 +1321,15 @@ async def execute_final_response(job: Job, router: RouterService, primer: Primer
         "stream": False,
     }
 
-    effective_tokens = _get_total_token_estimation(
+    effective_tokens = primer._get_total_token_estimation(
         reserved_output_tokens=MAX_TOKENS_POLICY.get("analyze", 1024),
         messages=messages,
-        primer=primer,
     )
 
-    ctask = packing.create_canonical_task_messages(
+    ctask = packing.create_canonical_task(
         work_type=WorkType.LLM,
         operation="analyze",
-        messages=messages,
+        content=messages,
         inputs={},
         constraints=constraints,
         routing_hints=RoutingHints(

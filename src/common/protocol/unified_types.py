@@ -5,7 +5,6 @@ from pydantic import BaseModel, Field, model_validator
 
 from common.protocol.memory_types import BasePromptContextResponse
 
-
 PartType = Literal["text", "image", "audio", "video", "json", "binary"]
 PartEncoding = Literal["plain", "base64"]
 Visibility = Literal["user", "internal"]

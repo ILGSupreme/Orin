@@ -9,8 +9,8 @@ from typing import Any
 
 from torch.cuda import mem_get_info
 
-from common.system.model_inspector import summarize_gguf_metadata,read_gguf_metadata
-from common.types import ModelProfile, SystemConstraints, ModelMetadata
+from common.system.model_inspector import read_gguf_metadata, summarize_gguf_metadata
+from common.types import ModelMetadata, ModelProfile, SystemConstraints
 
 logging.getLogger(__name__)
 
@@ -564,7 +564,6 @@ def get_model_profile(
         f"Entering get model profile, reserve: path: {path}, {reserve_size}, safety: {safety_size}, profile_factors: {profile_factors}"
     )
     model_metadata = inspect_model(path)
-    #system_info = get_linux_info()
     memory_info = inspect_system()
 
     n_gpus = get_ngpu_layers_by_profile_factor(

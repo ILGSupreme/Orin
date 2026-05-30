@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-import httpx
 from typing import Any
+
+import httpx
 
 from common.engine.gguf import GGUFPrimerEngine
 from common.engine.vllm import VLLMPrimerEngine
-from common.hf_downloader import HFDownloader
 from common.jobs import Job
 from common.protocol.adapter.openai_adapter import OpenAIStyleMessageAdapter
 from common.protocol.routing_types import WorkResult
 from common.protocol.unified_types import RuntimeMessage
-from common.types import MAX_TOKENS_POLICY, SAFETY_TOKEN_SIZE
-from common.types import Profile
+from common.provider.huggingface.hf_downloader import HFDownloader
 from common.system import configuration, profiler
+from common.types import MAX_TOKENS_POLICY, SAFETY_TOKEN_SIZE, Profile
 
 
 class Primer:
@@ -32,6 +32,10 @@ class Primer:
         self.cfg: configuration.ServiceFileType = cfg
 
         self.load_profile()
+
+    # ---------------------------------------------------------------------------
+    # Public Methods
+    # ---------------------------------------------------------------------------
 
     def load_profile(self):
         self._profile.set_machine_info(info=profiler.get_linux_info())
@@ -167,88 +171,30 @@ class Primer:
         await self.load_message_adapter("openai", nothink=True)
         await self._engine.load_model(*args, **kwargs)
 
-    async def load_model_stream(self, *args: Any, **kwargs: Any):
-        if self._engine is None:
-            yield "error: engine is not assigned\n"
-            return
+    
+    # ---------------------------------------------------------------------------
+    # Private Methods
+    # ---------------------------------------------------------------------------
 
-        repo_id = kwargs.get("repo_id")
-        filename = kwargs.get("filename")
-        revision = kwargs.get("revision", "main")
-        force_reload = kwargs.get("force_reload", False)
+    def _get_total_token_estimation(self,
+        reserved_output_tokens: int, messages: list[RuntimeMessage]
+    ):
+        prompt_tokens = self.count_tokens(messages)
+        total_tokens = prompt_tokens + reserved_output_tokens + SAFETY_TOKEN_SIZE
+        return total_tokens
+    
+    def _can_fit_request(self,
+        effective_n_ctx: int,
+        reserved_output_tokens: int,
+        messages: list[RuntimeMessage],
+    ):
+        prompt_tokens = self.count_tokens(messages)
+        total_estimated_nr_ctx = prompt_tokens + reserved_output_tokens + SAFETY_TOKEN_SIZE
+        return total_estimated_nr_ctx <= effective_n_ctx
 
-        provider = kwargs.pop("provider", "")
-        await self.load_model_provider(model_provider_type=provider)
-
-        if self._model_provider and repo_id and filename:
-            exists, path = self._model_provider.exists(
-                repo_id=repo_id,
-                filename=filename,
-            )
-
-            if not exists or force_reload:
-                yield f"Model file not found locally. Downloading {repo_id}/{filename}...\n"
-
-                async for progress in self._model_provider.download_file_stream(
-                    repo_id=repo_id,
-                    filename=filename,
-                    revision=revision,
-                    force=force_reload,
-                ):
-                    yield progress
-
-                yield "\nDownload complete.\n"
-            else:
-                yield f"Model file found locally: {path}\n"
-
-            kwargs["path"] = str(path)
-
-            kwargs.pop("repo_id", None)
-            kwargs.pop("filename", None)
-            kwargs.pop("revision", None)
-
-        yield "Loading message adapter...\n"
-        await self.load_message_adapter("openai", nothink=True)
-
-        yield "Loading model into engine...\n"
-        await self._engine.load_model(*args, **kwargs)
-
-        yield "engine model ready.\n"
-
-    def send_work_to_thread(self, *args: Any, **kwargs: Any):
-        if self._engine is None:
-            raise ValueError("engine is not assigned")
-
-        if self._message_adapter is None:
-            raise ValueError("No adapter set")
-
-        constraints = kwargs.get("constraints", {})
-        operation = kwargs.get("operation", "chat")
-        max_new_tokens = MAX_TOKENS_POLICY.get(operation, 128) + SAFETY_TOKEN_SIZE
-        temperature = 0.9
-        stream = False
-        grammar = None
-        if constraints:
-            temperature = constraints.get("temperature", 0.9)
-            stream = constraints.get("stream", False)
-            grammar = constraints.get("grammar", None)
-
-        messages = kwargs.get("messages", [])
-        if not messages:
-            raise ValueError("Something is wrong with messages")
-
-        rendered_messages = self._message_adapter.render_messages(
-            messages=messages, operation=operation, constraints=constraints
-        )
-
-        return self._engine.send_work_to_thread(
-            *args,
-            messages=rendered_messages,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            stream=stream,
-            grammar=grammar,
-        )
+    # ---------------------------------------------------------------------------
+    # Chat/Stream Methods
+    # ---------------------------------------------------------------------------
 
     async def chat_text(self, **kwargs: Any) -> str:
         if self._engine is None:
@@ -409,6 +355,7 @@ class Primer:
                 messages=rendered_messages,
                 max_new_tokens=max_new_tokens,
                 temperature=temperature,
+                grammar=grammar,
             ):
                 yield chunk
 

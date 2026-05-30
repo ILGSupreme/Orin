@@ -9,7 +9,6 @@ from typing import Any
 from .models import FederationNetwork, NetworkMember, NetworkPolicy
 from .settings import FederationSettings, get_settings
 
-
 RUNTIME_OPERATIONS: set[str] = {
     "chat",
     "summarize",

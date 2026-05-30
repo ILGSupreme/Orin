@@ -5,12 +5,14 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from federation.capabilities import CapabilityError, CapabilityService
-from federation.cortex_bridge import CortexBridge, CortexBridgeError
+
 import httpx
 from fastapi import Body, FastAPI, HTTPException, Request, status
 
 from common.system import configuration
+from federation.capabilities import CapabilityError, CapabilityService
+from federation.cortex_bridge import CortexBridge, CortexBridgeError
+from federation.join_tokens import JoinTokenError, JoinTokenService
 
 from .envelopes import (
     EnvelopeError,
@@ -22,7 +24,6 @@ from .identity import (
     load_or_create_cluster_identity,
     require_valid_signature,
 )
-from federation.join_tokens import JoinTokenError, JoinTokenService
 from .members import MemberError, MemberService
 from .models import (
     CreateJoinTokenRequest,

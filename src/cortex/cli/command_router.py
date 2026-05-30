@@ -4,22 +4,21 @@ import json
 import shlex
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from typing import Awaitable, Callable, Literal
 
 import httpx
 from fastapi.responses import PlainTextResponse, StreamingResponse
-from common.hfservice import HuggingFaceService
-from common.jobs import Job, JobManager, JobSpec
+
 from common import primer
+from common.jobs import Job, JobManager, JobSpec
 from common.primer import Primer
-from cortex.cluster.deployment import pod_factory
-from cortex.cluster.deployment import pod_naming
-from cortex.cluster.deployment import pod_template
+from common.provider.huggingface.hfservice import HuggingFaceService
+from cortex.cluster.deployment import pod_factory, pod_naming, pod_template
 from cortex.cluster.deployment.service import DeploymentError, DeploymentService
 from cortex.cluster.discovery import formatting
 from cortex.cluster.discovery.client import BackendClient
 from cortex.cluster.discovery.policy import BackendRoutingPolicy
 from cortex.cluster.discovery.services import DiscoveryService
-from typing import Awaitable, Callable, Literal
 
 
 @dataclass

@@ -8,8 +8,8 @@ from common.factory import packing
 from common.protocol.routing_types import RoutingHints, WorkDisposition, WorkType
 from common.protocol.unified_types import ContentPart, RuntimeMessage
 from common.types import TEMPERATURE_POLICY
-from federation.identity import load_or_create_cluster_identity_from_paths
 from federation.federation_client import FederationClient
+from federation.identity import load_or_create_cluster_identity_from_paths
 from federation.models import CapabilitySummary
 
 FEDERATION_URL = "http://orin-gw:30081"
@@ -80,10 +80,10 @@ async def main() -> None:
 
         temperature_policy = TEMPERATURE_POLICY.get("chat", 0.7)
 
-        cpacket = packing.create_canonical_task_messages(
+        cpacket = packing.create_canonical_task(
             work_type=WorkType.LLM,
             operation="chat",
-            messages=messages,
+            content=messages,
             inputs={},
             constraints={
                 "temperature": temperature_policy,

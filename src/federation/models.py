@@ -7,7 +7,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-
 FederationVisibility = Literal["public", "unlisted", "private"]
 JoinMode = Literal["token", "approval", "open", "closed"]
 

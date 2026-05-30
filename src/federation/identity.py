@@ -19,7 +19,6 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 
 from .settings import FederationSettings, get_settings
 
-
 _PUBLIC_KEY_PREFIX = "ed25519:"
 _SIGNATURE_PREFIX = "ed25519:"
 

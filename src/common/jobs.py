@@ -8,8 +8,9 @@ import traceback
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal
-from common.presentation import formatting
+
 from common import time
+from common.presentation import formatting
 from common.protocol.routing_types import WorkResult
 
 JobStatus = Literal["accepted", "running", "completed", "failed"]

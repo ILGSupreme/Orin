@@ -5,10 +5,14 @@ import json
 import logging
 import re
 import threading
-from typing import Any, Literal
+from typing import Any, Iterator, Literal
 
-from llama_cpp import Llama, LlamaGrammar
+from llama_cpp import (
+    Llama,
+    LlamaGrammar,
+)
 from transformers import AutoTokenizer
+
 from common.system import configuration
 from common.types import ModelProfile
 
@@ -35,9 +39,6 @@ class GGUFPrimerEngine:
         self._state: PrimerState = "unloaded"
         self._error: str | None = None
         self._load_lock = asyncio.Lock()
-        self._ready_event = asyncio.Event()
-        self._load_task: asyncio.Task[None] | None = None
-        self.profiles: dict[str, ModelProfile] = {}
         self.current_profile: ModelProfile | None = None
 
     @property
@@ -101,7 +102,6 @@ class GGUFPrimerEngine:
 
             self._state = "loading"
             self._error = None
-            self._ready_event.clear()
 
             # After this point, the old model is gone.
             self._unload()
@@ -143,7 +143,6 @@ class GGUFPrimerEngine:
 
                 self._state = "error"
                 self._error = str(exc)
-                self._ready_event.clear()
 
                 logging.exception("Failed to load model: %s", model_id)
                 raise RuntimeError(f"Failed to load model {model_id}: {exc}") from exc
@@ -162,7 +161,6 @@ class GGUFPrimerEngine:
 
             self._state = "ready"
             self._error = None
-            self._ready_event.set()
 
             logging.info(
                 "Model loaded: %s n_gpu_layers=%s n_batch=%s n_ctx=%s",
@@ -197,8 +195,6 @@ class GGUFPrimerEngine:
         self.tokenizer = None
         self._state = "unloaded"
         self._error = None
-        self._ready_event.clear()
-        self._load_task = None
 
     def _run_full_generation(
         self,
@@ -217,6 +213,9 @@ class GGUFPrimerEngine:
             top_p=top_p,
             grammar=grammar,
         )
+
+        if isinstance(completion,Iterator):
+            raise ValueError("completion is an iterator")
 
         return completion["choices"][0]["message"]["content"].strip()
 
@@ -269,42 +268,6 @@ class GGUFPrimerEngine:
         )
         return self._parse_json(text)
 
-    def send_work_to_thread(
-        self,
-        *,
-        messages: list[dict[str, Any]],
-        max_new_tokens: int | None = None,
-        temperature: float | None = None,
-        top_p: float | None = None,
-        stream: bool = False,
-        grammar: str | None = None,
-    ):
-        max_new_tokens = max_new_tokens or self.max_new_tokens
-        temperature = self.temperature if temperature is None else temperature
-        top_p = self.top_p if top_p is None else top_p
-
-        if stream:
-            # We will be getting the actual arguments for starting the stream later
-            return {
-                "messages": messages,
-                "max_new_tokens": max_new_tokens,
-                "temperature": temperature,
-                "top_p": top_p,
-                "grammar": grammar,
-            }
-        else:
-            llama_grammar = None
-            if grammar:
-                llama_grammar = LlamaGrammar.from_string(grammar=grammar)
-            return asyncio.create_task(
-                self.chat_text(
-                    messages=messages,
-                    max_new_tokens=max_new_tokens,
-                    temperature=temperature,
-                    top_p=top_p,
-                    grammar=llama_grammar,
-                ),
-            )
 
     async def stream_text(
         self,
@@ -313,12 +276,16 @@ class GGUFPrimerEngine:
         max_new_tokens: int | None = None,
         temperature: float = 0.1,
         top_p: float = 0.95,
+        grammar: str | None = None
     ):
 
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[str | None] = asyncio.Queue()
 
         def worker():
+            llama_grammar = None
+            if grammar:
+                llama_grammar = LlamaGrammar.from_string(grammar=grammar)
             try:
                 stream = self.engine.create_chat_completion(
                     messages=messages,
@@ -326,6 +293,7 @@ class GGUFPrimerEngine:
                     temperature=temperature,
                     top_p=top_p,
                     stream=True,
+                    grammar=llama_grammar
                 )
 
                 for chunk in stream:
