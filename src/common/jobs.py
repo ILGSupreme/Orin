@@ -51,7 +51,6 @@ class Job:
 
     status: JobStatus = "accepted"
     error: str | None = None
-    result: dict[str, Any] = field(default_factory=dict)
 
     pipeline_name: str | None = None
     current_stage: str | None = None
@@ -68,6 +67,9 @@ class Job:
     def update_status(self, status: JobStatus) -> None:
         self.status = status
         self.updated_at = time.utcnow_iso()
+
+    def get_result(self):
+        return self.latest_result
 
     def update_stage(
         self,
@@ -110,7 +112,7 @@ class Job:
             "status": self.status,
             "error": self.error,
             "payload": self.spec.payload,
-            "result": self.result,
+            "result": self.get_result(),
             "pipeline_name": self.pipeline_name,
             "progress": self.progress_dict(),
             "stage_results": self.stage_results,
@@ -283,7 +285,7 @@ class JobManager:
                 raise ValueError(f"Job id in batch not found: {job_id}")
 
             if job.status in ("completed", "failed"):
-                results.append(job.result)
+                results.append(job.get_result())
 
         return results
 
@@ -408,8 +410,7 @@ class JobManager:
 
                 normalized =formatting.as_dict(result)
                 job.latest_result = normalized
-                job.result = normalized
-
+                
                 if isinstance(result, WorkResult):
                     if result.status == "failed":
                         job.error = result.error
@@ -473,8 +474,6 @@ class JobManager:
             try:
                 job.update_status("running")
 
-                latest_result: WorkResult | None = None
-
                 for index, stage in enumerate(definition.stages, start=1):
                     job.update_stage(
                         name=stage.name,
@@ -495,7 +494,6 @@ class JobManager:
                     )
 
                     normalized = formatting.as_dict(result)
-                    latest_result = result
 
                     job.stage_results[stage.name] = normalized
                     job.latest_result = normalized
@@ -526,12 +524,6 @@ class JobManager:
                         status="completed",
                         message=f"Completed stage {index}/{len(definition.stages)}: {stage.name}",
                     )
-
-                job.result = {
-                    "status": "completed",
-                    "latest_result": formatting.as_dict(latest_result),
-                    "stage_results": job.stage_results,
-                }
 
                 if on_completed is not None:
                     hook_result = on_completed(job)

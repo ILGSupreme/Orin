@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
+
 from cortex.cluster.discovery.discovery_k8s import KubernetesDiscoveryProvider
 from cortex.cluster.discovery.prober import BackendHealthProber
 from cortex.cluster.discovery.registry import (
@@ -14,11 +16,12 @@ from cortex.cluster.discovery.selector import BackendSelectionRequest, BackendSe
 class DiscoveryService:
     def __init__(
         self,
+        http: httpx.AsyncClient,
         refresh_interval_seconds: float = 15.0,
         health_timeout: float = 2.0,
     ) -> None:
         self.discovery = KubernetesDiscoveryProvider()
-        self.prober = BackendHealthProber(timeout=health_timeout)
+        self.prober = BackendHealthProber(http=http, timeout=health_timeout)
         self.registry = InMemoryBackendRegistry(
             discovery=self.discovery,
             prober=self.prober,

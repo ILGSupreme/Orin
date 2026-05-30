@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 import httpx
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from common.hfservice import HuggingFaceService
-from common.jobs import JobManager, JobSpec
+from common.jobs import Job, JobManager, JobSpec
 from common import primer
 from common.primer import Primer
 from cortex.cluster.deployment import pod_factory
@@ -1242,8 +1242,8 @@ class CommandRouter:
             },
         )
 
-        def update_cortex_discovery(job):
-            metadata = job.result.get("metadata", {})
+        def update_cortex_discovery(job:Job):
+            metadata = job.latest_result.get("metadata", {})
             model_id = metadata.get("model_id") or model["model_id"]
 
             service_name = self._service_name_from_target("cortex")
@@ -2191,7 +2191,7 @@ class CommandRouter:
         ]
 
         if data.get("status") == "completed":
-            result = data.get("result") or {}
+            result = data.get("latest_result") or {}
             model_id = result.get("model_id") or data.get("payload", {}).get("model_id")
 
             if model_id:

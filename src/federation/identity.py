@@ -55,25 +55,15 @@ class ClusterIdentity:
         return sign_json(self.private_key, payload)
 
 
-def load_or_create_cluster_identity(
-    settings: FederationSettings | None = None,
+def load_or_create_cluster_identity_from_paths(
     *,
+    private_key_path: Path,
+    public_key_path: Path,
+    cluster_id: str | None = None,
     allow_create: bool = True,
 ) -> ClusterIdentity:
-    """
-    Load or create the local Federation cluster identity.
-
-    The configuration stores key paths only. The actual private/public key
-    material lives in local files, or later in a mounted Kubernetes Secret.
-
-    If settings.cluster_id is not configured, a stable cluster id is derived
-    from the public key.
-    """
-
-    settings = settings or get_settings()
-
-    private_key_path = settings.resolved_private_key_path()
-    public_key_path = settings.resolved_public_key_path()
+    private_key_path = private_key_path.expanduser()
+    public_key_path = public_key_path.expanduser()
 
     if private_key_path.exists():
         private_key = load_private_key(private_key_path)
@@ -103,14 +93,38 @@ def load_or_create_cluster_identity(
     else:
         save_public_key(public_key_path, public_key)
 
-    cluster_id = settings.cluster_id or derive_cluster_id(public_key)
+    resolved_cluster_id = cluster_id or derive_cluster_id(public_key)
 
     return ClusterIdentity(
-        cluster_id=cluster_id,
+        cluster_id=resolved_cluster_id,
         public_key=public_key,
         private_key_path=private_key_path,
         public_key_path=public_key_path,
         private_key=private_key,
+    )
+
+
+def load_or_create_cluster_identity(
+    settings: FederationSettings | None = None,
+    *,
+    allow_create: bool = True,
+) -> ClusterIdentity:
+    """
+    Load or create the local Federation cluster identity.
+
+    The configuration stores key paths only. The actual private/public key
+    material lives in local files, or later in a mounted Kubernetes Secret.
+
+    If settings.cluster_id is not configured, a stable cluster id is derived
+    from the public key.
+    """
+    settings = settings or get_settings()
+
+    return load_or_create_cluster_identity_from_paths(
+        private_key_path=settings.resolved_private_key_path(),
+        public_key_path=settings.resolved_public_key_path(),
+        cluster_id=settings.cluster_id,
+        allow_create=allow_create,
     )
 
 

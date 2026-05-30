@@ -128,6 +128,21 @@ class Harness:
             ],
         )
 
+        ## work pipeline
+        self.job_manager.define_pipeline("work_pipeline", stages=[
+            PipelineStage(
+                    name="work_packet",
+                    runner=lambda job: execute_work_packet(
+                        job, self.router
+                    ),
+                    poller=lambda job, result: execute_retrieve_work_packet(
+                        job, self.router, result
+                    ),
+                    timeout_seconds=90,
+                    poll_interval_seconds=2.0,
+                ),
+            ])
+
     @overload
     async def ingression(
         self,
@@ -158,11 +173,54 @@ class Harness:
                 return await self._response(_inference_object, "chat")
 
     async def handle_work_packet(self, packet: WorkPacket):
-        return WorkResult(
-            status="failed",
-            work_id=packet.work_id,
-            error="Harness workpacket handling is not implemented yet.",
-        )
+        if packet.task.work_type == "llm":
+            job = self.job_manager.start_pipeline(spec=JobSpec(
+                            kind="harness.work",
+                            payload={
+                                "packet": packet.model_dump(mode="json")
+                            },
+                        ),
+                        pipeline="work_pipeline",)
+            return WorkResult(
+                status="accepted",
+                work_id=job.job_id,
+                metadata={
+                    "original_work_id": packet.work_id,
+                    "job_id": job.job_id,
+                    "kind": job.spec.kind,
+                },
+            )
+        return WorkResult(status="failed", work_id=packet.work_id, error="unknown work type")
+    
+    async def retrieve_work_packet(self, work_id: str) -> WorkResult:
+        job = self.job_manager.get(job_id=work_id)
+
+        if not job:
+            return WorkResult(
+                status="failed",
+                work_id=work_id,
+                error="job not found",
+            )
+
+        if job.status not in ("completed", "failed"):
+            return WorkResult(
+                status=job.status,
+                work_id=job.job_id,
+                metadata={
+                    "job_id": job.job_id,
+                    "kind": job.spec.kind,
+                    "stage": getattr(job, "stage", None),
+                },
+            )
+
+        if job.get_result() is None:
+            return WorkResult(
+                status="failed",
+                work_id=job.job_id,
+                error="job completed without result",
+            )
+
+        return WorkResult.model_validate(job.get_result())
 
     # ---------------------------------------------------------------------------
     # Private Class Function Calls
@@ -877,6 +935,57 @@ def _output_generator(output_string: str | None):
 # Job Execute Functions
 # ---------------------------------------------------------------------------
 
+async def execute_work_packet(job: Job, router: RouterService) -> WorkResult:
+    packet = WorkPacket.model_validate(job.spec.payload["packet"])
+    return await router.send(packet=packet)
+
+async def execute_retrieve_work_packet(
+    job: Job,
+    router: RouterService,
+    response: WorkResult,
+) -> WorkResult:
+    if response.status in ("completed", "failed"):
+        return response
+
+    backend = response.metadata.get("backend_ref")
+    work_details: dict[str,Any] = response.metadata.get("work_details", {})
+
+    if not backend:
+        return WorkResult(
+            status="failed",
+            work_id=response.work_id,
+            error="No backend_ref found for accepted/running work",
+            metadata=response.metadata,
+        )
+
+    if isinstance(work_details, dict):
+        work_type = work_details.get("work_type", "")
+        operation = work_details.get("operation", "")
+    else:
+        work_type = getattr(work_details, "work_type", "")
+        operation = getattr(work_details, "operation", "")
+
+    if not work_type or not operation:
+        return WorkResult(
+            status="failed",
+            work_id=response.work_id,
+            error="Missing work_details.work_type or work_details.operation",
+            metadata=response.metadata,
+        )
+
+    result = await router.retrieve_work(
+        work_id=response.work_id,
+        work_type=work_type,
+        operation=operation,
+        backend=backend,
+    )
+
+    if result.status in ("completed", "failed"):
+        return result
+
+    result.metadata.setdefault("backend_ref", backend)
+    result.metadata.setdefault("work_details", work_details)
+    return result
 
 async def execute_get_prompt(job: Job, router: RouterService):
     _inference_object = InferenceObject.model_validate(
@@ -945,6 +1054,10 @@ async def execute_interpret_turn(job: Job, router: RouterService, primer: Primer
 
 
 async def execute_read_interpret(job: Job, router: RouterService, response: WorkResult):
+
+    if response.status in ("completed", "failed"):
+        return response
+
     backend = response.metadata.get("backend_ref", {})
     if not backend:
         return WorkResult(
@@ -957,6 +1070,9 @@ async def execute_read_interpret(job: Job, router: RouterService, response: Work
         operation="inspect",
         backend=backend,
     )
+
+    if result.status in ("completed", "failed"):
+        return result
 
     result.metadata.setdefault("backend_ref", backend)
     return result
@@ -1019,6 +1135,10 @@ async def execute_shape_tasks(job: Job, router: RouterService, primer: Primer):
 
 
 async def execute_read_shaping(job: Job, router: RouterService, response: WorkResult):
+
+    if response.status in ("completed", "failed"):
+        return response
+
     backend = response.metadata.get("backend_ref", {})
     if not backend:
         return WorkResult(
@@ -1032,7 +1152,7 @@ async def execute_read_shaping(job: Job, router: RouterService, response: WorkRe
         backend=backend,
     )
 
-    if result.status == "completed":
+    if result.status in ("completed", "failed"):
         return result
 
     result.metadata.setdefault("backend_ref", backend)
@@ -1272,7 +1392,9 @@ async def execute_read_final_packet(
         backend=backend,
     )
 
-    if result.status in ("accepted", "running"):
-        result.metadata.setdefault("backend_ref", backend)
+    if result.status in ("completed", "failed"):
+        return result
+
+    result.metadata.setdefault("backend_ref", backend)
 
     return result

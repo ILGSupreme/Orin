@@ -60,15 +60,15 @@ class GenerativeModelRuntime:
                 error=job.error,
             )
 
-        result = job.result
+        result = job.get_result()
 
         if isinstance(result, WorkResult):
             return result
 
         if isinstance(result, dict):
             return WorkResult(
-                status=result.get("status", "completed"),
-                work_id=result.get("work_id", job.job_id),
+                status=job.status,
+                work_id=job.job_id,
                 content=result.get("content", []),
                 backend_name=result.get("backend_name"),
                 backend_model=result.get("backend_model"),
@@ -82,23 +82,26 @@ class GenerativeModelRuntime:
             metadata={"result": result},
         )
         
-    async def _run_workpacket_job(self, job: Job) -> dict[str, Any]:
-        packet: WorkPacket = job.spec.payload["packet"]
+    async def _run_workpacket_job(self, job: Job) -> WorkResult:
+        packet = WorkPacket.model_validate(job.spec.payload["packet"])
         task = packet.task
 
-        messages = await self.primer.chat_text(
+        messages = await self.primer.chat_text_message(
             messages=task.messages,
             constraints=task.constraints,
             operation=task.operation,
         )
 
-        return {
-            "status": "completed",
-            "work_id": packet.work_id,
-            "content": messages,
-            "engine": self.primer.engine_type,
-        }
-    
+        return WorkResult(
+            status="completed",
+            work_id=packet.work_id,
+            content=messages,
+            backend_model=self.primer.status().get("model_id"),
+            metadata={
+                "engine": self.primer.engine_type,
+            },
+        )
+        
     async def run_load_model_job(self, job: Job) -> dict[str, Any]:
         req = LoadModelRequest.model_validate(job.spec.payload)
 

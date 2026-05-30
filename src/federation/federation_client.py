@@ -20,7 +20,6 @@ from .models import (
     PublishCapabilitiesResponse,
     SubmitFederatedWorkResponse,
 )
-from .settings import FederationSettings, get_settings
 
 
 class FederationClientError(RuntimeError):
@@ -60,11 +59,13 @@ class FederationClient:
         *,
         http: httpx.AsyncClient,
         identity: ClusterIdentity,
-        settings: FederationSettings | None = None,
+        protocol_version: str = "v1",
+        request_ttl_seconds: int = 300,
     ) -> None:
         self.http = http
         self.identity = identity
-        self.settings = settings or get_settings()
+        self.protocol_version = protocol_version
+        self.request_ttl_seconds = request_ttl_seconds
 
     async def list_networks(
         self,
@@ -133,11 +134,9 @@ class FederationClient:
             },
         )
 
-        request = HeartbeatRequest.model_validate(body)
-
         data = await self._post_json(
             self._url(base_url, f"/federation/networks/{network_id}/heartbeat"),
-            request.model_dump(mode="json"),
+            body,
         )
 
         return HeartbeatResponse.model_validate(data)
@@ -159,11 +158,11 @@ class FederationClient:
             },
         )
 
-        request = PublishCapabilitiesRequest.model_validate(body)
+        #request = PublishCapabilitiesRequest.model_validate(body)
 
         data = await self._post_json(
             self._url(base_url, f"/federation/networks/{network_id}/capabilities"),
-            request.model_dump(mode="json"),
+            body
         )
 
         return PublishCapabilitiesResponse.model_validate(data)
@@ -188,12 +187,13 @@ class FederationClient:
 
         envelope = create_envelope(
             identity=self.identity,
+            ttl_seconds=self.request_ttl_seconds,
+            protocol_version=self.protocol_version,
             network_id=network_id,
             target_cluster_id=target_cluster_id,
             request_id=request_id,
             packet=packet,
             metadata=metadata,
-            settings=self.settings,
         )
 
         data = await self._post_json(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Sequence
 from uuid import uuid4
 
@@ -115,6 +115,7 @@ class JoinTokenService:
         scopes: Sequence[str] | None = None,
         max_uses: int | None = 1,
         expires_at: datetime | None = None,
+        expires_in_seconds: int | None = None
     ) -> CreatedJoinToken:
         if not network_id.strip():
             raise JoinTokenError("network_id cannot be empty")
@@ -129,6 +130,9 @@ class JoinTokenService:
             expires_at = _ensure_aware(expires_at)
             if expires_at <= utc_now():
                 raise JoinTokenError("expires_at must be in the future")
+            
+        if expires_at is None and expires_in_seconds is not None:
+            expires_at = utc_now() + timedelta(seconds=expires_in_seconds)
 
         token_id = str(uuid4())
         secret = secrets.token_urlsafe(32)

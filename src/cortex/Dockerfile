@@ -6,6 +6,7 @@ COPY cortex/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    pciutils \
     openssh-client \
     sshpass \
     ca-certificates \

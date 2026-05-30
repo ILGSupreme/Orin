@@ -110,19 +110,7 @@ def create_canonical_task_memory(
 def create_memory_workpacket(
     memory_operation: MEMORY_OPERATIONS,
     inference_object: InferenceObject,
-    memory_request: (
-        Summary
-        | Note
-        | MemoryEvent
-        | MemoryClaim
-        | ListMemoryClaim
-        | User
-        | Session
-        | dict[str, Any]
-        | RetrievalRequest
-        | PromptContextRequest
-        | ResolveSessionRequest
-    ),
+    memory_request: Any
 ) -> WorkPacket:
 
     runtime_message_request = BaseRuntimeMemoryRequest(
@@ -142,7 +130,7 @@ def create_memory_workpacket(
     )
 
     packet = create_workpacket(
-        id=f"{inference_object.user_id}:upsert_user",
+        id=f"{inference_object.user_id}:{memory_operation}",
         disposition=WorkDisposition.DIRECT,
         metadata={},
         task=canonical_task,

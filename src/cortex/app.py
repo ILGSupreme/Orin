@@ -86,13 +86,7 @@ async def lifespan(app: FastAPI):
 
     app.state.deployment_service = DeploymentService()
 
-    app.state.discovery_service = DiscoveryService()
-    # If DiscoveryService / health probing uses httpx internally,
-    # change its constructor to accept the shared client:
-    #
-    # app.state.discovery_service = DiscoveryService(
-    #     http=app.state.internal_http,
-    # )
+    app.state.discovery_service = DiscoveryService(http=app.state.internal_http)
 
     app.state.routing_policy = BackendRoutingPolicy(
         app.state.discovery_service.selector,
@@ -249,20 +243,7 @@ async def terminal_chat(req: InferenceSession, request: Request):
 
 @app.post("/work")
 async def submit_work(req: WorkPacket, request: Request):
-
     cortex_runtime = cortex(request=request)
-    _primer = primer(request=request)
-
-    if not _primer.is_ready():
-        return JSONResponse(
-            status_code=409,
-            content={
-                "ok": False,
-                "error": "primer_not_ready",
-                "primer": _primer.status(),
-            },
-        )
-
     return await cortex_runtime.handle_ingress(req)
 
 

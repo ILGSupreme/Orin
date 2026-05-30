@@ -8,7 +8,7 @@ from typing import Any
 from federation.capabilities import CapabilityError, CapabilityService
 from federation.cortex_bridge import CortexBridge, CortexBridgeError
 import httpx
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import Body, FastAPI, HTTPException, Request, status
 
 from common.system import configuration
 
@@ -286,6 +286,7 @@ async def create_join_token(
             scopes=body.scopes,
             max_uses=body.max_uses,
             expires_at=body.expires_at,
+            expires_in_seconds=body.expires_in_seconds
         )
 
         return CreateJoinTokenResponse(
@@ -472,14 +473,18 @@ async def refresh_network_capabilities(
 async def heartbeat(
     request: Request,
     network_id: str,
-    body: HeartbeatRequest,
+    body: dict[str, Any] = Body(...),
 ) -> HeartbeatResponse:
     try:
         network = await network_registry(request).require_network(network_id)
 
+        cluster_id = body.get("cluster_id")
+        if not isinstance(cluster_id, str) or not cluster_id:
+            raise MemberError("Missing cluster_id")
+
         member = await members(request).require_active_member(
             network_id=network.network_id,
-            cluster_id=body.cluster_id,
+            cluster_id=cluster_id,
         )
 
         _verify_signed_request(
@@ -490,19 +495,21 @@ async def heartbeat(
             request_nonce_store=nonce_store(request),
         )
 
+        heartbeat_request = HeartbeatRequest.model_validate(body)
+
         await members(request).update_last_seen(
             network_id=network.network_id,
-            cluster_id=member.cluster_id,
+            cluster_id=heartbeat_request.cluster_id,
         )
 
         return HeartbeatResponse(
             ok=True,
             network_id=network.network_id,
-            cluster_id=member.cluster_id,
+            cluster_id=heartbeat_request.cluster_id,
             server_time=utc_now(),
         )
 
-    except (NetworkRegistryError, MemberError, IdentityError) as exc:
+    except (NetworkRegistryError, MemberError, IdentityError, ValueError) as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
@@ -516,16 +523,20 @@ async def heartbeat(
 async def publish_capabilities(
     request: Request,
     network_id: str,
-    body: PublishCapabilitiesRequest,
+    body: dict[str, Any] = Body(...),
 ) -> PublishCapabilitiesResponse:
     try:
         network = await network_registry(request).require_network(network_id)
 
         check_capability_publish_allowed(network.policy)
 
+        cluster_id = body.get("cluster_id")
+        if not isinstance(cluster_id, str) or not cluster_id:
+            raise MemberError("Missing cluster_id")
+
         member = await members(request).require_active_member(
             network_id=network.network_id,
-            cluster_id=body.cluster_id,
+            cluster_id=cluster_id,
         )
 
         _verify_signed_request(
@@ -536,10 +547,12 @@ async def publish_capabilities(
             request_nonce_store=nonce_store(request),
         )
 
+        capability_request = PublishCapabilitiesRequest.model_validate(body)
+
         updated = await members(request).update_capabilities(
             network_id=network.network_id,
             cluster_id=member.cluster_id,
-            capabilities=body.capabilities,
+            capabilities=capability_request.capabilities,
         )
 
         return PublishCapabilitiesResponse(
@@ -554,6 +567,7 @@ async def publish_capabilities(
         MemberError,
         IdentityError,
         FederationPolicyError,
+        ValueError,
     ) as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -694,19 +708,54 @@ def _verify_signed_request(
     *,
     network_id: str,
     public_key: str,
-    body: Any,
+    body: dict[str, Any],
     request_settings: FederationSettings,
     request_nonce_store: LocalNonceStore,
 ) -> None:
     """
     Verify simple signed member requests such as heartbeat and capability publish.
 
-    The signed payload includes the path network_id plus the request body
-    excluding signature. This prevents replaying a valid signed body against
-    another network endpoint.
+    The signed payload is:
+      {
+        "network_id": <path network_id>,
+        "body": <request body excluding signature>
+      }
+
+    Verification must happen before Pydantic model validation/dumping, because
+    Pydantic may normalize datetime strings, defaults, aliases, nested objects,
+    or enum values.
     """
 
-    issued_at = ensure_aware(body.issued_at)
+    signature = body.get("signature")
+    if not isinstance(signature, str) or not signature:
+        raise IdentityError("Missing signature")
+
+    issued_at_raw = body.get("issued_at")
+    if not isinstance(issued_at_raw, str) or not issued_at_raw:
+        raise IdentityError("Missing issued_at")
+
+    nonce = body.get("nonce")
+    if not isinstance(nonce, str) or not nonce:
+        raise IdentityError("Missing nonce")
+
+    body_without_signature = {
+        key: value
+        for key, value in body.items()
+        if key != "signature"
+    }
+
+    payload = {
+        "network_id": network_id,
+        "body": body_without_signature,
+    }
+
+    require_valid_signature(
+        public_key=public_key,
+        payload=canonical_json_bytes(payload),
+        signature=signature,
+    )
+
+    issued_at = ensure_aware(datetime.fromisoformat(issued_at_raw))
 
     now = utc_now()
     max_future = now + timedelta(seconds=request_settings.allowed_clock_skew_seconds)
@@ -721,19 +770,5 @@ def _verify_signed_request(
     if issued_at < min_issued:
         raise IdentityError("Signed request has expired")
 
-    if not request_nonce_store.check_and_remember(body.nonce):
+    if not request_nonce_store.check_and_remember(nonce):
         raise IdentityError("Signed request nonce has already been seen")
-
-    payload = {
-        "network_id": network_id,
-        "body": body.model_dump(
-            mode="json",
-            exclude={"signature"},
-        ),
-    }
-
-    require_valid_signature(
-        public_key=public_key,
-        payload=canonical_json_bytes(payload),
-        signature=body.signature,
-    )

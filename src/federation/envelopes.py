@@ -59,12 +59,12 @@ def create_envelope(
     identity: ClusterIdentity,
     network_id: str,
     packet: dict[str, Any],
+    ttl_seconds: int = 300,
+    protocol_version: str = "v1",
     target_cluster_id: str | None = None,
     request_id: str | None = None,
     nonce: str | None = None,
-    ttl_seconds: int | None = None,
     metadata: dict[str, Any] | None = None,
-    settings: FederationSettings | None = None,
 ) -> FederatedWorkEnvelope:
     """
     Create and sign a FederatedWorkEnvelope.
@@ -72,13 +72,11 @@ def create_envelope(
     The signature covers all envelope fields except `signature`.
     """
 
-    settings = settings or get_settings()
-
     now = utc_now()
-    ttl = ttl_seconds or settings.request_ttl_seconds
+    ttl = ttl_seconds
 
     unsigned_envelope = FederatedWorkEnvelope(
-        federation_version=settings.protocol_version,
+        federation_version=protocol_version,
         network_id=network_id,
         origin_cluster_id=identity.cluster_id,
         target_cluster_id=target_cluster_id,

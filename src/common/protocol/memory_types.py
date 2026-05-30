@@ -86,16 +86,4 @@ class BaseRuntimeMemoryRequest(BaseModel):
     user_id: str
     session_id: str | None = None
     channel: str = "api"
-    request: (
-        Summary
-        | Note
-        | MemoryEvent
-        | MemoryClaim
-        | ListMemoryClaim
-        | User
-        | Session
-        | dict[str, Any]
-        | RetrievalRequest
-        | PromptContextRequest
-        | ResolveSessionRequest
-    )
+    request: Any

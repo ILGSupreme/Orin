@@ -230,9 +230,10 @@ class CreateNetworkResponse(BaseModel):
 
 
 class CreateJoinTokenRequest(BaseModel):
-    scopes: list[str] = Field(default_factory=list)
+    scopes: list[str] = Field(default_factory=lambda: ["join"])
     max_uses: int | None = 1
     expires_at: datetime | None = None
+    expires_in_seconds: int | None = None
 
 
 class CreateJoinTokenResponse(BaseModel):

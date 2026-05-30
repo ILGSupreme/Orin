@@ -58,7 +58,7 @@ async def insert_message(
         packet = create_memory_workpacket(
             memory_operation="create_message",
             inference_object=inference_object,
-            memory_request=msg.model_dump(),
+            memory_request=msg.model_dump(mode="json"),
         )
 
         response = await router.send(packet=packet)

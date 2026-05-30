@@ -80,7 +80,7 @@ async def lifespan(app: FastAPI):
         await app.state.primer.stop()
 
 
-app = FastAPI(title="cortex", lifespan=lifespan)
+app = FastAPI(title="llm", lifespan=lifespan)
 
 # ---------------------------------------------------------------------------
 # Dependency helpers

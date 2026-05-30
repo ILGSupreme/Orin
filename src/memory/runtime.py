@@ -1,7 +1,10 @@
 import logging
-from typing import Any
+from typing import Any, TypeVar
+
+from pydantic import BaseModel
 
 from common.protocol.memory_types import (
+    BaseRuntimeMemoryRequest,
     ListMemoryClaim,
     MemoryClaim,
     MemoryEvent,
@@ -27,6 +30,9 @@ FEDERATION_RECORD_OPS = {
     "federation_delete_record",
 }
 
+TRequest = TypeVar("TRequest", bound=BaseModel)
+
+
 class MemoryRuntime:
     def __init__(self) -> None:
         self._memoryDB = MemoryDB(DB_PATH)
@@ -36,6 +42,8 @@ class MemoryRuntime:
         op = req.task.operation
         memory_request = req.task.memory_request
         inputs = req.task.inputs
+
+        logging.info(f"Request: {req}")
 
         try:
             if op in FEDERATION_RECORD_OPS:
@@ -47,13 +55,12 @@ class MemoryRuntime:
 
             if not memory_request:
                 raise ValueError("Memory Request is not set")
-            
+
             match op:
                 case "create_summary":
-                    if not isinstance(memory_request.request, Summary):
-                        raise ValueError("request is not of Summary instance")
+                    _resolved_request = self._memory_request_as(memory_request=memory_request,model_type=Summary)
 
-                    summary_req = memory_request.request
+                    summary_req = _resolved_request
                     summary_id = self._memoryDB.save_summary(
                         user_id=memory_request.user_id,
                         session_id=memory_request.session_id,
@@ -77,10 +84,9 @@ class MemoryRuntime:
                     )
                     return self._ok(req=req, summaries=summaries)
                 case "create_note":
-                    if not isinstance(memory_request.request, Note):
-                        raise ValueError("request is not of Note instance")
+                    _resolved_request = self._memory_request_as(memory_request=memory_request,model_type=Note)
 
-                    note_request = memory_request.request
+                    note_request = _resolved_request
 
                     path = self._filememory.write_markdown(
                         NOTES_DIR,
@@ -105,10 +111,9 @@ class MemoryRuntime:
                     notes = self._memoryDB.list_notes(user_id=memory_request.user_id)
                     return self._ok(req=req, notes=notes)
                 case "create_memory_event":
-                    if not isinstance(memory_request.request, MemoryEvent):
-                        raise ValueError("request is not of MemoryEvent instance")
+                    _resolved_request = self._memory_request_as(memory_request=memory_request,model_type=MemoryEvent)
 
-                    memory_event_request = memory_request.request
+                    memory_event_request = _resolved_request
 
                     event_id = self._memoryDB.create_memory_event(
                         user_id=memory_request.user_id,
@@ -124,10 +129,9 @@ class MemoryRuntime:
                     )
                     return self._ok(req=req, events=events)
                 case "create_memory_claim":
-                    if not isinstance(memory_request.request, MemoryClaim):
-                        raise ValueError("request is not of MemoryClaim instance")
+                    _resolved_request = self._memory_request_as(memory_request=memory_request,model_type=MemoryClaim)
 
-                    memory_claim_request = memory_request.request
+                    memory_claim_request = _resolved_request
 
                     claim = self._memoryDB.upsert_memory_claim(
                         user_id=memory_request.user_id,
@@ -142,10 +146,9 @@ class MemoryRuntime:
                     )
                     return self._ok(req=req, claim=claim)
                 case "list_memory_claims":
-                    if not isinstance(memory_request.request, ListMemoryClaim):
-                        raise ValueError("request is not of ListMemoryClaim instance")
+                    _resolved_request = self._memory_request_as(memory_request=memory_request,model_type=ListMemoryClaim)
 
-                    list_memory_claim_request = memory_request.request
+                    list_memory_claim_request = _resolved_request
 
                     claims = self._memoryDB.list_memory_claims(
                         user_id=memory_request.user_id,
@@ -163,10 +166,9 @@ class MemoryRuntime:
                     )
                     return self._ok(req=req, claims=claims)
                 case "retrieve":
-                    if not isinstance(memory_request.request, RetrievalRequest):
-                        raise ValueError("request is not of RetrievalRequest instance")
+                    _resolved_request = self._memory_request_as(memory_request=memory_request,model_type=RetrievalRequest)
 
-                    retrieval_request = memory_request.request
+                    retrieval_request = _resolved_request
 
                     user_id = memory_request.user_id
                     query = retrieval_request.query
@@ -208,12 +210,9 @@ class MemoryRuntime:
 
                     return self._ok(req=req, **result)
                 case "prompt_context":
-                    if not isinstance(memory_request.request, PromptContextRequest):
-                        raise ValueError(
-                            "request is not of PromptContextRequest instance"
-                        )
+                    _resolved_request = self._memory_request_as(memory_request=memory_request,model_type=PromptContextRequest)
 
-                    memory_prompt_request = memory_request.request
+                    memory_prompt_request = _resolved_request
 
                     user_id = memory_request.user_id
                     session_id = memory_request.session_id
@@ -291,10 +290,9 @@ class MemoryRuntime:
                         prompt_block="\n".join(prompt_lines).strip(),
                     )
                 case "upsert_user":
-                    if not isinstance(memory_request.request, User):
-                        raise ValueError("request is not of User instance")
+                    _resolved_request = self._memory_request_as(memory_request=memory_request,model_type=User)
 
-                    memory_user_request = memory_request.request
+                    memory_user_request = _resolved_request
 
                     user = self._memoryDB.upsert_user(
                         external_id=memory_user_request.external_id,
@@ -303,10 +301,9 @@ class MemoryRuntime:
                     )
                     return self._ok(req=req, user=user)
                 case "create_session":
-                    if not isinstance(memory_request.request, Session):
-                        raise ValueError("request is not of Session instance")
+                    _resolved_request = self._memory_request_as(memory_request=memory_request,model_type=Session)
 
-                    memory_session_request = memory_request.request
+                    memory_session_request = _resolved_request
 
                     session = self._memoryDB.create_chat_session(
                         user_id=memory_session_request.user_id,
@@ -316,12 +313,9 @@ class MemoryRuntime:
                     return self._ok(req=req, session=session)
 
                 case "resolve_session":
-                    if not isinstance(memory_request.request, ResolveSessionRequest):
-                        raise ValueError(
-                            "request is not of ResolveSessionRequest instance"
-                        )
+                    _resolved_request = self._memory_request_as(memory_request=memory_request,model_type=ResolveSessionRequest)
 
-                    memory_resolve_session = memory_request.request
+                    memory_resolve_session = _resolved_request
 
                     session = self._memoryDB.resolve_or_create_session(
                         user_id=memory_request.user_id,
@@ -331,10 +325,9 @@ class MemoryRuntime:
                     return self._ok(req=req, session=session)
 
                 case "create_message":
-                    if not isinstance(memory_request.request, RuntimeMessage):
-                        raise ValueError("request is not of RuntimeMessage instance")
+                    _resolved_request = self._memory_request_as(memory_request=memory_request,model_type=RuntimeMessage)
 
-                    memory_message_request = memory_request.request
+                    memory_message_request = _resolved_request
 
                     metadata_response = []
 
@@ -354,7 +347,6 @@ class MemoryRuntime:
                     return self._ok(req=req, message=metadata_response)
 
                 case "list_recent_messages":
-
                     if not memory_request.session_id:
                         raise ValueError("Session Id not set")
 
@@ -377,7 +369,7 @@ class MemoryRuntime:
 
     async def handle_egress(self, work_id: str):
         return {"status": True}
-    
+
     def _handle_federation_record_operation(
         self,
         req: WorkPacket,
@@ -399,7 +391,7 @@ class MemoryRuntime:
 
             case _:
                 raise ValueError(f"Unsupported federation record operation: {op}")
-    
+
     def _require_str_input(
         self,
         inputs: dict[str, Any],
@@ -418,7 +410,6 @@ class MemoryRuntime:
             raise ValueError(f"Missing or invalid input: {name}")
 
         return value.strip()
-
 
     def _optional_str_input(
         self,
@@ -441,7 +432,6 @@ class MemoryRuntime:
             raise ValueError(f"Invalid input: {name}")
 
         return value.strip()
-
 
     def _handle_federation_put_record(
         self,
@@ -476,7 +466,6 @@ class MemoryRuntime:
             record=record,
         )
 
-
     def _handle_federation_get_record(
         self,
         req: WorkPacket,
@@ -495,7 +484,6 @@ class MemoryRuntime:
             found=record is not None,
             record=record,
         )
-
 
     def _handle_federation_list_records(
         self,
@@ -527,7 +515,6 @@ class MemoryRuntime:
             count=len(records),
         )
 
-
     def _handle_federation_delete_record(
         self,
         req: WorkPacket,
@@ -545,6 +532,13 @@ class MemoryRuntime:
             req=req,
             **result,
         )
+
+    def _memory_request_as(
+        self,
+        memory_request: BaseRuntimeMemoryRequest,
+        model_type: type[TRequest],
+    ) -> TRequest:
+        return model_type.model_validate(memory_request.request)
 
     def _ok(self, req: WorkPacket, **metadata: Any) -> WorkResult:
         return WorkResult(

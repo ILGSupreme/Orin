@@ -4,7 +4,7 @@ import asyncio
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from common.protocol.unified_types import RuntimeMessage
 from common.protocol.memory_types import BaseRuntimeMemoryRequest
@@ -95,6 +95,15 @@ class WorkResult(BaseModel):
     backend_model: str | None = None
     error: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, value: str) -> str:
+        if value not in ("accepted", "running", "completed", "failed"):
+            raise ValueError(
+                "status must be one of these: [accepted, running, completed, failed]"
+            )
+        return value
 
 
 class WorkResponse(BaseModel):

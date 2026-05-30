@@ -10,15 +10,16 @@ from cortex.cluster.discovery.types import (
 
 
 class BackendHealthProber:
-    def __init__(self, timeout: float = 2.0) -> None:
+    def __init__(self, http: httpx.AsyncClient, timeout: float = 2.0) -> None:
+        self.http = http
         self.timeout = timeout
 
     async def probe_all(
         self, backends: list[BackendDescriptor]
     ) -> list[BackendDescriptor]:
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            tasks = [self._probe_one(client, backend) for backend in backends]
-            return await asyncio.gather(*tasks)
+        #async with self.http:
+        tasks = [self._probe_one(self.http, backend) for backend in backends]
+        return await asyncio.gather(*tasks)
 
     async def _probe_one(
         self,
