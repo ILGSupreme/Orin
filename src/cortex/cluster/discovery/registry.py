@@ -45,6 +45,8 @@ class InMemoryBackendRegistry(BackendRegistry):
             if self.prober is not None:
                 backends = await self.prober.probe_all(backends)
 
+            logging.info(f"refresh: {backends}")
+
             self._backends = sorted(
                 backends,
                 key=lambda b: (

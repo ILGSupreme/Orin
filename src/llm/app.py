@@ -21,8 +21,7 @@ root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)
 
 has_stdout_handler = any(
-    isinstance(h, logging.StreamHandler)
-    and not isinstance(h, LogStreamHandler)
+    isinstance(h, logging.StreamHandler) and not isinstance(h, LogStreamHandler)
     for h in root_logger.handlers
 )
 
@@ -33,10 +32,7 @@ if not has_stdout_handler:
     )
     root_logger.addHandler(stdout_handler)
 
-has_attach_handler = any(
-    isinstance(h, LogStreamHandler)
-    for h in root_logger.handlers
-)
+has_attach_handler = any(isinstance(h, LogStreamHandler) for h in root_logger.handlers)
 
 if not has_attach_handler:
     attach_handler = LogStreamHandler(log_stream)
@@ -71,7 +67,9 @@ async def lifespan(app: FastAPI):
 
     app.state.primer = Primer(external_http=app.state.external_http, cfg="llm")
     app.state.job_manager = JobManager()
-    app.state.generative_runtime = GenerativeModelRuntime(primer=app.state.primer, job_manager=app.state.job_manager)
+    app.state.generative_runtime = GenerativeModelRuntime(
+        primer=app.state.primer, job_manager=app.state.job_manager
+    )
 
     logging.info("Starting LLM app")
     try:
@@ -87,22 +85,28 @@ app = FastAPI(title="llm", lifespan=lifespan)
 # Dependency helpers
 # ---------------------------------------------------------------------------
 
+
 def runtime(request: Request) -> GenerativeModelRuntime:
     return request.app.state.generative_runtime
+
 
 def primer(request: Request) -> Primer:
     return request.app.state.primer
 
+
 def job_manager(request: Request) -> JobManager:
     return request.app.state.job_manager
+
 
 # ---------------------------------------------------------------------------
 # Basic service endpoints
 # ---------------------------------------------------------------------------
 
+
 @app.get("/live")
 async def live():
     return {"ok": True}
+
 
 @app.get("/ready")
 async def ready(request: Request):
@@ -113,13 +117,16 @@ async def ready(request: Request):
         "primer": primer.status(),
     }
 
+
 @app.get("/health")
 async def health():
     return {"ok": True}
 
+
 # ---------------------------------------------------------------------------
 # Network endpoints
 # ---------------------------------------------------------------------------
+
 
 @app.post("/engine")
 async def load_backend(req: LoadBackendRequest, request: Request):
@@ -146,7 +153,7 @@ async def submit_work(req: WorkPacket, request: Request):
 
 
 @app.get("/work/{work_id}")
-async def fetch_work(work_id: str, request:Request):
+async def fetch_work(work_id: str, request: Request):
     generative_runtime = runtime(request=request)
     return await generative_runtime.handle_egress(work_id)
 
@@ -221,25 +228,23 @@ async def unload_model(request: Request):
     return {"ok": True, "primer": _primer.status()}
 
 
-@app.get("/models")
+@app.get("/model_status")
 async def models(request: Request):
-    _primer =  primer(request=request)
+    _primer = primer(request=request)
     status = _primer.status()
     state = status.get("state")
 
     if state == "ready":
         return {
             "ok": True,
-            "models": [
-                {
-                    "id": status.get("model_id") or status.get("model_path"),
-                    "engine": status.get("engine"),
-                    "effective_n_ctx": status.get("effective_n_ctx", 0),
-                    "n_gpu_layers": status.get("n_gpu_layers"),
-                    "n_batch": status.get("n_batch"),
-                    "runtime_profile": status.get("runtime_profile"),
-                }
-            ],
+            "model": {
+                "id": status.get("model_id") or status.get("model_path"),
+                "engine": status.get("engine"),
+                "effective_n_ctx": status.get("effective_n_ctx", 0),
+                "n_gpu_layers": status.get("n_gpu_layers"),
+                "n_batch": status.get("n_batch"),
+                "runtime_profile": status.get("runtime_profile"),
+            },
         }
 
     return {

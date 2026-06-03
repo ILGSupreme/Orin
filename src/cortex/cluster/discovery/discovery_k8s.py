@@ -26,9 +26,6 @@ class KubernetesDiscoveryProvider:
     PRIORITY_ANNOTATION = "orin.ai/priority"
     WEIGHT_ANNOTATION = "orin.ai/weight"
     VISIBILITY_ANNOTATION = "orin.ai/visibility"
-    HEALTH_PATH_ANNOTATION = "orin.ai/health_path"
-    WORK_PATH_ANNOTATION = "orin.ai/work_path"
-    MODELS_PATH_ANNOTATION = "orin.ai/models_path"
 
     namespace : str
 
@@ -157,9 +154,9 @@ class KubernetesDiscoveryProvider:
             )
             or 1.0,
             visibility=annotations.get(self.VISIBILITY_ANNOTATION, "internal"),
-            health_path=annotations.get(self.HEALTH_PATH_ANNOTATION, "/health"),
-            work_path=annotations.get(self.WORK_PATH_ANNOTATION, "/"),
-            models_path=annotations.get(self.MODELS_PATH_ANNOTATION),
+            health_path="/health",
+            work_path="/work",
+            model_status_path=("/model_status" if role in ("llm", "cortex") else None),
             labels=dict(labels),
             annotations=dict(annotations),
         )

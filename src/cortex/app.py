@@ -24,7 +24,6 @@ from cortex.cluster.discovery.client import BackendClient
 from cortex.cluster.discovery.policy import BackendRoutingPolicy
 from cortex.cluster.discovery.services import DiscoveryService
 from cortex.cortex.harness import Harness
-from cortex.cortex.mailbox import CortexMailbox
 from cortex.cortex.runtime import CortexRuntime
 from cortex.router.planner import Planner
 from cortex.router.service import RouterService
@@ -121,14 +120,6 @@ async def lifespan(app: FastAPI):
         router=app.state.router,
         job_manager=app.state.job_manager,
         command_router=app.state.command_router,
-    )
-
-    app.state.cortex_mailbox = CortexMailbox(
-        router=app.state.router,
-    )
-
-    app.state.router.set_cortex_mailbox(
-        app.state.cortex_mailbox,
     )
 
     app.state.cortex_runtime = CortexRuntime(
@@ -261,7 +252,7 @@ async def fetch_work(work_id: str, request: Request):
 
 
 @app.post("/chat")
-async def chat_test(req: InferenceSession, request: Request):
+async def chat(req: InferenceSession, request: Request):
     cortex_runtime = cortex(request=request)
     if req.stream:
         return await cortex_runtime.chat_stream(req=req)
@@ -348,6 +339,30 @@ async def load_model(req: LoadModelRequest, request: Request):
             "engine": engine,
         },
     )
+
+@app.get("/model_status")
+async def models(request: Request):
+    _primer = primer(request=request)
+    status = _primer.status()
+    state = status.get("state")
+
+    if state == "ready":
+        return {
+            "ok": True,
+            "model": {
+                "id": status.get("model_id") or status.get("model_path"),
+                "engine": status.get("engine"),
+                "effective_n_ctx": status.get("effective_n_ctx", 0),
+                "n_gpu_layers": status.get("n_gpu_layers"),
+                "n_batch": status.get("n_batch"),
+                "runtime_profile": status.get("runtime_profile"),
+            },
+        }
+
+    return {
+        "ok": False,
+        "models": [],
+    }
 
 
 @app.get("/jobs/{job_id}")

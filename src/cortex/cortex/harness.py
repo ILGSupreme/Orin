@@ -346,19 +346,17 @@ class Harness:
 
         reserved_output_tokens = MAX_TOKENS_POLICY.get("chat", 256)
 
-        effective_tokens = _get_total_token_estimation(
+        effective_tokens = self.primer._get_total_token_estimation(
             reserved_output_tokens=reserved_output_tokens,
-            messages=runtime_messages,
-            primer=self.primer,
+            messages=runtime_messages
         )
 
         logging.info(f"estimated tokens: {effective_tokens}")
 
-        fits = _can_fit_request(
+        fits = self.primer._can_fit_request(
             effective_n_ctx=self.primer.status()["effective_n_ctx"],
             reserved_output_tokens=reserved_output_tokens,
             messages=runtime_messages,
-            primer=self.primer,
         )
 
         if not fits:
@@ -679,6 +677,8 @@ class Harness:
         commands_information = self.command_router.get_commands(
             mode=prompt_mode,
         )
+
+        logging.info(f"commands: {commands_information}")
 
         if commands_information:
             commands_text = (

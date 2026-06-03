@@ -97,7 +97,7 @@ def node_selector_for(
 
 
 def discovery_for(kind: PodAppKind) -> PodDiscoverySpec:
-    models_path = "/models" if kind == "llm" else None
+    model_status_path = "/model_status" if kind == "llm" else None
 
     return PodDiscoverySpec(
         kind=kind,
@@ -105,7 +105,7 @@ def discovery_for(kind: PodAppKind) -> PodDiscoverySpec:
         visibility="internal",
         health_path="/health",
         work_path="/work",
-        models_path=models_path,
+        models_path=model_status_path,
     )
 
 

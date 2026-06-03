@@ -76,7 +76,7 @@ class BackendDescriptor:
 
     health_path: str = "/health"
     work_path: str = "/"
-    models_path: str | None = None
+    model_status_path: str | None = None
 
     labels: dict[str, str] = field(default_factory=dict)
     annotations: dict[str, str] = field(default_factory=dict)

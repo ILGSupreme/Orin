@@ -52,7 +52,7 @@ def format_backend_descriptor(
 
     model = backend.model or "-"
     kind = backend.kind or "-"
-    models_path = backend.models_path or "-"
+    models_path = backend.model_status_path or "-"
 
     lines = [
         f"[{index}] {backend.name}",

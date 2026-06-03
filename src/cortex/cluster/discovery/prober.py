@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 import httpx
 
@@ -17,7 +18,6 @@ class BackendHealthProber:
     async def probe_all(
         self, backends: list[BackendDescriptor]
     ) -> list[BackendDescriptor]:
-        #async with self.http:
         tasks = [self._probe_one(self.http, backend) for backend in backends]
         return await asyncio.gather(*tasks)
 
@@ -39,18 +39,21 @@ class BackendHealthProber:
             except Exception:
                 http_ok = False
 
-            if http_ok and backend.models_path:
+            if http_ok and backend.model_status_path:
                 model_check_attempted = True
                 try:
-                    r = await client.get(f"{backend.url}{backend.models_path}")
-                    model_ok = 200 <= r.status_code < 300
+                    r = await client.get(f"{backend.url}{backend.model_status_path}")
 
-                    if model_ok:
+                
+                    if 200 <= r.status_code < 300:
                         payload = r.json()
-                        models = payload.get("models")
-                        if models:
-                            effective_n_ctx = models[0].get("effective_n_ctx", 0)
+                        logging.info(payload)
+                        if payload.get("ok"):
+                            model = payload.get("model")
+                            effective_n_ctx = model.get("effective_n_ctx", 0)
                             backend.runtime.effective_n_ctx = effective_n_ctx
+                            model_ok = True
+                            
                 except Exception:
                     model_ok = False
 

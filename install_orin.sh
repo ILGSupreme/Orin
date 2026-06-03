@@ -838,8 +838,6 @@ metadata:
     orin.ai/kind: "cortex"
     orin.ai/role: "cortex"
     orin.ai/visibility: "internal"
-    orin.ai/health_path: "/health"
-    orin.ai/work_path: "/work"
 spec:
   selector:
     app: cortex
@@ -951,8 +949,6 @@ metadata:
     orin.ai/kind: "memory"
     orin.ai/role: "memory"
     orin.ai/visibility: "internal"
-    orin.ai/health_path: "/health"
-    orin.ai/work_path: "/work"
 spec:
   selector:
     app: memory
@@ -1066,7 +1062,6 @@ metadata:
     orin.ai/kind: "federation"
     orin.ai/role: "federation"
     orin.ai/visibility: "external"
-    orin.ai/health_path: "/health"
 spec:
   selector:
     app: federation

@@ -38,12 +38,7 @@ def _service_annotations(spec: PodServiceSpec) -> dict[str, str]:
         "orin.ai/kind": discovery.kind,
         "orin.ai/role": discovery.role,
         "orin.ai/visibility": discovery.visibility,
-        "orin.ai/health_path": discovery.health_path,
-        "orin.ai/work_path": discovery.work_path,
     }
-
-    if discovery.models_path is not None:
-        annotations["orin.ai/models_path"] = discovery.models_path
 
     annotations.update(discovery.extra_annotations)
 

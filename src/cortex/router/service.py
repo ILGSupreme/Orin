@@ -28,10 +28,6 @@ class RouterService:
         self.backend_client = backend_client
         self.planner = planner
         self.job_manager = job_manager
-        self.cortex_mailbox = None
-
-    def set_cortex_mailbox(self, mailbox) -> None:
-        self.cortex_mailbox = mailbox
 
     async def send_many(self, batch: list[WorkPacket]) -> str:
         jobs: list[Job] = []
@@ -80,15 +76,6 @@ class RouterService:
         return self.job_manager.create_batch(jobs=jobs)
 
     async def send(self, packet: WorkPacket) -> WorkResult:
-        if packet.work_type == WorkType.CORTEX:
-            if self.cortex_mailbox is None:
-                return WorkResult(
-                    status="failed",
-                    work_id=packet.work_id,
-                    error="Cortex mailbox is not configured",
-                )
-            return await self.cortex_mailbox.receive(packet)
-
         backend = self._resolve_backend(packet)
         if backend is None:
             return WorkResult(

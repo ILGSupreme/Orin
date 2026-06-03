@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import inspect
 import json
@@ -19,6 +21,7 @@ from cortex.cluster.discovery import formatting
 from cortex.cluster.discovery.client import BackendClient
 from cortex.cluster.discovery.policy import BackendRoutingPolicy
 from cortex.cluster.discovery.services import DiscoveryService
+from cortex.cluster.discovery.types import BackendDescriptor
 
 
 @dataclass
@@ -32,8 +35,21 @@ GLOBAL_COMMANDS = {"/help", "/commands", "/cd", "/render", "/attach"}
 CommandMode = Literal["terminal", "chat"]
 HandlerKind = Literal["text", "stream"]
 
-TextHandler = Callable[[str], Awaitable[str]]
-StreamHandler = Callable[[str], object]
+
+@dataclass(slots=True)
+class CommandContext:
+    router: CommandRouter
+    backend: BackendDescriptor | None = None
+
+    @property
+    def backend_client(self) -> BackendClient:
+        return self.router.backend_client
+
+
+TextCommandHandler = Callable[[CommandContext, str], str | Awaitable[str]]
+StreamCommandHandler = Callable[[CommandContext, str], AsyncIterator[str]]
+
+CommandHandler = TextCommandHandler | StreamCommandHandler
 
 
 @dataclass(slots=True)
@@ -41,7 +57,7 @@ class Command:
     command: str
     desc: str
     kind: HandlerKind
-    handler: TextHandler | StreamHandler
+    handler: CommandHandler
 
     # Harness exposure
     modes: set[CommandMode] = field(default_factory=set)
@@ -49,11 +65,11 @@ class Command:
     safe_info_action: bool = False
     suggest_only: bool = False
 
-    async def run_text(self, args: str = "") -> str:
+    async def run_text(self, ctx: CommandContext, args: str = "") -> str:
         if self.kind != "text":
             raise ValueError(f"Command is not text command: {self.command}")
 
-        result = self.handler(args)
+        result = self.handler(ctx, args)
 
         if inspect.isawaitable(result):
             result = await result
@@ -67,6 +83,136 @@ class CommandFolder:
     desc: str
     commands: list[Command] = field(default_factory=list)
     folders: dict[str, "CommandFolder"] = field(default_factory=dict)
+    dynamic: bool = False
+
+    def visible_commands(self, ctx: CommandContext) -> list[Command]:
+        return self.commands
+
+    def visible_folders(self, ctx: CommandContext) -> dict[str, "CommandFolder"]:
+        return self.folders
+
+
+class ClusterFolder(CommandFolder):
+    def __init__(self, commands: list[Command] | None = None) -> None:
+        super().__init__(
+            name="Cluster",
+            desc="Cluster configuration and discovery controls",
+            commands=commands or [],
+            dynamic=True,
+        )
+
+    def visible_folders(self, ctx: CommandContext) -> dict[str, CommandFolder]:
+        folders: dict[str, CommandFolder] = {}
+
+        for backend in sorted(
+            ctx.router._list_discovered_backends(),
+            key=lambda b: b.name,
+        ):
+            folders[backend.name] = ctx.router._folder_for_backend(backend)
+
+        return folders
+
+
+@dataclass(slots=True)
+class PodRoleFolder(CommandFolder):
+    role: str = ""
+
+    def supports(self, backend: BackendDescriptor) -> bool:
+        return backend.role == self.role
+
+
+class GenericBackendFolder(CommandFolder):
+    def __init__(self) -> None:
+        super().__init__(
+            name="Backend",
+            desc="Generic backend commands",
+            commands=[
+                Command(
+                    command="/show",
+                    desc="Show selected backend",
+                    kind="text",
+                    handler=handle_backend_show,
+                    modes={"terminal"},
+                    harness_action="show_backend",
+                    safe_info_action=True,
+                ),
+                Command(
+                    command="/health",
+                    desc="Read selected backend health",
+                    kind="text",
+                    handler=handle_backend_health,
+                    modes={"terminal"},
+                    harness_action="backend_health",
+                    safe_info_action=True,
+                ),
+                Command(
+                    command="/update_discovery_meta",
+                    desc="Update selected backend discovery metadata",
+                    kind="text",
+                    handler=handle_backend_update_discovery_meta,
+                    modes={"terminal"},
+                    harness_action="update_discovery_meta",
+                    suggest_only=True,
+                ),
+            ],
+        )
+
+
+class LLMFolder(PodRoleFolder):
+    def __init__(self) -> None:
+        generic = GenericBackendFolder()
+
+        super().__init__(
+            name="LLM",
+            desc="LLM backend commands",
+            role="llm",
+            commands=[
+                *generic.commands,
+                Command(
+                    command="/model_status",
+                    desc="Show loaded model/runtime status",
+                    kind="text",
+                    handler=handle_backend_model_status,
+                    modes={"terminal"},
+                    harness_action="model_status",
+                    safe_info_action=True,
+                ),
+                Command(
+                    command="/load_model",
+                    desc="Load model on selected LLM backend",
+                    kind="text",
+                    handler=handle_backend_load_model,
+                    modes={"terminal"},
+                    harness_action="load_model",
+                    suggest_only=True,
+                ),
+                Command(
+                    command="/job_status",
+                    desc="Show backend job status",
+                    kind="text",
+                    handler=handle_backend_job_status,
+                    modes={"terminal", "chat"},
+                    harness_action="job_status",
+                    safe_info_action=True,
+                ),
+                Command(
+                    command="/unload_model",
+                    desc="Unload model from selected LLM backend",
+                    kind="text",
+                    handler=handle_backend_unload_model,
+                    modes={"terminal"},
+                    harness_action="unload_model",
+                    suggest_only=True,
+                ),
+            ],
+        )
+
+
+class MemoryFolder(GenericBackendFolder):
+    def __init__(self) -> None:
+        super().__init__()
+        self.name = "Memory"
+        self.desc = "Memory backend commands"
 
 
 MODEL_ALIASES = {
@@ -104,8 +250,8 @@ MODEL_ALIASES = {
         "repo_id": "unsloth/Qwen3.5-2B-GGUF",
         "filename": "Qwen3.5-2B-Q4_K_M.gguf",
         "tokenizer_id": "Qwen/Qwen3.5-2B",
-        "revision": "main"
-    }
+        "revision": "main",
+    },
 }
 
 
@@ -130,6 +276,13 @@ class CommandRouter:
         self.log_stream = log_stream
         self.shell_state = ShellState()
 
+        self.generic_backend_folder = GenericBackendFolder()
+        self.backend_role_folders: dict[str, CommandFolder] = {
+            "llm": LLMFolder(),
+            "memory": MemoryFolder(),
+            # "tool": ToolFolder(),
+            # "cortex": CortexFolder(),
+        }
         self.root_folder = self._build_folders()
 
     def _cmd(
@@ -281,9 +434,7 @@ class CommandRouter:
                         ),
                     ],
                 ),
-                "Cluster": CommandFolder(
-                    name="Cluster",
-                    desc="Cluster configuration and discovery controls",
+                "Cluster": ClusterFolder(
                     commands=[
                         self._cmd(
                             "/show",
@@ -308,9 +459,9 @@ class CommandRouter:
                     desc="Node and model configuration controls",
                     commands=[
                         self._cmd(
-                            "/models",
+                            "/model_aliases",
                             "List available model aliases",
-                            self.handle_models,
+                            self.handle_model_aliases,
                             modes={"terminal"},
                             harness_action="model_status",
                             safe_info_action=True,
@@ -368,12 +519,51 @@ class CommandRouter:
             },
         )
 
-    def get_commands(self, mode: CommandMode) -> list[dict[str, str | bool | None]]:
-        commands: list[dict[str, str | bool | None]] = []
+    def _current_backend(self) -> BackendDescriptor | None:
+        if not self._is_in_backend_folder():
+            return None
 
-        for folder_path, command in self._walk_commands(self.root_folder):
+        return self._find_backend_by_name(self.shell_state.selected_backend_name)
+
+    def _current_context(self) -> CommandContext:
+        return CommandContext(
+            router=self,
+            backend=self._current_backend(),
+        )
+
+    def get_commands(
+    self,
+    mode: CommandMode,
+    *,
+    executable_only: bool = False,
+    ) -> list[dict[str, str | bool | None]]:
+        commands: list[dict[str, str | bool | None]] = []
+        seen: set[tuple[str | None, str]] = set()
+
+        def add_command(
+            folder_path: str,
+            command: Command,
+            *,
+            requires_backend: bool = False,
+            backend_role: str | None = None,
+        ) -> None:
             if mode not in command.modes:
-                continue
+                return
+
+            if executable_only:
+                if not command.harness_action:
+                    return
+                if not command.safe_info_action:
+                    return
+                if command.suggest_only:
+                    return
+
+            key = (command.harness_action, command.command)
+
+            if key in seen:
+                return
+
+            seen.add(key)
 
             commands.append(
                 {
@@ -383,8 +573,38 @@ class CommandRouter:
                     "folder": folder_path,
                     "safe_info_action": command.safe_info_action,
                     "suggest_only": command.suggest_only,
+                    "requires_backend": requires_backend,
+                    "backend_role": backend_role,
                 }
             )
+
+        # Static command tree.
+        for folder_path, command in self._walk_commands(self.root_folder):
+            add_command(
+                folder_path,
+                command,
+                requires_backend=False,
+                backend_role=None,
+            )
+
+        # Generic backend commands.
+        for command in self.generic_backend_folder.commands:
+            add_command(
+                "Root/Cluster/<backend>",
+                command,
+                requires_backend=True,
+                backend_role=None,
+            )
+
+        # Role-specific backend commands.
+        for role, folder in self.backend_role_folders.items():
+            for command in folder.commands:
+                add_command(
+                    f"Root/Cluster/<{role}-backend>",
+                    command,
+                    requires_backend=True,
+                    backend_role=role,
+                )
 
         return commands
 
@@ -404,26 +624,6 @@ class CommandRouter:
         command = parts[0]
         args = parts[1] if len(parts) > 1 else ""
         return command.lower(), args
-
-    def _parse_load_model_args(self, args: str):
-        parser = argparse.ArgumentParser(prog="/load_model", add_help=False)
-        parser.add_argument("model_alias", nargs="?")
-        parser.add_argument("--force-reload", action="store_true")
-
-        try:
-            parsed = parser.parse_args(shlex.split(args))
-        except SystemExit:
-            return "Invalid usage.\n\nUsage:\n  /load_model <alias> [--force-reload]\n"
-
-        if not parsed.model_alias:
-            return "Missing model alias.\n\nUsage:\n  /load_model <alias>\n"
-
-        return parsed
-
-    def output_generator(self, output_string: str):
-        chunk_size = 64  # smaller = nicer streaming feel
-        for i in range(0, len(output_string), chunk_size):
-            yield output_string[i : i + chunk_size]
 
     async def handle_command(self, text: str):
         command_name, args = self._parse(text)
@@ -461,6 +661,12 @@ class CommandRouter:
 
         except Exception as e:
             return f"error: {e}"
+        
+    
+    def output_generator(self, output_string: str):
+        chunk_size = 64  # smaller = nicer streaming feel
+        for i in range(0, len(output_string), chunk_size):
+            yield output_string[i : i + chunk_size]
 
     def _stream_output(self, output: str):
         return StreamingResponse(
@@ -565,7 +771,7 @@ class CommandRouter:
 
         return annotations
 
-    def _list_discovered_backends(self) -> list:
+    def _list_discovered_backends(self) -> list[BackendDescriptor]:
         return self.backend_service.get_registry().list_backends()
 
     def _find_backend_by_name(self, name: str | None):
@@ -599,53 +805,14 @@ class CommandRouter:
 
         self.shell_state.path.pop()
 
+        # If we are no longer exactly inside Root / Cluster / <backend>,
+        # clear selected backend.
         if not self._is_in_backend_folder():
             self.shell_state.selected_backend_name = None
 
         return self._render_current_folder()
 
-    def _try_cd_static_folder(self, target: str) -> str | None:
-        current = self._get_static_folder(self.shell_state.path)
-
-        if current is None:
-            return None
-
-        folders = current.folders
-
-        if target not in folders:
-            return None
-
-        self.shell_state.path.append(target)
-        self.shell_state.selected_backend_name = None
-
-        return self._render_current_folder()
-
-    def _get_static_folder(self, path: list[str]) -> CommandFolder | None:
-        if not path:
-            return self.root_folder
-
-        if path[0] != "Root":
-            return None
-
-        folder = self.root_folder
-
-        for part in path[1:]:
-            # Dynamic backend folder, not part of static tree.
-            if (
-                folder.name == "Cluster"
-                and part == self.shell_state.selected_backend_name
-            ):
-                break
-
-            next_folder = folder.folders.get(part)
-            if next_folder is None:
-                return None
-
-            folder = next_folder
-
-        return folder
-
-    def _render_static_folder(self, folder: CommandFolder) -> str:
+    def _render_folder(self, folder: CommandFolder, ctx: CommandContext) -> str:
         title = " / ".join(self.shell_state.path)
 
         lines: list[str] = [
@@ -656,25 +823,55 @@ class CommandRouter:
         if folder.desc:
             lines.extend(["", folder.desc])
 
-        if folder.commands:
+        if ctx.backend is not None:
+            backend = ctx.backend
+            health = getattr(backend, "health", None)
+            runtime = getattr(backend, "runtime", None)
+
+            status = getattr(health, "status", "unknown") if health else "unknown"
+            ready = getattr(health, "ready_endpoints", "-") if health else "-"
+            effective_n_ctx = (
+                getattr(runtime, "effective_n_ctx", None) if runtime else None
+            )
+
+            lines.extend(
+                [
+                    "",
+                    "Backend:",
+                    f"  service: {backend.namespace}/{backend.service_name}",
+                    f"  role: {backend.role}",
+                    f"  kind: {backend.kind}",
+                    f"  model: {backend.model or '-'}",
+                    f"  health: {status}",
+                    f"  ready endpoints: {ready}",
+                ]
+            )
+
+            if effective_n_ctx:
+                lines.append(f"  effective context: {effective_n_ctx}")
+
+        commands = folder.visible_commands(ctx)
+        folders = folder.visible_folders(ctx)
+
+        if commands:
             lines.extend(["", "Commands:"])
 
-            for command in folder.commands:
+            for command in commands:
                 if command.desc:
                     lines.append(f"  {command.command:<24} {command.desc}")
                 else:
                     lines.append(f"  {command.command}")
 
-        if folder.folders:
+        if folders:
             lines.extend(["", "Folders:"])
 
-            for folder_name, child in folder.folders.items():
+            for folder_name, child in folders.items():
                 if child.desc:
                     lines.append(f"  {folder_name:<24} {child.desc}")
                 else:
                     lines.append(f"  {folder_name}")
 
-        if not folder.commands and not folder.folders:
+        if not commands and not folders:
             lines.extend(["", "No commands or folders."])
 
         lines.extend(
@@ -690,161 +887,13 @@ class CommandRouter:
         return "\n".join(lines)
 
     def _render_current_folder(self) -> str:
-        if self._is_in_backend_folder():
-            backend = self._find_backend_by_name(self.shell_state.selected_backend_name)
-            if backend is None:
-                return "Selected backend is no longer discovered."
-            return self._render_backend_folder(backend)
-
-        if self._is_in_cluster_folder():
-            return self._render_cluster_folder()
-
-        folder = self._get_static_folder(self.shell_state.path)
+        ctx = self._current_context()
+        folder = self._current_folder(ctx)
 
         if folder is None:
             return "Invalid folder."
 
-        return self._render_static_folder(folder)
-
-    def _render_cluster_folder(self) -> str:
-        backends = self._list_discovered_backends()
-        folder = self._get_static_folder(["Root", "Cluster"])
-
-        lines = [
-            "Cluster",
-            "=======",
-            "",
-        ]
-
-        if folder and folder.desc:
-            lines.append(folder.desc)
-            lines.append("")
-
-        lines.append("Commands:")
-
-        if folder and folder.commands:
-            for command in folder.commands:
-                lines.append(f"  {command.command:<24} {command.desc}")
-        else:
-            lines.append("  -")
-
-        lines.extend(["", "Backends:"])
-
-        if not backends:
-            lines.append("  -")
-            return "\n".join(lines)
-
-        for backend in sorted(backends, key=lambda b: b.name):
-            role = getattr(backend, "role", "-")
-            health = getattr(getattr(backend, "health", None), "status", "unknown")
-            model = getattr(backend, "model", None) or "-"
-
-            lines.append(f"  {backend.name}  role={role} health={health} model={model}")
-
-        lines.extend(
-            [
-                "",
-                "Navigation:",
-                "  /cd <backend-name>",
-                "  /cd ..",
-                "  /cd /",
-            ]
-        )
-
-        return "\n".join(lines)
-
-    def _backend_commands(self, backend) -> list[str]:
-        commands = [
-            "/show",
-            "/health",
-            "/attach",
-            "/update_discovery_meta",
-        ]
-
-        if getattr(backend, "models_path", None):
-            commands.append("/models")
-
-        if getattr(backend, "role", None) in {"llm", "cortex"}:
-            commands.extend(
-                [
-                    "/engine",
-                    "/load_model",
-                    "/job_status",
-                    "/unload_model",
-                ]
-            )
-
-        return commands
-
-    def _render_backend_folder(self, backend) -> str:
-        health = getattr(backend, "health", None)
-        runtime = getattr(backend, "runtime", None)
-
-        status = getattr(health, "status", "unknown") if health else "unknown"
-        ready = getattr(health, "ready_endpoints", "-") if health else "-"
-        effective_n_ctx = getattr(runtime, "effective_n_ctx", None) if runtime else None
-
-        lines = [
-            f"Cluster / {backend.name}",
-            "=" * (10 + len(backend.name)),
-            "",
-            "Backend:",
-            f"  service: {backend.namespace}/{backend.service_name}",
-            f"  role: {backend.role}",
-            f"  kind: {backend.kind}",
-            f"  model: {backend.model or '-'}",
-            f"  health: {status}",
-            f"  ready endpoints: {ready}",
-        ]
-
-        if effective_n_ctx:
-            lines.append(f"  effective context: {effective_n_ctx}")
-
-        lines.extend(
-            [
-                "",
-                "Commands:",
-            ]
-        )
-
-        for command in self._backend_commands(backend):
-            lines.append(f"  {command}")
-
-        return "\n".join(lines)
-
-    def _description_for_visible_command(self, command_name: str) -> str:
-        if command_name == "/render":
-            return "Render current folder"
-        if command_name == "/help":
-            return "Show help information"
-        if command_name == "/commands":
-            return "Show available commands"
-        if command_name == "/cd":
-            return "Traverse folder"
-
-        if self._is_in_backend_folder():
-            backend_descs = {
-                "/show": "Show selected backend",
-                "/health": "Read selected backend health",
-                "/attach": "Attach to selected backend logs",
-                "/models": "Read selected backend models",
-                "/engine": "Load backend engine on selected backend",
-                "/load_model": "Load model on selected backend",
-                "/job_status": "Show selected backend job status",
-                "/unload_model": "Unload model on selected backend",
-                "/update_discovery_meta": "Update selected backend discovery metadata",
-            }
-            return backend_descs.get(command_name, "")
-
-        folder = self._get_static_folder(self.shell_state.path)
-        if folder is None:
-            return ""
-
-        for command in folder.commands:
-            if command.command == command_name:
-                return command.desc
-
-        return ""
+        return self._render_folder(folder, ctx)
 
     async def _attach_to_cortex(self, args: str):
         if self.log_stream is None:
@@ -872,135 +921,61 @@ class CommandRouter:
         except Exception as exc:
             yield f"Failed to attach to backend {backend.name}: {exc}\n"
 
-    async def handle_attach(self, args: str):
-        if self._is_in_backend_folder():
-            backend = self._find_backend_by_name(self.shell_state.selected_backend_name)
+    async def handle_attach(self, ctx: CommandContext, args: str):
+        backend = ctx.backend
 
-            if backend is None:
-                yield "Selected backend is no longer discovered.\n"
-                return
-
+        if backend is not None:
             async for chunk in self._attach_to_backend(backend, args):
                 yield chunk
-
             return
 
         async for chunk in self._attach_to_cortex(args):
             yield chunk
 
     async def dispatch_command(self, command: str, args: str):
+        ctx = self._current_context()
+
+        # Global commands are always available, regardless of current folder.
         if command in GLOBAL_COMMANDS:
-            return await self.dispatch_static_command(
-                command,
-                args,
+            cmd = self._find_global_command(command)
+
+            if cmd is None:
+                return f"Global command {command} has no registered handler."
+
+            return await self._run_command(
+                cmd=cmd,
+                ctx=ctx,
+                args=args,
                 prefer_stream=(command == "/attach"),
             )
 
-        if self._is_in_backend_folder():
-            backend_result = await self.dispatch_backend_command(command, args)
-            if backend_result is not None:
-                return backend_result
+        # Normal visible command lookup depends on current folder/context.
+        cmd = self._find_visible_command(command, ctx)
 
-            return (
-                f"Unknown command in backend folder: {command}\n\n"
-                "Use /commands or /help to see available commands."
-            )
+        if cmd is None:
+            return self._unknown_command(command, ctx)
 
-        return await self.dispatch_static_command(command, args)
+        return await self._run_command(cmd=cmd, ctx=ctx, args=args)
 
-    async def dispatch_backend_command(self, command: str, args: str):
-        backend = self._find_backend_by_name(self.shell_state.selected_backend_name)
-
-        if backend is None:
-            return "Selected backend is no longer discovered."
-
-        if command == "/show":
-            return formatting.format_backend_list([backend], verbose=True)
-
-        if command == "/health":
-            return await self.handle_backend_health(backend, args)
-
-        if command == "/models":
-            return await self.handle_backend_models(backend, args)
-
-        if command == "/update_discovery_meta":
-            return await self.handle_backend_update_discovery_meta(backend, args)
-
-        if command == "/load_model":
-            return await self.handle_backend_load_model(backend, args)
-
-        if command == "/job_status":
-            return await self.handle_backend_job_status(backend, args)
-
-        if command == "/unload_model":
-            return await self.handle_backend_unload_model(backend, args)
-
-        if command == "/engine":
-            return await self.handle_backend_engine(backend, args)
-
-        return None
-
-    def _find_visible_static_command(self, command: str) -> Command | None:
-        for cmd in self._get_visible_static_commands():
+    def _find_global_command(self, command: str) -> Command | None:
+        for cmd in self.root_folder.commands:
             if cmd.command == command:
                 return cmd
 
         return None
 
-    def _get_visible_static_commands(self) -> list[Command]:
-        commands: list[Command] = []
-
-        root_commands = self.root_folder.commands
-        commands.extend(cmd for cmd in root_commands if cmd.command in GLOBAL_COMMANDS)
-
-        folder = self._get_static_folder(self.shell_state.path)
-
-        if folder is None:
-            return commands
-
-        for cmd in folder.commands:
-            if cmd.command not in GLOBAL_COMMANDS:
-                commands.append(cmd)
-
-        return commands
-
-    def _get_visible_command_names(self) -> set[str]:
-        commands: set[str] = {
-            cmd.command for cmd in self._get_visible_static_commands()
-        }
-
-        if self._is_in_backend_folder():
-            backend = self._find_backend_by_name(self.shell_state.selected_backend_name)
-
-            if backend is not None:
-                commands.update(self._backend_commands(backend))
-
-        return commands
-
-    async def dispatch_static_command(
+    async def _run_command(
         self,
-        command: str,
-        args: str,
         *,
+        cmd: Command,
+        ctx: CommandContext,
+        args: str,
         prefer_stream: bool = False,
     ):
-        cmd = self._find_visible_static_command(command)
+        if cmd.kind == "text":
+            return await cmd.run_text(ctx, args)
 
-        if cmd is None:
-            visible_commands = self._get_visible_command_names()
-
-            if command in visible_commands:
-                return f"Command {command} is visible but has no registered handler."
-
-            return (
-                f"Unknown command in current folder: {command}\n\n"
-                "Use /commands or /help to see available commands."
-            )
-
-        result = cmd.handler(args)
-
-        if inspect.isawaitable(result):
-            result = await result
+        result = cmd.handler(ctx, args)
 
         if inspect.isasyncgen(result) and not prefer_stream:
             chunks: list[str] = []
@@ -1010,14 +985,115 @@ class CommandRouter:
 
         return result
 
+    def _find_visible_command(
+        self,
+        command: str,
+        ctx: CommandContext,
+    ) -> Command | None:
+        folder = self._current_folder(ctx)
+
+        if folder is None:
+            return None
+
+        for cmd in folder.visible_commands(ctx):
+            if cmd.command == command:
+                return cmd
+
+        return None
+
+    def _unknown_command(self, command: str, ctx: CommandContext) -> str:
+        visible = self._visible_commands_for_current_context(ctx)
+        visible_names = sorted(cmd.command for cmd in visible)
+
+        lines = [
+            f"Unknown command in current folder: {command}",
+            "",
+            "Use /commands or /help to see available commands.",
+        ]
+
+        if visible_names:
+            lines.extend(["", "Available here:"])
+            for name in visible_names:
+                lines.append(f"  {name}")
+
+        return "\n".join(lines)
+
+    def _current_folder(self, ctx: CommandContext) -> CommandFolder | None:
+        """
+        Resolve the command folder for the current shell location.
+
+        Static examples:
+        Root
+        Root / Deployment
+        Root / Configuration
+        Root / Configuration / ModelDownloader
+
+        Dynamic backend example:
+        Root / Cluster / llm-medium-1-service
+        """
+
+        # Dynamic backend/pod folder.
+        # If ctx.backend exists, the shell is inside Root/Cluster/<backend>.
+        if ctx.backend is not None:
+            return self._folder_for_backend(ctx.backend)
+
+        # Static folder tree.
+        path = self.shell_state.path
+
+        if not path:
+            return self.root_folder
+
+        if path[0] != "Root":
+            return None
+
+        folder = self.root_folder
+
+        for part in path[1:]:
+            next_folder = folder.folders.get(part)
+
+            if next_folder is None:
+                return None
+
+            folder = next_folder
+
+        return folder
+
+    def _folder_for_backend(self, backend: BackendDescriptor) -> CommandFolder:
+        role_folder = self.backend_role_folders.get(backend.role)
+
+        if role_folder is not None:
+            return role_folder
+
+        return self.generic_backend_folder
+
+    def _visible_commands_for_current_context(
+        self,
+        ctx: CommandContext,
+    ) -> list[Command]:
+        commands: dict[str, Command] = {}
+
+        # Global commands are always visible.
+        for cmd in self.root_folder.commands:
+            if cmd.command in GLOBAL_COMMANDS:
+                commands[cmd.command] = cmd
+
+        # Current folder commands.
+        folder = self._current_folder(ctx)
+
+        if folder is not None:
+            for cmd in folder.visible_commands(ctx):
+                commands[cmd.command] = cmd
+
+        return list(commands.values())
+
     # ---------------------------------------------------------------------------
     # Handle Functions
     # ---------------------------------------------------------------------------
 
-    def handle_render(self, args: str = "") -> str:
+    def handle_render(self, ctx: CommandContext, args: str = "") -> str:
         return self._render_current_folder() + "\n"
 
-    async def handle_cd(self, args: str) -> str:
+    async def handle_cd(self, ctx: CommandContext, args: str) -> str:
         target = args.strip()
 
         if not target:
@@ -1031,41 +1107,70 @@ class CommandRouter:
             self.shell_state.selected_backend_name = None
             return self._render_current_folder()
 
-        # static folder traversal first
-        static_result = self._try_cd_static_folder(target)
-        if static_result is not None:
-            return static_result
+        current_folder = self._current_folder(ctx)
 
-        # dynamic backend folder traversal
+        if current_folder is None:
+            return "Invalid current folder."
+
+        visible_folders = current_folder.visible_folders(ctx)
+
+        # Normal folder traversal.
+        # This works for both:
+        #   Root -> Deployment
+        #   Root / Cluster -> llm-medium-1-service
+        if target in visible_folders:
+            # Dynamic backend folder under Cluster.
+            if self._is_in_cluster_folder():
+                backend = self._find_backend_by_name(target)
+
+                if backend is None:
+                    return f"No discovered backend named: {target}"
+
+                self.shell_state.path = ["Root", "Cluster", backend.name]
+                self.shell_state.selected_backend_name = backend.name
+                return self._render_current_folder()
+
+            # Static folder.
+            self.shell_state.path.append(target)
+            self.shell_state.selected_backend_name = None
+            return self._render_current_folder()
+
+        # Optional convenience: allow service_name as cd target too.
+        # Example:
+        #   /cd llm-medium-1-service
+        # even if backend.name is orin/llm-medium-1-service
         if self._is_in_cluster_folder():
             backend = self._find_backend_by_name(target)
 
-            if backend is None:
-                return f"No discovered backend named: {target}"
-
-            self.shell_state.path = ["Root", "Cluster", backend.name]
-            self.shell_state.selected_backend_name = backend.name
-            return self._render_backend_folder(backend)
+            if backend is not None:
+                self.shell_state.path = ["Root", "Cluster", backend.name]
+                self.shell_state.selected_backend_name = backend.name
+                return self._render_current_folder()
 
         return f"No folder named: {target}"
 
-    def handle_get_commands(self, args: str = "") -> str:
+    def handle_get_commands(self, ctx: CommandContext, args: str = "") -> str:
+        commands = self._visible_commands_for_current_context(ctx)
+
         lines = [
             "Available commands",
             "==================",
             "",
         ]
 
-        for command in sorted(self._get_visible_command_names()):
-            desc = self._description_for_visible_command(command)
-            if desc:
-                lines.append(f"  {command:<24} {desc}")
+        if not commands:
+            lines.append("  -")
+            return "\n".join(lines) + "\n"
+
+        for cmd in sorted(commands, key=lambda c: c.command):
+            if cmd.desc:
+                lines.append(f"  {cmd.command:<24} {cmd.desc}")
             else:
-                lines.append(f"  {command}")
+                lines.append(f"  {cmd.command}")
 
         return "\n".join(lines) + "\n"
 
-    def handle_models(self, args: str = "") -> str:
+    def handle_model_aliases(self, ctx: CommandContext, args: str = "") -> str:
         lines = ["Available model aliases:\n"]
 
         for alias, model in MODEL_ALIASES.items():
@@ -1076,7 +1181,7 @@ class CommandRouter:
 
         return "\n".join(lines)
 
-    async def handle_huggingface_commands(self, args: str) -> str:
+    async def handle_huggingface_commands(self, ctx: CommandContext, args: str) -> str:
         parser = argparse.ArgumentParser(prog="/huggingface", add_help=False)
         sub = parser.add_subparsers(dest="cmd")
 
@@ -1185,7 +1290,7 @@ class CommandRouter:
             "  /huggingface alias add qwen35-9b unsloth/Qwen3.5-9B-GGUF\n"
         )
 
-    async def handle_engine(self, args: str) -> str:
+    async def handle_engine(self, ctx: CommandContext, args: str) -> str:
         parser = argparse.ArgumentParser(prog="/engine", add_help=False)
         parser.add_argument("engine", nargs="?")
 
@@ -1205,7 +1310,7 @@ class CommandRouter:
         except Exception as e:
             return f"error: {e}"
 
-    async def handle_load_model(self, args: str = "") -> str:
+    async def handle_load_model(self, ctx: CommandContext, args: str = "") -> str:
         parser = argparse.ArgumentParser(prog="/load_model", add_help=False)
         parser.add_argument("model_alias", nargs="?")
         parser.add_argument("--force-reload", action="store_true")
@@ -1224,7 +1329,7 @@ class CommandRouter:
         if not model:
             return (
                 f"Unknown model alias: {alias}\n\n"
-                "Use /models to list available aliases.\n"
+                "Use /model_aliases to list available aliases.\n"
             )
 
         spec = JobSpec(
@@ -1241,7 +1346,7 @@ class CommandRouter:
             },
         )
 
-        def update_cortex_discovery(job:Job):
+        def update_cortex_discovery(job: Job):
             metadata = job.latest_result.get("metadata", {})
             model_id = metadata.get("model_id") or model["model_id"]
 
@@ -1268,7 +1373,7 @@ class CommandRouter:
             f"Use /attach to follow Cortex logs.\n"
         )
 
-    async def handle_job_status(self, args: str = "") -> str:
+    async def handle_job_status(self, ctx: CommandContext, args: str = "") -> str:
         job_id = args.strip()
 
         if not job_id:
@@ -1281,7 +1386,7 @@ class CommandRouter:
 
         return json.dumps(job.to_dict(), indent=2, ensure_ascii=False) + "\n"
 
-    async def handle_unload_model(self, args: str) -> str:
+    async def handle_unload_model(self, ctx: CommandContext, args: str) -> str:
         await self.primer.stop()
 
         discovery_update_text = ""
@@ -1311,7 +1416,7 @@ class CommandRouter:
 
         return f"{self.primer.status()}{discovery_update_text}"
 
-    async def handle_deploy_pod(self, args: str) -> str:
+    async def handle_deploy_pod(self, ctx: CommandContext, args: str) -> str:
         parser = argparse.ArgumentParser(prog="/deploy_pod", add_help=False)
         parser.add_argument("role", nargs="?", default=None)
         parser.add_argument("size", nargs="?", default=None)
@@ -1448,7 +1553,7 @@ class CommandRouter:
         except Exception as e:
             return f"error: {e}\n"
 
-    async def handle_delete_pod(self, args: str) -> str:
+    async def handle_delete_pod(self, ctx: CommandContext, args: str) -> str:
         parser = argparse.ArgumentParser(prog="/delete_pod", add_help=False)
         parser.add_argument("name", nargs="?", default=None)
         parser.add_argument("--keep-pvc", action="store_true")
@@ -1499,7 +1604,7 @@ class CommandRouter:
         except Exception as e:
             return f"error: {e}\n"
 
-    async def handle_list_pods(self, args: str) -> str:
+    async def handle_list_pods(self, ctx: CommandContext, args: str) -> str:
         parser = argparse.ArgumentParser(prog="/list_pods", add_help=False)
         parser.add_argument("--namespace", default=None)
         parser.add_argument("--verbose", action="store_true")
@@ -1558,7 +1663,7 @@ class CommandRouter:
         except Exception as e:
             return f"error: {e}\n"
 
-    async def handle_install_k3s(self, args: str) -> str:
+    async def handle_install_k3s(self, ctx: CommandContext, args: str) -> str:
         parser = argparse.ArgumentParser(prog="/install_k3s", add_help=False)
         parser.add_argument("alias", nargs="?", default=None)
         parser.add_argument("--mode", choices=["server", "agent"], default="agent")
@@ -1599,7 +1704,7 @@ class CommandRouter:
         except Exception as e:
             return f"error: {e}\n"
 
-    async def handle_add_node(self, args: str) -> str:
+    async def handle_add_node(self, ctx: CommandContext, args: str) -> str:
         parser = argparse.ArgumentParser(prog="/add_node", add_help=False)
         parser.add_argument("alias", nargs="?", default=None)
 
@@ -1699,7 +1804,7 @@ class CommandRouter:
         except Exception as e:
             return f"error: {e}\n"
 
-    async def handle_remove_node(self, args: str) -> str:
+    async def handle_remove_node(self, ctx: CommandContext, args: str) -> str:
         parser = argparse.ArgumentParser(prog="/remove_node", add_help=False)
         parser.add_argument("alias", nargs="?", default=None)
 
@@ -1740,7 +1845,7 @@ class CommandRouter:
         except Exception as e:
             return f"error: {e}\n"
 
-    async def handle_label_node(self, args: str) -> str:
+    async def handle_label_node(self, ctx: CommandContext, args: str) -> str:
         parser = argparse.ArgumentParser(prog="/label_node", add_help=False)
         parser.add_argument("alias", nargs="?", default=None)
         parser.add_argument(
@@ -1791,7 +1896,7 @@ class CommandRouter:
         except Exception as e:
             return f"error: {e}\n"
 
-    async def handle_update_discovery_meta(self, args: str) -> str:
+    async def handle_update_discovery_meta(self, ctx: CommandContext, args: str) -> str:
         parser = argparse.ArgumentParser(
             prog="/update_discovery_meta",
             add_help=False,
@@ -1947,7 +2052,7 @@ class CommandRouter:
 
         return "\n".join(lines)
 
-    async def handle_list_nodes(self, args: str) -> str:
+    async def handle_list_nodes(self, ctx: CommandContext, args: str) -> str:
         parser = argparse.ArgumentParser(prog="/list_nodes", add_help=False)
         parser.add_argument("--verbose", action="store_true")
 
@@ -2003,7 +2108,7 @@ class CommandRouter:
         except Exception as e:
             return f"error: {e}\n"
 
-    async def handle_show(self, args: str) -> str:
+    async def handle_show(self, ctx: CommandContext, args: str) -> str:
         parser = argparse.ArgumentParser(prog="/show", add_help=False)
         parser.add_argument("role", nargs="?", default=None)
         parser.add_argument("--raw", action="store_true")
@@ -2050,8 +2155,8 @@ class CommandRouter:
         return formatting.format_backend_list(
             backends=backends, role_filter=parsed.role, verbose=parsed.verbose
         )
-    
-    async def handle_cluster_snapshot(self, args: str = "") -> str:
+
+    async def handle_cluster_snapshot(self, ctx: CommandContext, args: str = "") -> str:
         backends = self._list_discovered_backends()
 
         lines: list[str] = [
@@ -2098,194 +2203,7 @@ class CommandRouter:
 
         return "\n".join(lines)
 
-    async def handle_backend_update_discovery_meta(self, backend, args: str) -> str:
-        args = f"{backend.service_name} --service {args}".strip()
-        return await self.handle_update_discovery_meta(args)
-
-    async def handle_backend_models(self, backend, args: str) -> str:
-        models_path = getattr(backend, "models_path", None)
-
-        if not models_path:
-            return f"Backend {backend.name} does not expose a models endpoint."
-
-        try:
-            data = await self.backend_client.get_json(
-                url=f"{backend.url}{models_path}",
-            )
-        except Exception as exc:
-            return f"Failed to read models from {backend.name}: {exc}"
-
-        return json.dumps(data, indent=2, ensure_ascii=False)
-
-    async def handle_backend_load_model(self, backend, args: str) -> str:
-        if backend.role not in {"llm", "cortex"}:
-            return f"Backend {backend.name} does not support model loading."
-
-        alias = args.strip()
-
-        if not alias:
-            return "Missing model alias.\n\nUsage:\n  /load_model <alias>\n"
-
-        model = MODEL_ALIASES.get(alias)
-
-        if not model:
-            return f"Unknown model alias: {alias}"
-
-        try:
-            await self.backend_client.post_json(
-                url=f"{backend.url}/engine",
-                payload={"engine": model["engine"]},
-            )
-
-            if model["engine"] == "gguf":
-                payload = {
-                    "provider": model["provider"],
-                    "model_id": model["model_id"],
-                    "repo_id": model["repo_id"],
-                    "filename": model["filename"],
-                    "revision": model.get("revision", "main"),
-                    "tokenizer_id": model.get("tokenizer_id"),
-                    "force_reload": False,
-                }
-            else:
-                payload = {
-                    "provider": model["provider"],
-                    "model_id": model["model_id"],
-                    "force_reload": False,
-                }
-
-            rsp = await self.backend_client.post_json(
-                url=f"{backend.url}/load",
-                payload=payload,
-            )
-
-        except Exception as exc:
-            return f"Failed to start model load on {backend.name}: {exc}"
-
-        return (
-            f"Model load accepted on backend: {backend.name}\n"
-            f"model: {model['model_id']}\n"
-            f"job_id: {rsp.get('job_id')}\n"
-            f"status: {rsp.get('status')}\n\n"
-            f"Use /job_status {rsp.get('job_id')} to check status.\n"
-            f"Use /attach to stream logs from this backend.\n"
-        )
-
-    async def handle_backend_job_status(self, backend, args: str) -> str:
-        job_id = args.strip()
-
-        if not job_id:
-            return "Missing job id.\n\nUsage:\n  /load_status <job_id>\n"
-
-        try:
-            data = await self.backend_client.get_json(
-                url=f"{backend.url}/jobs/{job_id}",
-            )
-        except Exception as exc:
-            return f"Failed to read job status from {backend.name}: {exc}"
-
-        lines = [
-            f"Job on backend: {backend.name}",
-            json.dumps(data, indent=2, ensure_ascii=False),
-        ]
-
-        if data.get("status") == "completed":
-            result = data.get("latest_result") or {}
-            model_id = result.get("model_id") or data.get("payload", {}).get("model_id")
-
-            if model_id:
-                try:
-                    updated = self.deployment_service.update_service_discovery_metadata(
-                        service_name=backend.service_name,
-                        namespace=backend.namespace,
-                        model=model_id,
-                    )
-
-                    lines.append("")
-                    lines.append("Updated discovery metadata:")
-                    for key, value in updated.items():
-                        lines.append(f"{key}={value}")
-
-                except Exception as exc:
-                    lines.append("")
-                    lines.append(f"warning: failed to update discovery metadata: {exc}")
-
-        return "\n".join(lines) + "\n"
-
-    async def handle_backend_health(self, backend, args: str) -> str:
-        health_path = getattr(backend, "health_path", None) or "/health"
-
-        try:
-            data = await self.backend_client.get_json(
-                url=f"{backend.url}{health_path}",
-            )
-        except Exception as exc:
-            return f"Failed to read health from {backend.name}: {exc}"
-
-        return json.dumps(data, indent=2, ensure_ascii=False)
-
-    async def handle_backend_unload_model(self, backend, args: str) -> str:
-        if backend.role not in {"llm", "cortex"}:
-            return f"Backend {backend.name} does not support model unloading."
-
-        try:
-            data = await self.backend_client.post_json(
-                url=f"{backend.url}/unload",
-                payload={},
-            )
-
-            updated = self.deployment_service.update_service_discovery_metadata(
-                service_name=backend.service_name,
-                namespace=backend.namespace,
-                model="",
-            )
-
-        except Exception as exc:
-            return f"Failed to unload model on {backend.name}: {exc}"
-
-        lines = [
-            f"Unloaded model on backend: {backend.name}",
-            "",
-            "Backend response:",
-            json.dumps(data, indent=2, ensure_ascii=False),
-            "",
-            "Updated discovery metadata:",
-        ]
-
-        for key, value in updated.items():
-            lines.append(f"  {key}={value}")
-
-        return "\n".join(lines)
-
-    async def handle_backend_engine(self, backend, args: str) -> str:
-        if backend.role not in {"llm", "cortex"}:
-            return f"Backend {backend.name} does not support backend engine loading."
-
-        parser = argparse.ArgumentParser(prog="/backend", add_help=False)
-        parser.add_argument("backend", nargs="?")
-
-        try:
-            parsed = parser.parse_args(shlex.split(args))
-        except SystemExit:
-            return "Invalid usage.\n\nExamples:\n  /backend gguf\n  /backend vllm\n"
-
-        if not parsed.backend:
-            return "Missing backend.\n\nUsage:\n  /backend <backend_name>\n"
-
-        try:
-            data = await self.backend_client.post_json(
-                url=f"{backend.url}/backend",
-                payload={"backend": parsed.backend},
-            )
-        except Exception as exc:
-            return f"Failed to load backend engine on {backend.name}: {exc}"
-
-        return (
-            f"Backend engine loaded on {backend.name}: {parsed.backend}\n\n"
-            f"{json.dumps(data, indent=2, ensure_ascii=False)}"
-        )
-
-    def handle_help(self, args: str) -> str:
+    def handle_help(self, ctx: CommandContext, args: str) -> str:
         return (
             "Orin Command Interface\n\n"
             "Use /commands to list all commands.\n"
@@ -2293,7 +2211,7 @@ class CommandRouter:
             "Example:\n"
             "  /deploy_pod llm --node orin-node-1\n"
         )
-    
+
     # ---------------------------------------------------------------------------
     # Execute Functions
     # ---------------------------------------------------------------------------
@@ -2319,10 +2237,12 @@ class CommandRouter:
         if command.suggest_only:
             raise ValueError(f"Harness action is suggest-only: {action}")
 
-        result = command.handler(args)
+        ctx = self._current_context()
 
-        if inspect.isawaitable(result):
-            result = await result
+        if command.kind == "text":
+            return await command.run_text(ctx, args)
+
+        result = command.handler(ctx, args)
 
         if inspect.isasyncgen(result):
             chunks: list[str] = []
@@ -2331,7 +2251,7 @@ class CommandRouter:
             return "".join(chunks)
 
         return str(result)
-    
+
     def _find_harness_action(
         self,
         *,
@@ -2355,3 +2275,198 @@ class CommandRouter:
                 return command
 
         return None
+
+# ---------------------------------------------------------------------------
+# Backend Functions
+# ---------------------------------------------------------------------------
+
+def require_backend(ctx: CommandContext) -> BackendDescriptor:
+    if ctx.backend is None:
+        raise ValueError("This command requires a selected backend.")
+
+    return ctx.backend
+
+
+async def handle_backend_load_model(ctx: CommandContext, args: str) -> str:
+    backend = require_backend(ctx)
+
+    if backend.role not in {"llm", "cortex"}:
+        return f"Backend {backend.name} does not support model loading."
+
+    alias = args.strip()
+
+    if not alias:
+        return "Missing model alias.\n\nUsage:\n  /load_model <alias>\n"
+
+    model = MODEL_ALIASES.get(alias)
+
+    if not model:
+        return f"Unknown model alias: {alias}"
+
+    try:
+        await ctx.backend_client.post_json(
+            url=f"{backend.url}/engine",
+            payload={"engine": model["engine"]},
+        )
+
+        if model["engine"] == "gguf":
+            payload = {
+                "provider": model["provider"],
+                "model_id": model["model_id"],
+                "repo_id": model["repo_id"],
+                "filename": model["filename"],
+                "revision": model.get("revision", "main"),
+                "tokenizer_id": model.get("tokenizer_id"),
+                "force_reload": False,
+            }
+        else:
+            payload = {
+                "provider": model["provider"],
+                "model_id": model["model_id"],
+                "force_reload": False,
+            }
+
+        rsp = await ctx.backend_client.post_json(
+            url=f"{backend.url}/load",
+            payload=payload,
+        )
+
+    except Exception as exc:
+        return f"Failed to start model load on {backend.name}: {exc}"
+
+    return (
+        f"Model load accepted on backend: {backend.name}\n"
+        f"model: {model['model_id']}\n"
+        f"job_id: {rsp.get('job_id')}\n"
+        f"status: {rsp.get('status')}\n\n"
+        f"Use /job_status {rsp.get('job_id')} to check status.\n"
+        f"Use /attach to stream logs from this backend.\n"
+    )
+
+
+async def handle_backend_show(ctx: CommandContext, args: str) -> str:
+    backend = require_backend(ctx)
+
+    return formatting.format_backend_list([backend], verbose=True)
+
+
+async def handle_backend_health(ctx: CommandContext, args: str) -> str:
+    backend = require_backend(ctx)
+
+    health_path = backend.health_path
+
+    try:
+        data = await ctx.backend_client.get_json(
+            url=f"{backend.url}{health_path}",
+        )
+    except Exception as exc:
+        return f"Failed to read health from {backend.name}: {exc}"
+
+    return json.dumps(data, indent=2, ensure_ascii=False)
+
+
+async def handle_backend_model_status(ctx: CommandContext, args: str) -> str:
+    backend = require_backend(ctx)
+
+    model_status_path = backend.model_status_path
+
+    if not model_status_path:
+        return f"Backend {backend.name} does not expose a models endpoint."
+
+    try:
+        data = await ctx.backend_client.get_json(
+            url=f"{backend.url}{model_status_path}",
+        )
+    except Exception as exc:
+        return f"Failed to read models from {backend.name}: {exc}"
+
+    return json.dumps(data, indent=2, ensure_ascii=False)
+
+
+async def handle_backend_update_discovery_meta(ctx: CommandContext, args: str) -> str:
+    backend = require_backend(ctx)
+
+    args = f"{backend.service_name} --service {args}".strip()
+    return await ctx.router.handle_update_discovery_meta(ctx, args)
+
+
+async def handle_backend_job_status(ctx: CommandContext, args: str) -> str:
+    backend = require_backend(ctx)
+
+    job_id = args.strip()
+
+    if not job_id:
+        return "Missing job id.\n\nUsage:\n  /load_status <job_id>\n"
+
+    try:
+        data = await ctx.backend_client.get_json(
+            url=f"{backend.url}/jobs/{job_id}",
+        )
+    except Exception as exc:
+        return f"Failed to read job status from {backend.name}: {exc}"
+
+    lines = [
+        f"Job on backend: {backend.name}",
+        json.dumps(data, indent=2, ensure_ascii=False),
+    ]
+
+    if data.get("status") == "completed":
+        result = data.get("latest_result") or {}
+        model_id = result.get("model_id") or data.get("payload", {}).get("model_id")
+
+        if model_id:
+            try:
+                updated = (
+                    ctx.router.deployment_service.update_service_discovery_metadata(
+                        service_name=backend.service_name,
+                        namespace=backend.namespace,
+                        model=model_id,
+                    )
+                )
+
+                lines.append("")
+                lines.append("Updated discovery metadata:")
+                for key, value in updated.items():
+                    lines.append(f"{key}={value}")
+
+            except Exception as exc:
+                lines.append("")
+                lines.append(f"warning: failed to update discovery metadata: {exc}")
+
+    return "\n".join(lines) + "\n"
+
+
+async def handle_backend_unload_model(ctx: CommandContext, args: str) -> str:
+    backend = require_backend(ctx)
+
+    if backend.role not in {"llm", "cortex"}:
+        return f"Backend {backend.name} does not support model unloading."
+
+    try:
+        data = await ctx.backend_client.post_json(
+            url=f"{backend.url}/unload",
+            payload={},
+        )
+
+        updated = ctx.router.deployment_service.update_service_discovery_metadata(
+            service_name=backend.service_name,
+            namespace=backend.namespace,
+            model="",
+        )
+
+    except Exception as exc:
+        return f"Failed to unload model on {backend.name}: {exc}"
+
+    lines = [
+        f"Unloaded model on backend: {backend.name}",
+        "",
+        "Backend response:",
+        json.dumps(data, indent=2, ensure_ascii=False),
+        "",
+        "Updated discovery metadata:",
+    ]
+
+    for key, value in updated.items():
+        lines.append(f"  {key}={value}")
+
+    return "\n".join(lines)
