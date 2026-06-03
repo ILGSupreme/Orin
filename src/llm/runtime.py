@@ -70,7 +70,6 @@ class GenerativeModelRuntime:
                 status=job.status,
                 work_id=job.job_id,
                 content=result.get("content", []),
-                backend_name=result.get("backend_name"),
                 backend_model=result.get("backend_model"),
                 error=result.get("error"),
                 metadata=result.get("metadata", {}),

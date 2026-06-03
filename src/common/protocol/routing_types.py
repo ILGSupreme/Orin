@@ -104,6 +104,25 @@ class WorkResult(BaseModel):
             )
         return value
 
+    @classmethod
+    def sanitize_for_federation(cls, other: WorkResult) -> WorkResult:
+        metadata: dict[str, Any] = {}
+        work_details = other.metadata.get("work_details")
+        if isinstance(work_details, dict):
+            metadata["work_details"] = {
+                "work_type": work_details.get("work_type"),
+                "operation": work_details.get("operation"),
+            }
+        return cls(
+            status=other.status,
+            work_id=other.work_id,
+            content=other.content,
+            backend_name=other.backend_name,
+            backend_model=other.backend_model,
+            error=other.error,
+            metadata=metadata,
+        )
+
 
 class WorkResponse(BaseModel):
     status: str

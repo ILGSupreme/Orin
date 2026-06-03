@@ -31,6 +31,7 @@ from .models import (
     CreateNetworkRequest,
     CreateNetworkResponse,
     FederatedWorkEnvelope,
+    FederationWorkRecord,
     GetFederatedWorkResponse,
     HeartbeatRequest,
     HeartbeatResponse,
@@ -287,7 +288,7 @@ async def create_join_token(
             scopes=body.scopes,
             max_uses=body.max_uses,
             expires_at=body.expires_at,
-            expires_in_seconds=body.expires_in_seconds
+            expires_in_seconds=body.expires_in_seconds,
         )
 
         return CreateJoinTokenResponse(
@@ -682,6 +683,13 @@ async def get_federated_work(
                 detail=f"Federated work not found: {work_id}",
             )
 
+        if record.status in {"accepted", "running"}:
+            record = await refresh_work_record(
+                record=record,
+                cortex=cortex_bridge(request),
+                storage=storage(request),
+            )
+
         return GetFederatedWorkResponse(
             ok=True,
             network_id=network.network_id,
@@ -740,9 +748,7 @@ def _verify_signed_request(
         raise IdentityError("Missing nonce")
 
     body_without_signature = {
-        key: value
-        for key, value in body.items()
-        if key != "signature"
+        key: value for key, value in body.items() if key != "signature"
     }
 
     payload = {
@@ -773,3 +779,32 @@ def _verify_signed_request(
 
     if not request_nonce_store.check_and_remember(nonce):
         raise IdentityError("Signed request nonce has already been seen")
+
+
+async def refresh_work_record(
+    *,
+    record: FederationWorkRecord,
+    cortex: CortexBridge,
+    storage: MemoryFederationStorage,
+) -> FederationWorkRecord:
+    if record.status not in {"accepted", "running"}:
+        return record
+
+    cortex_work_id = record.cortex_work_id or record.work_id
+
+    cortex_result = await cortex.get_work_result(cortex_work_id)
+
+    now = utc_now()
+
+    updated = record.model_copy(
+        update={
+            "status": cortex_result.status,
+            "result": cortex_result.model_dump(mode="json"),
+            "error": cortex_result.error,
+            "updated_at": now,
+        }
+    )
+
+    await storage.put_work_record(updated)
+
+    return updated

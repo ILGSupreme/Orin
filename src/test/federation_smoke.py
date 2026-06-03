@@ -14,7 +14,7 @@ from federation.models import CapabilitySummary
 
 FEDERATION_URL = "http://orin-gw:30081"
 NETWORK_SLUG = "public-text-inference"
-JOIN_TOKEN = "orin_join_53935226-53b4-4d02-a51e-402bc5b7a616.b4aK-vzZEdMpJ0c1xxyhH0nk-uet8-fxZTCRfki5rJs"
+JOIN_TOKEN = "orin_join_59b162de-1b4c-472e-b2e5-343a556064b1.n1lxsU82i1rA9gdvte2zrmtF4x3Seynm7Vsz5LXdy1M"
 
 
 async def main() -> None:
@@ -22,7 +22,7 @@ async def main() -> None:
     identity = load_or_create_cluster_identity_from_paths(
         private_key_path=Path("./tmp/fed-test/ed25519_private.key"),
         public_key_path=Path("./tmp/fed-test/ed25519_public.key"),
-        cluster_id="orin-test-remote-real-3",
+        cluster_id="orin-test-remote-real-1",
     )
 
     async with httpx.AsyncClient(timeout=30.0) as http:

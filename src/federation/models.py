@@ -192,6 +192,12 @@ class FederationWorkRecord(BaseModel):
     work_id: str
     request_id: str
 
+    # Internal Cortex job/work id.
+    cortex_work_id: str | None = None
+
+    # Original WorkPacket id sent by the remote member.
+    origin_work_id: str | None = None
+
     origin_cluster_id: str
     target_cluster_id: str | None = None
 

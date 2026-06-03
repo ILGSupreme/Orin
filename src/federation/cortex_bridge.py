@@ -7,6 +7,8 @@ from typing import Any
 
 import httpx
 
+from common.protocol.routing_types import WorkResult
+
 from .models import FederationNetwork, FederationWorkRecord, NetworkMember
 from .settings import FederationSettings, get_settings
 
@@ -69,18 +71,24 @@ class CortexBridge:
         packet: dict[str, Any],
         target_cluster_id: str | None = None,
     ) -> FederationWorkRecord:
-        work_id = self._ensure_work_id(packet, fallback=request_id)
+        origin_work_id = self._ensure_work_id(packet, fallback=request_id)
 
         result = await self._post_work_packet(packet)
 
         status = self._extract_status(result)
-        result_work_id = self._extract_work_id(result, fallback=work_id)
+        cortex_work_id = self._extract_work_id(result, fallback=origin_work_id)
+
+        # Phase 1: public federation work id is the Cortex work id.
+        # Later this can become f"fedwork:{uuid4().hex}".
+        federation_work_id = cortex_work_id
 
         now = utc_now()
 
         record = FederationWorkRecord(
             network_id=network.network_id,
-            work_id=result_work_id,
+            work_id=federation_work_id,
+            cortex_work_id=cortex_work_id,
+            origin_work_id=origin_work_id,
             request_id=request_id,
             origin_cluster_id=member.cluster_id,
             target_cluster_id=target_cluster_id,
@@ -95,7 +103,6 @@ class CortexBridge:
                 "network_slug": network.slug,
                 "origin_cluster_id": member.cluster_id,
                 "cortex_status": status,
-                "cortex_metadata": result.get("metadata", {}),
             },
         )
 
@@ -157,6 +164,10 @@ class CortexBridge:
             raise CortexBridgeError(f"Cortex work polling failed: {exc}") from exc
 
         return self._parse_json_response(response, context="Cortex work polling")
+
+    async def get_work_result(self, work_id: str) -> WorkResult:
+        payload = await self._get_work_result(work_id)
+        return WorkResult.model_validate(payload)
 
     def _parse_json_response(
         self,
