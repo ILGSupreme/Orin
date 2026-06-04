@@ -2,24 +2,31 @@
 
 Author: Samuel Padilla  
 Scope: Current-state architecture and day-to-day operations for the Orin AI cluster  
-Status: First draft based on the current `install-orin.sh`, Cortex, LLM, memory, discovery, deployment, and terminal client code
+Status: Cleaned current-state draft based on the current installer, Cortex/Harness, command router, JobManager, RouterService, discovery, Memory, LLM, Federation, and terminal client code
 
 ---
 
 ## 1. Purpose
 
-The Orin Cluster is a Kubernetes-based local edge-AI assistant platform. The current design is centered on **Cortex** as the local reasoning and routing process, with runtime work represented as canonical **WorkPackets** and routed to discovered backend services.
+Orin Cluster is a Kubernetes-based local edge-AI assistant platform. The active architecture is centered on **Cortex** as the local ingress, routing, command, and orchestration process. Runtime work is represented with canonical **WorkPackets** and routed to discovered backend services.
 
 The current implementation is no longer best described as a gateway/orchestrator/Ollama split. The active shape is:
 
-- **Cortex**: ingress, command interface, deployment operations, memory/session integration, local fast response, discovery, routing, and future complex-task handling.
-- **LLM**: a Primer-backed WorkPacket executor for model inference.
-- **Memory**: a WorkPacket backend for users, sessions, chat history, claims, notes, summaries, and prompt context.
-- **Tool**: planned backend role; folder exists but is currently empty.
-- **Federation**: planned inter-cluster role; folder exists but is currently empty.
-- **Common**: shared protocol, runtime, model-loading, adapter, and Hugging Face helpers.
+- **Cortex**: ingress, Harness, command interface, deployment operations, discovery, routing, local fast response, JobManager, and Memory/session integration.
+- **LLM**: Primer-backed WorkPacket executor for model inference.
+- **Memory**: WorkPacket backend for users, sessions, chat history, claims, notes, summaries, prompt context, and Federation records.
+- **Tool**: planned backend role for non-LLM tools. The role is represented in protocols and deployment paths, but no complete tool backend is documented here yet.
+- **Federation**: external communication boundary for public network discovery, token-gated joining, signed WorkPacket envelopes, capability advertisement, and federated work/result exchange.
+- **Common**: shared protocol, runtime, Primer, adapter, JobManager, model-loading, and Hugging Face helpers.
 
-The current runtime direction is: **everything executable should become a WorkPacket**, and anything that needs routing should pass through the same router/discovery path, whether it is LLM work, memory work, tool work, or deferred Cortex work.
+The current direction is:
+
+```text
+WorkPacket is the common execution unit.
+RouterService is the common routing/submission path.
+JobManager is the common async job and pipeline mechanism.
+Federation is the external membrane and must not expose internal cluster structure.
+```
 
 ---
 
@@ -42,13 +49,32 @@ orin-cluster/
   terminal-chat.py
 ```
 
-Notes:
+Important source areas:
 
-- `common/` contains shared protocols, message adapters, Primer, Hugging Face helpers, and model/runtime types.
-- `cortex/` contains the main Cortex app, command router, deployment service, Kubernetes discovery, routing, and mailbox code.
-- `llm/` contains the Primer-backed LLM backend app. Its runtime class is currently named `CortexRuntime`, but this is temporary and should be renamed to an LLM-specific name such as `LLMRuntime`.
-- `memory/` contains the memory backend app, SQLite persistence, file-backed memory, and prompt-context logic.
-- `tool/` and `federation/` are present as planned runtime roles but are currently empty.
+```text
+src/common/
+  Shared protocols, RuntimeMessage, WorkPacket, WorkResult, Primer,
+  adapters, JobManager, and runtime policies.
+
+src/cortex/
+  Cortex app, Harness, command router, deployment service,
+  Kubernetes discovery, routing, planner, and backend client.
+
+src/llm/
+  Primer-backed LLM backend app.
+
+src/memory/
+  Memory backend app, SQLite/file-backed persistence, session/message logic,
+  prompt context, and Federation storage operations.
+
+src/federation/
+  Federation models, settings, Memory-backed storage, network registry,
+  join tokens, members, identity/signing, envelopes, policy,
+  capability summaries, Cortex bridge, and outbound client.
+
+src/tool/
+  Planned backend role for non-LLM tools.
+```
 
 ---
 
@@ -64,19 +90,21 @@ jetson runtime:
   FROM orin-gw:5000/primer-runtime:jetson-orin.0.2
 ```
 
-The application folders `cortex`, `llm`, `memory`, and `tool` each have:
+The application folders can have standard and Jetson Dockerfiles:
 
 ```text
 Dockerfile
 Dockerfile.jetson
 ```
 
-The long-term image model should distinguish only between:
+The long-term model should distinguish only between:
 
-- standard runtime: `amd64` and `arm64`
-- Jetson runtime: Jetson-specific base/runtime
+```text
+standard runtime: amd64 and arm64
+Jetson runtime: Jetson-specific base/runtime
+```
 
-Current implementation note: `install-orin.sh` and part of the deployment factory still contain a three-way platform image selection for `jetson`, `arm64`, and `amd64`. That should be cleaned up so `amd64` and `arm64` share the same standard image naming while Jetson keeps its separate image.
+Current cleanup note: some deployment code has carried three-way platform image selection for `jetson`, `arm64`, and `amd64`. The preferred direction is for `amd64` and `arm64` to share the standard runtime image naming while Jetson keeps its separate runtime image.
 
 ---
 
@@ -86,7 +114,7 @@ Current implementation note: `install-orin.sh` and part of the deployment factor
 
 Its responsibilities are:
 
-1. detect the host platform and GPU state
+1. detect host platform and GPU state
 2. optionally configure the local test registry for k3s/containerd
 3. install k3s server on the bootstrap/control host
 4. create namespace and RBAC
@@ -95,9 +123,9 @@ Its responsibilities are:
 7. write the deployment configuration file
 8. create the deployment configuration ConfigMap
 9. label the bootstrap node
-10. deploy the initial `memory` app
-11. wait for memory rollout
-12. deploy the initial `cortex` app
+10. deploy the initial Memory app
+11. wait for Memory rollout
+12. deploy the initial Cortex app
 13. wait for Cortex rollout
 
 ### 4.1 Default bootstrap values
@@ -149,7 +177,7 @@ mounted at:
 /data/configuration
 ```
 
-The configuration seeds the initial host/control node and deployment defaults. It is not the final source of truth for every future node. Other nodes are added later through Cortex's command interface and `DeploymentService`.
+The configuration seeds the initial host/control node and deployment defaults. It is not the final source of truth for every future node. Additional nodes are added later through Cortex's command interface and `DeploymentService`.
 
 ### 4.3 Secrets
 
@@ -167,7 +195,7 @@ Cortex uses the SSH key for node operations and reads the k3s join token through
 
 ### 4.4 Bootstrap deployments
 
-The installer deploys only the minimum working runtime:
+The installer deploys the minimum working runtime:
 
 ```text
 memory
@@ -189,18 +217,25 @@ Service: memory-service
 Type: ClusterIP
 ```
 
+Federation deployment support exists as a target direction, but this document treats the initial installer as a Cortex/Memory bootstrap path unless the installer has explicitly been extended for Federation in the current branch.
+
 ### 4.5 Bootstrap RBAC
 
 The Cortex service account needs permissions to manage cluster resources and discover backends.
 
 The installer creates a `ClusterRole` and `ClusterRoleBinding` for:
 
-- nodes: `get`, `list`, `watch`, `patch`, `update`
-- namespaces: `get`, `list`, `create`
-- pods, services, persistentvolumeclaims, configmaps: `get`, `list`, `watch`, `create`, `patch`, `update`, `delete`
-- secrets: `get`, `list`, `watch`
-- deployments: `get`, `list`, `watch`, `create`, `patch`, `update`, `delete`
-- endpointslices: `get`, `list`, `watch`
+```text
+nodes: get, list, watch, patch, update
+namespaces: get, list, create
+pods: get, list, watch, create, patch, update, delete
+services: get, list, watch, create, patch, update, delete
+persistentvolumeclaims: get, list, watch, create, patch, update, delete
+configmaps: get, list, watch, create, patch, update, delete
+secrets: get, list, watch
+deployments: get, list, watch, create, patch, update, delete
+endpointslices: get, list, watch
+```
 
 EndpointSlice access is required because backend discovery counts ready endpoints from EndpointSlices.
 
@@ -212,50 +247,81 @@ EndpointSlice access is required because backend discovery counts ready endpoint
 
 Cortex is the main local runtime. It owns:
 
-- public `/work` ingress
+- public ingress for terminal/chat requests
+- Harness response flow
 - slash-command handling
 - local Primer-backed fast response path
-- user/session/message persistence through memory WorkPackets
+- user/session/message persistence through Memory WorkPackets
 - backend discovery and registry refresh
 - backend routing and WorkPacket submission
 - deployment operations through `DeploymentService`
-- future deferred/complex task handling
+- JobManager-based background jobs and pipelines
+- direct WorkPacket handling for internal/Federation use
 
-At startup, the Cortex app creates:
+At startup, Cortex wires components such as:
 
 ```text
 Primer
 DeploymentService
 DiscoveryService
 BackendRoutingPolicy
-CommandRouter
 BackendClient
 Planner
 RouterService
-CortexMailbox
-CortexRuntime
+CommandRouter
+JobManager
+Harness
 ```
 
-Cortex starts the discovery refresher on lifespan startup and stops the Primer backend on shutdown.
+Cortex starts discovery refresh during lifespan startup and stops the Primer backend on shutdown.
 
-### 5.2 LLM
+### 5.2 Harness
+
+Harness is the ingress layer for terminal and chat requests. It validates sessions, persists user messages through Memory, performs lightweight interpretation, optionally executes deterministic terminal actions, optionally starts background pipelines, and returns direct or fast responses.
+
+Harness supports two ingress modes:
+
+```text
+terminal
+chat
+```
+
+Terminal mode is command/help/status oriented and should not start background jobs.
+
+Chat mode normally answers directly. It starts background work only when the lightweight interpreter chooses the `start_pipeline` action.
+
+### 5.3 LLM
 
 The LLM app is a Primer-backed WorkPacket executor. It exposes backend/model lifecycle endpoints and a packet execution API.
 
 It supports:
 
-- backend loading through `/backend`
-- model loading through `/load`
-- model unloading through `/unload`
-- work submission through `/work`
-- work polling through `/work/{work_id}`
-- model status through `/models`
+```text
+POST /engine or equivalent backend-engine loading path
+POST /load
+POST /unload
+POST /work
+GET  /work/{work_id}
+GET  /model_status
+GET  /live
+GET  /ready
+GET  /health
+GET  /attach
+```
+
+The active discovery convention expects model/runtime status at:
+
+```text
+/model_status
+```
+
+This replaces older documentation that treated `/models` as the active discovery status endpoint.
 
 Cortex discovers LLM services through Kubernetes service metadata and routes `work_type=llm` packets to them.
 
-### 5.3 Memory
+### 5.4 Memory
 
-The memory app is a synchronous WorkPacket backend. Cortex routes memory WorkPackets to it for:
+The Memory app is a synchronous WorkPacket backend. Cortex and Federation route Memory WorkPackets to it for:
 
 - user upsert
 - session resolution
@@ -265,1054 +331,52 @@ The memory app is a synchronous WorkPacket backend. Cortex routes memory WorkPac
 - notes
 - summaries
 - prompt context
+- Federation persistent records
 
-The memory backend returns completed `WorkResult` values directly from `POST /work`.
+The Memory backend normally returns completed `WorkResult` values directly from `POST /work`.
 
-### 5.4 Tool
+### 5.5 Tool
 
-The `tool/` app folder exists but is currently empty. It represents the planned backend role for non-LLM tool execution.
+The Tool role is present in protocols, routing hints, deployment commands, and Federation public capability mapping. A complete current tool backend is not documented here yet.
 
-### 5.5 Federation
-#### Orin Federation Implementation Progress
+### 5.6 Federation
 
-##### Purpose
+Federation is the external communication boundary for Orin clusters.
 
-Federation is being implemented as the external communication boundary for Orin clusters.
+It handles:
 
-Federation handles:
+```text
+public network discovery
+token-gated network joining
+member identity
+signed member requests
+signed federated work envelopes
+policy enforcement
+sanitized capability advertisement
+federated work submission
+federated result polling
+```
 
-- public network discovery
-- token-gated joining
-- member identity
-- signed work exchange
-- policy enforcement
-- sanitized capability advertisement
-- result exchange
+Federation must not expose internal Orin cluster structure. External peers must not see Cortex URLs, LLM URLs, Memory URLs, Kubernetes services, pod names, node IPs, SSH details, deployment configuration, model paths, memory contents, slash commands, backend load/unload controls, or internal backend refs.
 
-Federation must not expose the internal Orin cluster structure.
-
-The following must remain private:
-
-- Cortex URLs
-- LLM URLs
-- Memory URLs
-- Kubernetes services
-- pod names
-- node IPs
-- SSH details
-- deployment configuration
-- model paths
-- memory contents
-- slash commands
-- backend load/unload controls
-
-External peers communicate only with Federation endpoints. Federation validates, verifies, authorizes, and sanitizes incoming work before handing it to local Cortex.
+External communication goes through Federation endpoints only. Federation validates, verifies, authorizes, sanitizes, and then hands accepted work into local Cortex through `CortexBridge`.
 
 ---
 
-##### Source Layout
-
-Current Federation source layout:
-
-```text
-src/federation/
-  models.py
-  settings.py
-  storage.py
-  network_registry.py
-  join_tokens.py
-  members.py
-  identity.py
-  envelopes.py
-  policy.py
-  app.py
-  capabilities.py
-  cortex_bridge.py
-  federation_client.py
-```
-
----
-
-#### Major Design Decisions
-
-##### Federation does not own a separate database
-
-Federation does not create or own a separate SQLite database.
-
-Persistent Federation state is stored through the existing Memory service.
-
-Persistent records include:
-
-- networks
-- join-token records
-- member records
-- capability records
-- federated work records
-
-Local files under `/data/federation` are used only for:
-
-- identity keys
-- nonce/cache data
-- temporary local state
-
-#### Federation uses file-based configuration
-
-Federation settings are loaded from the shared file-based configuration system.
-
-At startup, the Federation app calls:
-
-```python
-configuration.load_configuration_file("federation")
-```
-
-This is done once during app startup/lifespan.
-
-Runtime settings are then read through `FederationSettings`.
-
-Environment-variable-driven Federation settings were rejected for the current design.
-
-#### Key material is not stored in configuration
-
-The Federation configuration file may store key paths, but it must not store raw key material.
-
-The configuration may contain:
-
-```python
-private_key_path: Path | None = None
-public_key_path: Path | None = None
-```
-
-If paths are omitted, they resolve to:
-
-```text
-/data/federation/identity/ed25519_private.key
-/data/federation/identity/ed25519_public.key
-```
-
-The actual private/public key files are owned by `identity.py`.
-
-#### Policy is allow-list based
-
-Federation policy is strict allow-list based.
-
-There is no `denied_operations` list.
-
-A remote WorkPacket is accepted only if:
-
-```text
-task.work_type is in allowed_work_types
-task.operation is in allowed_operations
-task.operation is a known runtime operation
-```
-
-Known runtime operations are:
-
-```text
-chat
-summarize
-classify
-extract
-analyze
-search
-inspect
-```
-
-Constants such as `RUNTIMEPROFILES`, `RESERVE_SIZE`, `SAFETY_SIZE`, and `SAFETY_TOKEN_SIZE` are not operations.
-
----
-
-#### `models.py`
-
-`models.py` defines the core Federation domain models and endpoint DTOs.
-
-Core models:
-
-```text
-CapabilitySummary
-NetworkPolicy
-FederationNetwork
-JoinToken
-NetworkMember
-FederatedWorkEnvelope
-FederationWorkRecord
-```
-
-Endpoint DTOs:
-
-```text
-CreateNetworkRequest
-CreateNetworkResponse
-CreateJoinTokenRequest
-CreateJoinTokenResponse
-JoinNetworkRequest
-JoinNetworkResponse
-HeartbeatRequest
-HeartbeatResponse
-PublishCapabilitiesRequest
-PublishCapabilitiesResponse
-SubmitFederatedWorkResponse
-GetFederatedWorkResponse
-```
-
-##### `FederatedWorkEnvelope`
-
-`FederatedWorkEnvelope.packet` is kept as:
-
-```python
-dict[str, Any]
-```
-
-It is intentionally not typed directly as the internal `WorkPacket`.
-
-This keeps Federation models decoupled from Cortex/common imports. The bridge and policy layers validate and submit the packet later.
-
-##### `NetworkPolicy`
-
-`NetworkPolicy` is default-deny.
-
-Default allowed work types:
-
-```text
-llm
-tool
-```
-
-Default allowed operations:
-
-```text
-chat
-summarize
-classify
-extract
-analyze
-search
-inspect
-```
-
-Policy also defines limits for:
-
-- max payload bytes
-- max context tokens
-- max result tokens
-- max concurrent jobs per member
-
-Policy flags include:
-
-- allow remote work submission
-- allow remote result polling
-- allow member capability publishing
-- expose member list
-- expose exact models
-- expose runtime metadata
-
-No deny list is currently used.
-
----
-
-#### `settings.py`
-
-`settings.py` defines `FederationSettings`.
-
-It is loaded from the shared file-based configuration system through:
-
-```python
-configuration.get_configuration("federation")
-```
-
-It uses `@lru_cache(maxsize=1)` so settings are loaded once per app instance.
-
-It also creates local directories for:
-
-- `data_dir`
-- identity-key parent paths
-
-Current settings include:
-
-```text
-app_name
-protocol_version
-host
-port
-cluster_id
-data_dir
-private_key_path
-public_key_path
-memory_base_url
-memory_work_path
-public_base_url
-cortex_base_url
-cortex_work_path
-cortex_work_result_path
-cortex_network_path
-default_network_visibility
-default_join_mode
-request_ttl_seconds
-allowed_clock_skew_seconds
-nonce_ttl_seconds
-max_request_bytes
-enable_remote_work_submission
-enable_capability_publish
-enable_member_heartbeat
-```
-
-Removed or intentionally not included:
-
-```text
-database_path
-state_backend
-bootstrap_peers
-raw private key
-raw public key
-environment-variable loading
-```
-
-`bootstrap_peers` is intentionally not part of the current settings model. Bootstrap and relay discovery belong to a later phase.
-
-`capabilities.py` should use:
-
-```python
-settings.cortex_network_url()
-```
-
-instead of hardcoding `/network`.
-
----
-
-#### `storage.py`
-
-`storage.py` defines `MemoryFederationStorage`.
-
-Federation persistence is routed through Memory using WorkPacket-shaped requests.
-
-Expected Memory operations:
-
-```text
-federation_put_record
-federation_get_record
-federation_list_records
-federation_delete_record
-```
-
-Record types:
-
-```text
-network
-join_token
-member
-work
-```
-
-The storage adapter provides methods for:
-
-- putting, getting, listing, and deleting networks
-- putting, getting, listing, and deleting join tokens
-- putting, getting, listing, and deleting members
-- putting, getting, listing, and deleting federated work records
-
-Memory WorkPackets are built with:
-
-```text
-work_type = memory
-metadata.source = federation
-```
-
-##### `LocalNonceStore`
-
-`storage.py` also defines `LocalNonceStore`.
-
-This is a local JSON-backed replay-protection cache.
-
-Nonce state is temporary local state and is not stored in Memory.
-
----
-
-#### `network_registry.py`
-
-`network_registry.py` owns `FederationNetwork` records.
-
-Responsibilities:
-
-- create network
-- get network by ID
-- get network by slug
-- require network by ID
-- require network by slug
-- list networks
-- list public networks
-- update network metadata
-- update advertised capabilities
-- refresh member count
-- delete network
-- return public-safe network view
-
-It does not manage:
-
-- join tokens
-- members
-- signatures
-- work routing
-
-Slug validation uses lowercase letters, numbers, and hyphens.
-
-Slug rules:
-
-```text
-3-64 characters
-must start with a letter or number
-must end with a letter or number
-may contain hyphens
-```
-
----
-
-#### `join_tokens.py`
-
-`join_tokens.py` owns join-token lifecycle.
-
-Responsibilities:
-
-- create join token
-- hash token
-- validate raw token
-- redeem token
-- revoke token
-- expire token
-- delete token
-- list tokens
-
-Raw tokens are returned once to the creator and are never persisted.
-
-Stored token records contain only:
-
-```text
-token_id
-network_id
-token_hash
-scopes
-max_uses
-used_count
-expires_at
-created_by_cluster_id
-status
-created_at
-updated_at
-```
-
-Token format:
-
-```text
-orin_join_<token_id>.<secret>
-```
-
-Access tokens are bootstrap credentials only.
-
-After a successful join, future communication uses the member cluster keypair and signed requests.
-
-`join_tokens.py` does not create `NetworkMember` records. That belongs to `members.py`.
-
----
-
-#### `members.py`
-
-`members.py` owns `NetworkMember` records.
-
-Responsibilities:
-
-- add member
-- get member
-- require member
-- require active member
-- list members
-- activate member
-- disable member
-- revoke member
-- delete member
-- update last seen
-- update advertised capabilities
-- update allowed work types
-- update allowed operations
-- update role
-- check member submission permissions
-
-It does not validate join tokens.
-
-It does not verify signatures.
-
-It does not enforce network policy.
-
-It does not refresh network member count by itself. The app or orchestration layer should call `NetworkRegistry.refresh_member_count()` after membership changes.
-
----
-
-#### `identity.py`
-
-`identity.py` owns local Federation identity.
-
-Responsibilities:
-
-- load or create Ed25519 keypair
-- save private key file
-- save public key file
-- validate that public key matches private key
-- derive cluster ID from public key when not configured
-- sign payloads
-- verify signatures
-- provide canonical JSON serialization for signing
-
-Public key string format:
-
-```text
-ed25519:<base64url>
-```
-
-Signature string format:
-
-```text
-ed25519:<base64url>
-```
-
-If `cluster_id` is not configured, it is derived from the public key:
-
-```text
-orin-<first32hex_of_sha256_public_key>
-```
-
-Private key files are written with mode:
-
-```text
-0600
-```
-
-Public key files are written with mode:
-
-```text
-0644
-```
-
-`identity.py` depends on:
-
-```text
-cryptography
-```
-
----
-
-#### `envelopes.py`
-
-`envelopes.py` owns `FederatedWorkEnvelope` creation and validation.
-
-Responsibilities:
-
-- create signed envelope
-- calculate envelope signing payload
-- verify envelope signature
-- validate protocol version
-- validate signature algorithm
-- validate `issued_at`
-- validate `expires_at`
-- validate expected network ID
-- validate expected origin cluster ID
-- check and remember nonce
-- parse envelope
-- serialize envelope
-- produce non-sensitive debug hash of signed payload
-
-The envelope signature covers all envelope fields except:
-
-```text
-signature
-```
-
-The signed payload includes:
-
-```text
-signature_algorithm
-```
-
-`envelopes.py` does not perform:
-
-- membership lookup
-- network policy enforcement
-- member permission checks
-- WorkPacket validation
-- quota checks
-- routing
-
-Those responsibilities belong to other modules.
-
----
-
-#### `policy.py`
-
-`policy.py` enforces Federation policy after envelope and membership checks.
-
-Checks include:
-
-- remote work submission is enabled
-- `task.work_type` exists and is a string
-- `task.operation` exists and is a string
-- operation is a known runtime operation
-- work type is allowed by network policy
-- operation is allowed by network policy
-- payload size is within policy and app settings
-- requested context token limit does not exceed policy
-- requested result token limit does not exceed policy
-- member is active
-- member is allowed to submit the work type
-- member is allowed to submit the operation
-
-`policy.py` also defines:
-
-```python
-sanitize_packet_for_cortex()
-```
-
-This removes dangerous or trusted-looking metadata keys such as:
-
-```text
-backend_ref
-backend_desc
-selected_backend
-internal
-trusted
-admin
-command
-deployment
-kubernetes
-ssh
-```
-
-It then adds explicit federation-origin metadata:
-
-```text
-network_id
-network_slug
-origin_cluster_id
-member_role
-request_id
-```
-
-This metadata should be treated as untrusted external-origin context by Cortex.
-
-`policy.py` does not check:
-
-- signatures
-- membership existence
-- nonce replay
-- quotas/concurrency
-- Pydantic WorkPacket validation
-
----
-
-#### `app.py`
-
-`app.py` is the FastAPI composition layer.
-
-During lifespan startup it wires:
-
-- file-based configuration
-- internal `httpx.AsyncClient`
-- external `httpx.AsyncClient`
-- `MemoryFederationStorage`
-- local `ClusterIdentity`
-- `LocalNonceStore`
-- `NetworkRegistry`
-- `JoinTokenService`
-- `MemberService`
-- `CapabilityService`
-- `CortexBridge`
-
-Basic endpoints:
-
-```text
-GET /live
-GET /ready
-GET /health
-```
-
-Network and token endpoints:
-
-```text
-POST /federation/networks
-GET  /federation/networks
-GET  /federation/networks/{slug}
-POST /federation/networks/{slug}/tokens
-POST /federation/networks/{slug}/join
-```
-
-Member/private endpoints:
-
-```text
-POST /federation/networks/{network_id}/heartbeat
-POST /federation/networks/{network_id}/capabilities
-```
-
-Work endpoints:
-
-```text
-POST /federation/networks/{network_id}/work
-GET  /federation/networks/{network_id}/work/{work_id}
-```
-
-Capability endpoints:
-
-```text
-GET  /federation/networks/{slug}/capabilities
-POST /federation/networks/{slug}/capabilities/refresh
-```
-
-The `/federation/networks/{network_id}/work` endpoint now uses `CortexBridge`.
-
-The old temporary `accepted_not_executed` block should be removed.
-
-Simple signed member requests, such as heartbeat and capability publish, use this signed payload shape:
-
-```python
-{
-    "network_id": network_id,
-    "body": body_without_signature,
-}
-```
-
-Local/admin endpoints such as network creation and token creation are currently unprotected. Later they should be restricted to the local command interface or explicit admin policy.
-
----
-
-#### `cortex_bridge.py`
-
-`cortex_bridge.py` bridges validated and sanitized Federation work into local Cortex.
-
-Expected Cortex endpoints:
-
-```text
-POST /work
-GET  /work/{work_id}
-```
-
-Cortex currently accepts WorkPackets directly:
-
-```python
-@app.post("/work")
-async def submit_work(req: WorkPacket, request: Request):
-    cortex_runtime = request.app.state.cortex_runtime
-    primer = request.app.state.primer
-
-    if not primer.is_ready():
-        return JSONResponse(
-            status_code=409,
-            content={
-                "ok": False,
-                "error": "primer_not_ready",
-                "primer": primer.status(),
-            },
-        )
-
-    return await cortex_runtime.handle_ingress(req)
-
-
-@app.get("/work/{work_id}")
-async def fetch_work(work_id: str, request: Request):
-    cortex_runtime = request.app.state.cortex_runtime
-    return await cortex_runtime.handle_egress(work_id)
-```
-
-`CortexBridge` submits sanitized WorkPackets to Cortex and converts the Cortex response into a `FederationWorkRecord`.
-
-Handled Cortex statuses:
-
-```text
-accepted
-running
-completed
-failed
-```
-
-If Cortex returns an error object without a `status`, for example:
-
-```json
-{
-  "ok": false,
-  "error": "primer_not_ready"
-}
-```
-
-the bridge should raise a clear `CortexBridgeStatusError`.
-
----
-
-#### `capabilities.py`
-
-`capabilities.py` builds sanitized public capability summaries from local Cortex discovery.
-
-Cortex currently exposes:
-
-```text
-GET /network
-```
-
-with response shape:
-
-```python
-{
-    "result": [descriptor.to_dict() for descriptor in backend_descriptors]
-}
-```
-
-`extract_backend_list()` must support the `result` key.
-
-It should also tolerate other possible shapes:
-
-```text
-[...]
-{"backends": [...]}
-{"network": [...]}
-{"items": [...]}
-{"descriptors": [...]}
-{"llm": [...], "tool": [...]}
-```
-
-Capabilities are collapsed into one public summary per work type so Federation does not reveal the internal backend/pod/service layout.
-
-Public work types:
-
-```text
-llm
-tool
-```
-
-Default operation mapping:
-
-```text
-llm:
-  chat
-  summarize
-  classify
-  extract
-  analyze
-
-tool:
-  search
-  inspect
-```
-
-Default modality:
-
-```text
-text
-```
-
-`capabilities.py` can expose coarse runtime or model hints only when policy allows:
-
-```text
-expose_runtime_metadata
-expose_exact_models
-```
-
-It must not expose:
-
-- service URLs
-- pod names
-- node IPs
-- Kubernetes labels
-- Kubernetes annotations
-- deployment metadata
-- model paths
-- backend refs
-- memory data
-- slash commands
-
----
-
-#### `federation_client.py`
-
-`federation_client.py` is the outbound client for talking to another Federation node.
-
-It only talks to Federation endpoints.
-
-It must not talk directly to:
-
-- Cortex
-- LLM
-- Memory
-- Tool
-- Kubernetes
-- backend services
-
-Main responsibilities:
-
-- list remote networks
-- get remote network details
-- get remote network capabilities
-- join a network with a token
-- send signed heartbeat
-- publish signed capabilities
-- submit signed `FederatedWorkEnvelope`
-- poll federated result
-
-Main methods:
-
-```text
-list_networks()
-get_network()
-get_network_capabilities()
-join_network()
-send_heartbeat()
-publish_capabilities()
-submit_work()
-get_work_result()
-submit_work_and_poll_once()
-```
-
-`join_network()` sends:
-
-```text
-token
-local cluster_id
-local public_key
-optional advertised capabilities
-```
-
-`submit_work()` wraps a WorkPacket-shaped dict inside a signed `FederatedWorkEnvelope`.
-
-Simple signed member requests must match the verification shape used in `app.py`:
-
-```python
-{
-    "network_id": network_id,
-    "body": body_without_signature,
-}
-```
-
----
-
-#### Current Integration Flow
-
-Federation can now conceptually support the following flow:
-
-```text
-1. Create a FederationNetwork.
-2. Create a join token.
-3. Another cluster joins with token, cluster_id, and public key.
-4. Member sends signed heartbeat.
-5. Member publishes signed sanitized capabilities.
-6. Member submits signed FederatedWorkEnvelope.
-7. Receiving Federation verifies envelope, membership, nonce, and policy.
-8. Federation sanitizes the WorkPacket.
-9. Federation submits the WorkPacket to local Cortex through CortexBridge.
-10. Federation stores the FederationWorkRecord through Memory.
-11. Remote member polls result through Federation.
-```
-
----
-
-#### Cortex Integration Status
-
-Cortex already accepts WorkPackets directly at:
-
-```text
-POST /work
-GET  /work/{work_id}
-```
-
-Therefore Federation can route accepted federated work through `CortexBridge`.
-
-Current Cortex network discovery endpoint:
-
-```text
-GET /network
-```
-
-Current response shape:
-
-```python
-{
-    "result": [descriptor.to_dict() for descriptor in backend_descriptors]
-}
-```
-
-`capabilities.py` has been adjusted to read this shape.
-
----
-
-#### Remaining Work
-
-Next implementation tasks:
-
-```text
-Add Memory backend operations:
-  federation_put_record
-  federation_get_record
-  federation_list_records
-  federation_delete_record
-
-Add Federation settings to the shared file-based configuration model.
-
-Add deployment support for the Federation pod/service.
-
-Add command-router Federation folder:
-  /cd Federation
-  /network_list
-  /network_create
-  /network_token_create
-  /network_join
-  /network_members
-  /network_leave
-
-Add manual test/curl flow:
-  create network
-  create token
-  join network
-  heartbeat
-  publish capabilities
-  submit WorkPacket
-  poll result
-```
-
-Later phases:
-
-```text
-discovery/bootstrap peers
-relay support
-NAT traversal
-quota/concurrency enforcement
-revocation lists
-protocol version negotiation
-network health reporting
-federated backend descriptors for Cortex routing
-```
-
----
-
-#### Design Principle
-
-Federation is the membrane between Orin and the outside world.
-
-External peers see only Federation-level concepts:
-
-```text
-FederationNetwork
-NetworkMember
-CapabilitySummary
-FederatedWorkEnvelope
-FederationWorkRecord
-```
-
-They must not see internal Orin implementation details.
-
-The final direction is a public, no-pay overlay network where Orin installs can discover FederationNetworks, join authorized networks with tokens, and exchange signed policy-limited WorkPackets without exposing internal cluster structure.
 ## 6. Runtime endpoints
 
 ### 6.1 Cortex endpoints
 
 | Endpoint | Method | Purpose |
 |---|---:|---|
-| `/work` | POST | Main Cortex ingress for `InferenceSession`. |
-| `/work/{work_id}` | GET | Reads deferred work state from `CortexMailbox`. |
-| `/network` | GET | Lists discovered backend descriptors. |
-| `/network/{role}` | GET | Lists discovered candidates for a role. |
-| `/backend` | POST | Loads a local Primer backend for Cortex. |
-| `/load` | POST | Loads a local model into Cortex's Primer. |
-| `/unload` | POST | Stops the local Primer backend/model. |
+| `/work` | POST | Main ingress. In chat/terminal flows this is session-based; internal/Federation work can use WorkPacket-shaped requests where supported by the current Cortex app. |
+| `/work/{work_id}` | GET | Poll internal/deferred work result where supported. |
+| `/network` | GET | List discovered backend descriptors. |
+| `/network/{role}` | GET | List discovered candidates for a role. |
+| `/load` | POST | Start local Cortex model-load job when using Cortex-local Primer. |
+| `/unload` | POST | Stop local Cortex Primer backend/model. |
+| `/jobs/{job_id}` or command `/job_status` | GET/command | Inspect jobs depending on app surface. |
+| `/attach` | GET | Stream local Cortex logs when configured. |
 | `/live` | GET | Process liveness. |
 | `/ready` | GET | Readiness and Primer status. |
 | `/health` | GET | Basic health endpoint. |
@@ -1321,12 +385,14 @@ The final direction is a public, no-pay overlay network where Orin installs can 
 
 | Endpoint | Method | Purpose |
 |---|---:|---|
-| `/backend` | POST | Load `gguf` or `vllm` backend. |
-| `/load` | POST | Load a model. |
-| `/unload` | POST | Stop the current backend/model. |
+| `/engine` or backend-load equivalent | POST | Load/select `gguf` or `vllm` backend engine. |
+| `/load` | POST | Start model-load job. |
+| `/jobs/{job_id}` | GET | Read backend job status. |
+| `/unload` | POST | Stop current backend/model. |
 | `/work` | POST | Accept a `WorkPacket`. |
-| `/work/{work_id}` | GET | Poll a submitted LLM work item. |
-| `/models` | GET | Return loaded model metadata including `effective_n_ctx`. |
+| `/work/{work_id}` | GET | Poll submitted LLM work. |
+| `/model_status` | GET | Return loaded model/runtime metadata, including effective context. |
+| `/attach` | GET | Stream backend logs. |
 | `/live` | GET | Process liveness. |
 | `/ready` | GET | Readiness and Primer status. |
 | `/health` | GET | Basic health endpoint. |
@@ -1335,11 +401,30 @@ The final direction is a public, no-pay overlay network where Orin installs can 
 
 | Endpoint | Method | Purpose |
 |---|---:|---|
-| `/work` | POST | Execute memory `WorkPacket` operations synchronously. |
-| `/work/{work_id}` | GET | Placeholder; memory work currently completes on POST. |
+| `/work` | POST | Execute Memory `WorkPacket` operations synchronously. |
+| `/work/{work_id}` | GET | Placeholder or lookup path; Memory work usually completes on POST. |
 | `/live` | GET | Process liveness. |
 | `/ready` | GET | Readiness. |
 | `/health` | GET | Basic health endpoint. |
+
+### 6.4 Federation endpoints
+
+| Endpoint | Method | Purpose |
+|---|---:|---|
+| `/live` | GET | Process liveness. |
+| `/ready` | GET | Readiness, cluster ID, protocol version. |
+| `/health` | GET | Basic health and cluster ID. |
+| `/federation/networks` | GET | List public Federation networks. |
+| `/federation/networks` | POST | Create local Federation network. Local/admin endpoint. |
+| `/federation/networks/{slug}` | GET | Get public-safe network view. |
+| `/federation/networks/{slug}/tokens` | POST | Create join token. Local/admin endpoint. |
+| `/federation/networks/{slug}/join` | POST | Join network using token, cluster ID, and public key. |
+| `/federation/networks/{slug}/capabilities` | GET | Read public network capabilities. |
+| `/federation/networks/{slug}/capabilities/refresh` | POST | Refresh local advertised capabilities from Cortex discovery. |
+| `/federation/networks/{network_id}/heartbeat` | POST | Signed member heartbeat. |
+| `/federation/networks/{network_id}/capabilities` | POST | Signed member capability publish. |
+| `/federation/networks/{network_id}/work` | POST | Submit signed federated WorkPacket envelope. |
+| `/federation/networks/{network_id}/work/{work_id}` | GET | Poll federated work result. |
 
 ---
 
@@ -1376,6 +461,10 @@ class RuntimeMessage(BaseModel):
     name: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 ```
+
+Current implementation note: `ContentPart.mime_type` may be auto-filled from `type` and `encoding` when missing, for example `text/plain`.
+
+When JSON-shaped payloads are embedded inside a text prompt for the model, prefer `type="text"`, `encoding="plain"`, and `mime_type="text/plain"` unless the part is intended to be treated as an actual `application/json` content part.
 
 ### 7.2 Ingress and egress
 
@@ -1419,7 +508,7 @@ class CanonicalTask(BaseModel):
     work_type: WorkType
     operation: str
     messages: list[RuntimeMessage] = Field(default_factory=list)
-    memoryrequest: RuntimeMemoryRequest | None = None
+    memory_request: BaseRuntimeMemoryRequest | None = None
     inputs: dict[str, Any] = Field(default_factory=dict)
     constraints: dict[str, Any] = Field(default_factory=dict)
     routing_hints: RoutingHints = Field(default_factory=RoutingHints)
@@ -1440,121 +529,467 @@ class WorkResult(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 ```
 
+Allowed `WorkResult.status` values:
+
+```text
+accepted
+running
+completed
+failed
+```
+
+Important current field name:
+
+```text
+memory_request
+```
+
+Older text or code that says `memoryrequest` is stale.
+
+### 7.4 WorkResult federation sanitization
+
+`WorkResult.sanitize_for_federation()` returns a reduced WorkResult intended for external Federation egress.
+
+It preserves:
+
+```text
+status
+work_id
+content
+backend_name
+backend_model
+error
+```
+
+It drops most metadata and only keeps sanitized `work_details` when present:
+
+```text
+work_type
+operation
+```
+
+This prevents internal routing metadata such as backend refs, selected backend details, trusted internal flags, or local execution context from leaking through Federation.
+
 ---
 
-## 8. Cortex runtime flow
+## 8. Harness ingress and response flow
 
-### 8.1 Normal chat flow
+Harness validates the incoming session, persists the user message through Memory, performs lightweight interpretation, optionally executes a deterministic terminal action or starts a background pipeline, and then returns either a direct response or a fast model-generated response.
 
-For a normal `POST /work` request, Cortex currently does:
+### 8.1 Session validation
 
-1. validate `InferenceSession`
-2. convert it into an `InferenceObject`
-3. force internal `stream=False` on the inference object
-4. upsert user through memory
-5. resolve or create session through memory
-6. store the incoming user message through memory
-7. detect slash commands
-8. if not a command, require local Primer readiness
-9. fetch last assistant message through memory
-10. build fast response prompt
-11. call local Primer with chat settings
-12. return `EgressResponse` or stream text
+For each ingress request, Harness:
 
-The current fast response path uses Cortex's own local Primer. More complex routing happens through WorkPackets and the router.
+1. validates the incoming `InferenceSession` as an `InferenceObject`
+2. upserts the user through Memory
+3. resolves or creates a session through Memory if no `session_id` was provided
+4. inserts the incoming user message into Memory
+5. continues to terminal or chat response handling
 
-### 8.2 Slash command flow
+### 8.2 Lightweight interpretation
 
-If the latest user text starts with `/`, Cortex treats it as a terminal command.
-
-Command output is returned as terminal output using:
+Harness builds a small interpretation context containing:
 
 ```text
-Terminal-output: terminal
+Ingress context:
+- mode
+- user_id
+- session_id
+- channel
+
+Session background jobs:
+- compact job summary, when jobs exist
+
+Available mode commands/actions:
+- command_router.get_commands(mode)
 ```
 
-The terminal client uses that header to decide whether the output belongs in the command panel or in the chat transcript.
+This context is intentionally small. It gives the lightweight interpreter enough information to choose an action without exposing full backend state or large runtime details.
 
-### 8.3 Current `/task` behavior
+### 8.3 Terminal mode
 
-The current `/task <description>` command starts a background `_run_pipeline()` task in `CortexRuntime`.
+Terminal mode is for CLI help, deterministic inspection, and safe terminal/system information actions. It should not start background work.
 
-That pipeline performs:
+Terminal interpretation model:
+
+```json
+{
+  "mode": "terminal",
+  "intent": "terminal_help | system_status | job_status | normal_chat | unknown",
+  "action": "answer_only | terminal_info_action | report_job_status",
+  "terminal_action": "string | null"
+}
+```
+
+If the action is `terminal_info_action`, Harness executes the selected command-router action through:
+
+```python
+command_router.execute_harness_action(
+    terminal_action,
+    mode="terminal",
+)
+```
+
+Only safe information actions are executed automatically.
+
+If the action is `report_job_status`, Harness reads session jobs from JobManager and formats session job status.
+
+### 8.4 Chat mode
+
+Chat mode is the normal assistant path.
+
+Chat interpretation model:
+
+```json
+{
+  "mode": "chat",
+  "action": "answer_only | start_pipeline | report_job_status",
+  "pipeline": "chat | null"
+}
+```
+
+Normal questions should use `answer_only`.
+
+Background work starts when the user explicitly asks for deeper, detailed, researched, verified, current, multi-step, or comprehensive work. When the action is `start_pipeline`, Harness starts a JobManager pipeline:
 
 ```text
-prompt context
--> turn interpretation
--> capability summary
--> task shaping
--> WorkPacket creation
--> packet submission
--> sync/deferred result collection
--> final response packet
--> final result storage
--> assistant message insertion into memory
+kind: harness.chat
+pipeline: chat
 ```
 
-This is useful as a prototype, but it is not yet unified with `CortexMailbox`.
+The immediate response does not wait for the full result:
 
-### 8.4 Direction for deferred and complex tasks
+```text
+A deeper response is being worked on. Background job `<job_id>` has been started. Ask for the status or result later.
+```
 
-Current design direction:
+If the action is `report_job_status`, Harness returns formatted job status for the current session.
 
-> Deferred and complex tasks should use the same WorkPacket pipeline used for LLM, tool, and memory work. Cortex should create a WorkPacket and route it to the closest/best Cortex backend. In the current local cluster, that will usually be the initial Cortex.
+### 8.5 Fast response path
 
-The separate `/task` pipeline and `CortexMailbox` deferred mechanism are implementation debt to unify later.
+If Harness does not return a direct terminal/action/job-status response, it builds a fast response prompt.
+
+The fast response prompt can include:
+
+- current user message
+- last assistant message from Memory
+- compact response context
+- internal response instruction derived from lightweight interpretation
+- background job id, if one was started
+
+The fast response is generated through the local Primer using the `chat` generation policy.
+
+### 8.6 Chat background pipeline
+
+The current `chat` pipeline stages are:
+
+```text
+get_prompt
+interpret_turn
+shape_turn
+build_packets
+read_and_send_packets
+build_final_response_message
+```
+
+Stage responsibilities:
+
+```text
+get_prompt:
+  Fetch prompt context from Memory for the current session.
+
+interpret_turn:
+  Build turn-interpretation messages and route an llm.inspect WorkPacket
+  through RouterService. Primer is used for token estimation; actual work
+  is routed to an LLM backend.
+
+shape_turn:
+  Read the interpretation result, build task-shaping messages, and route
+  another llm.inspect WorkPacket through RouterService.
+
+build_packets:
+  Convert shaped tasks into canonical WorkPackets.
+
+read_and_send_packets:
+  Submit built WorkPackets through router.send_many(), wait for send batch,
+  call router.retrieve_many(), and wait for retrieve batch.
+
+build_final_response_message:
+  Build the final response prompt from the original user message, prompt
+  context, and collated packet results. Then route an llm.analyze WorkPacket
+  and poll until completion or failure.
+```
+
+The shaper output is normalized before packet creation. Accepted shapes include:
+
+```text
+task_items
+items
+tasks
+```
+
+The normalization step guards against the model incorrectly routing LLM-style work to Cortex. Operations such as `chat`, `summarize`, `classify`, `extract`, and `analyze` are normalized toward `llm` routing when appropriate.
+
+### 8.7 WorkPacket ingress pipeline
+
+Harness also defines a smaller `work_pipeline` for direct WorkPacket ingress.
+
+Current behavior:
+
+1. If `packet.task.work_type == "llm"`, start pipeline `work_pipeline`.
+2. Return `WorkResult(status="accepted", work_id=<job_id>)`.
+3. Store the original packet work id in metadata as `original_work_id`.
+4. Poll the JobManager job through `retrieve_work_packet()`.
+5. Return a sanitized WorkResult for federation-safe egress.
+
+The current direct WorkPacket path only accepts LLM work. Other work types return failed with `unknown work type`.
+
+### 8.8 Current implementation note
+
+The Harness implementation contains branches for a `get_job_result` action, but the current lightweight interpretation model does not include `get_job_result` as a valid action. Treat this as an implementation stub until the type model is updated.
 
 ---
 
 ## 9. Command interface
 
-The command router exposes a folder-style terminal interface.
+The command router exposes a folder-style terminal interface. Commands and folders are represented as structured objects, and the same command inventory is also exposed to Harness for lightweight interpretation.
 
-Current folder tree:
+### 9.1 Command model
+
+Main concepts:
+
+```text
+ShellState
+  path: list[str]
+  selected_backend_name: str | None
+
+CommandContext
+  router: CommandRouter
+  backend: BackendDescriptor | None
+  backend_client -> router.backend_client
+
+Command
+  command: str
+  desc: str
+  kind: "text" | "stream"
+  handler
+  modes: set["terminal" | "chat"]
+  harness_action: str | None
+  safe_info_action: bool
+  suggest_only: bool
+
+CommandFolder
+  name: str
+  desc: str
+  commands: list[Command]
+  folders: dict[str, CommandFolder]
+  dynamic: bool
+```
+
+All text command handlers use:
+
+```python
+handler(ctx: CommandContext, args: str)
+```
+
+Stream commands use the same context but return an async iterator.
+
+`CommandContext` is important because backend-scoped commands no longer need special hardcoded router paths. If the shell is currently inside `Root / Cluster / <backend>`, the context contains the selected backend. Otherwise `ctx.backend` is `None`.
+
+### 9.2 Global commands
+
+Global commands:
+
+```text
+/help
+/commands
+/cd
+/render
+/attach
+```
+
+`/attach` is a stream command. In a backend folder it attaches to the selected backend's `/attach` endpoint. Outside a backend folder it attaches to the local Cortex log stream, if configured.
+
+### 9.3 Current folder tree
 
 ```text
 Root
   /help
   /commands
   /cd
-  /network
+  /attach
+  /render
 
   Deployment
+    /list_pods
+    /list_nodes
     /deploy_pod
     /delete_pod
-    /list_pods
     /install_k3s
     /add_node
     /remove_node
-    /list_nodes
     /label_node
+    /update_discovery_meta
 
-  Disconnect
-    /disconnect
-    /reset
+  Cluster
+    /show
+    /cluster_snapshot
+    <dynamic backend folders>
 
   Configuration
-    /models
+    /model_aliases
+    /job_status
     /load_model
     /unload_model
-    /backend
+    /engine
 
     ModelDownloader
       /huggingface
 ```
 
-Important command behavior:
+The old backend `/network` command has been replaced by `/show` in the Cluster context.
 
-- `/render`, `/commands`, `/help`, and `/cd` are effectively global.
-- Other commands are only available when visible in the current command folder.
-- Streaming command output is returned as text/plain with `Terminal-output: terminal`.
-- Non-stream command output is wrapped in an `EgressResponse` with terminal metadata.
+### 9.4 Dynamic Cluster folder
 
-### 9.1 Model commands
-
-Model aliases currently include:
+`Cluster` is a dynamic folder. When the user enters:
 
 ```text
+/cd Cluster
+```
+
+the router lists discovered backends from the backend registry and exposes each backend as a child folder.
+
+Example:
+
+```text
+Root / Cluster
+  /show
+  /cluster_snapshot
+
+  llm-medium-1-service
+  memory-service
+```
+
+When the user enters a backend folder:
+
+```text
+/cd llm-medium-1-service
+```
+
+the router sets:
+
+```python
+shell_state.path = ["Root", "Cluster", backend.name]
+shell_state.selected_backend_name = backend.name
+```
+
+The current folder is then resolved from the selected backend role. If the backend role is known, the role-specific folder is used. Otherwise the generic backend folder is used.
+
+### 9.5 Backend command folders
+
+Generic backend commands:
+
+```text
+/show
+/health
+/update_discovery_meta
+```
+
+LLM backend commands:
+
+```text
+/show
+/health
+/update_discovery_meta
+/model_status
+/load_model
+/job_status
+/unload_model
+```
+
+Memory currently uses the generic backend command folder.
+
+Future role folders can be added for Tool, Cortex, and Federation.
+
+### 9.6 Human visibility versus Harness action inventory
+
+The human terminal remains folder-oriented. `/commands` shows the commands visible in the current folder plus global commands.
+
+Harness is different. The AI should not be limited by the human user's current CLI folder. `CommandRouter.get_commands(mode)` returns the broader action inventory available to the lightweight interpreter.
+
+Each returned command entry contains:
+
+```text
+action
+command
+description
+folder
+safe_info_action
+suggest_only
+requires_backend
+backend_role
+```
+
+This lets Harness decide whether a user request can be fulfilled by a safe deterministic terminal action.
+
+### 9.7 Safe and suggest-only actions
+
+Commands are tagged for Harness use.
+
+```text
+safe_info_action=True
+```
+
+means Harness may execute the command automatically for information retrieval.
+
+```text
+suggest_only=True
+```
+
+means Harness should not execute the command automatically. It can suggest the command or explain it, but execution requires the user to explicitly issue that command.
+
+Examples of safe information actions:
+
+```text
+list_commands
+render_current_folder
+list_pods
+list_nodes
+show_cluster
+cluster_snapshot
+model_status
+job_status
+show_backend
+backend_health
+```
+
+Examples of suggest-only or mutating actions:
+
+```text
+change_folder
+attach_logs
+deploy_pod
+delete_pod
+install_k3s
+add_node
+remove_node
+label_node
+update_discovery_meta
+load_model
+unload_model
+engine_status
+huggingface
+```
+
+`execute_harness_action()` enforces this at runtime. It rejects unknown actions, non-safe actions, and suggest-only actions.
+
+### 9.8 Model and Hugging Face commands
+
+Current model alias examples:
+
+```text
+qwen35-0.8b
+qwen35-2B
 qwen35-4b
 qwen35-9b
 ```
@@ -1570,11 +1005,195 @@ The `/huggingface` command supports:
 
 ---
 
-## 10. Deployment service and inventory
+## 10. JobManager
+
+`JobManager` is the shared runtime mechanism for asynchronous jobs, background pipelines, command-triggered long-running work, router batch work, and Harness background work.
+
+It is generic and is not model-load specific.
+
+### 10.1 Core job types
+
+```python
+JobStatus = Literal["accepted", "running", "completed", "failed"]
+StageStatus = Literal["accepted", "running", "completed", "failed"]
+
+@dataclass(slots=True)
+class JobSpec:
+    kind: str
+    payload: dict[str, Any] = field(default_factory=dict)
+    job_id: str | None = None
+
+@dataclass(slots=True)
+class Job:
+    job_id: str
+    spec: JobSpec
+    status: JobStatus = "accepted"
+    error: str | None = None
+
+    pipeline_name: str | None = None
+    current_stage: str | None = None
+    stage_index: int = 0
+    stage_count: int = 0
+    stage_status: StageStatus | None = None
+    stage_results: dict[str, dict[str, Any]] = field(default_factory=dict)
+    latest_result: dict[str, Any] = field(default_factory=dict)
+    progress_message: str | None = None
+```
+
+A job can be either a single runner job or a pipeline job with multiple stages.
+
+Single jobs are used for simple async operations such as router send/retrieve jobs and local model-load jobs.
+
+Pipeline jobs are used for staged workflows such as Harness background chat.
+
+### 10.2 Pipeline model
+
+A pipeline is a named list of stages:
+
+```python
+@dataclass(slots=True)
+class PipelineStage:
+    name: str
+    runner: PipelineStageRunner
+    poller: PipelineStagePoller | None = None
+    timeout_seconds: float = 120.0
+    poll_interval_seconds: float = 1.0
+
+@dataclass(slots=True)
+class PipelineDefinition:
+    name: str
+    stages: list[PipelineStage]
+```
+
+If the runner returns `completed` or `failed`, the stage ends immediately.
+
+If the runner returns `accepted` or `running`, the stage must have a poller. The poller is called until the result becomes `completed` or `failed`, or until the stage timeout expires.
+
+If a stage returns `accepted` or `running` without a poller, the stage fails.
+
+### 10.3 Separate job and pipeline semaphores
+
+`JobManager` uses two separate semaphores:
+
+```text
+job_semaphore
+pipeline_semaphore
+```
+
+This avoids a deadlock where a parent pipeline holds the only job slot while waiting for child router jobs that also need the same slot.
+
+Normal jobs run under `job_semaphore`.
+
+Pipeline jobs run under `pipeline_semaphore`.
+
+This means a running pipeline can safely start child jobs through RouterService and wait for their batch results.
+
+### 10.4 Starting jobs and pipelines
+
+Normal job:
+
+```python
+job_manager.start(
+    spec=JobSpec(kind="...", payload={...}),
+    runner=runner,
+    on_completed=optional_hook,
+)
+```
+
+Pipeline job:
+
+```python
+job_manager.define_pipeline("chat", stages=[...])
+
+job_manager.start_pipeline(
+    spec=JobSpec(kind="harness.chat", payload={...}),
+    pipeline="chat",
+)
+```
+
+The returned job starts as `accepted`. When execution begins, it becomes `running`.
+
+When a runner returns, the result is converted to a JSON-safe dictionary with:
+
+```python
+formatting.as_dict(result)
+```
+
+and stored in:
+
+```text
+job.latest_result
+```
+
+If the runner returns a `WorkResult` with `status="failed"`, the job is marked failed and `job.error` is set from the WorkResult error.
+
+### 10.5 Batch work
+
+`JobManager` supports lightweight batches through `BatchWork`:
+
+```python
+@dataclass(slots=True)
+class BatchWork:
+    job_ids: list[str] = field(default_factory=list)
+    batch_id: str = ""
+```
+
+A batch stores only job IDs. It does not store `asyncio.Task` objects.
+
+Creating a batch:
+
+```python
+batch_id = job_manager.create_batch(jobs)
+```
+
+Waiting for a batch:
+
+```python
+await job_manager.batch_progress(batch_id)
+```
+
+`batch_progress()` returns a list of normalized job results once every job in the batch has status `completed` or `failed`.
+
+Default behavior:
+
+```text
+blocking: true
+poll interval: 1 second
+timeout: 300 seconds
+```
+
+### 10.6 Job inspection
+
+Useful inspection methods:
+
+```text
+get(job_id)
+get_progress(job_id)
+list_jobs()
+list_active_jobs()
+list_jobs_for_session(session_id)
+list_active_jobs_for_session(session_id)
+summarize_jobs_for_prompt(session_id)
+```
+
+Current status meanings:
+
+```text
+accepted  = job has been created and queued
+running   = job or pipeline stage is currently running
+completed = job finished successfully
+failed    = job failed
+```
+
+Current implementation note: `summarize_jobs_for_prompt()` includes payload details for completed jobs. This is useful while debugging but may be too noisy for model-facing summaries. Long term, completed job summaries should prefer a compact result summary.
+
+---
+
+## 11. Deployment service and inventory
 
 `DeploymentService` owns the mutable in-memory `Inventory`. It reads `/data/configuration` during startup and seeds the initial host/control node into inventory.
 
-### 10.1 Inventory model
+### 11.1 Inventory model
 
 ```text
 Inventory
@@ -1599,7 +1218,7 @@ Node
     default_local_storage_path=/data/k3s-storage
 ```
 
-### 10.2 DeploymentService responsibilities
+### 11.2 DeploymentService responsibilities
 
 `DeploymentService` supports:
 
@@ -1608,13 +1227,13 @@ Node
 - labeling Kubernetes nodes
 - checking passwordless sudo over SSH
 - installing k3s server/agent over SSH
-- deploying pod apps through Kubernetes Python client
+- deploying pod apps through the Kubernetes Python client
 - deleting pod apps
 - listing deployed pod apps
 - patching service discovery metadata
 - resolving pod placement
 
-### 10.3 Node placement labels
+### 11.3 Node placement labels
 
 Node labels are used for scheduling and compatibility:
 
@@ -1635,35 +1254,53 @@ orin.role.memory=true
 
 These are not the same as service discovery labels.
 
-### 10.4 Service discovery labels
+### 11.4 Service discovery metadata
 
-Service labels and annotations are used for backend discovery and routing:
+Service labels and annotations are used for backend discovery and routing.
 
-```text
+Required service labels:
+
+```yaml
 labels:
-  orin.ai/backend=true
-  orin.ai/role=<role>
-
-annotations:
-  orin.ai/kind=<kind>
-  orin.ai/role=<role>
-  orin.ai/visibility=internal
-  orin.ai/health_path=/health
-  orin.ai/work_path=/work
-  orin.ai/models_path=/models        # llm only
+  orin.ai/backend: "true"
+  orin.ai/role: "<role>"
 ```
 
-Runtime metadata can be patched later:
+Supported discovery annotations:
+
+```yaml
+annotations:
+  orin.ai/kind: "<kind>"
+  orin.ai/model: "<model-id>"
+  orin.ai/capabilities: "[\"chat\"]"
+  orin.ai/modalities: "[\"text\"]"
+  orin.ai/priority: "100"
+  orin.ai/weight: "1.0"
+  orin.ai/visibility: "internal"
+```
+
+Current convention-based paths:
 
 ```text
-orin.ai/model
-orin.ai/capabilities
-orin.ai/modalities
+health_path = /health
+work_path = /work
+model_status_path = /model_status for llm and cortex
+model_status_path = None for other roles
 ```
+
+Older annotations such as these are no longer required by the current discovery provider:
+
+```text
+orin.ai/health_path
+orin.ai/work_path
+orin.ai/models_path
+```
+
+The current discovery provider hardcodes the standard endpoint convention instead.
 
 ---
 
-## 11. Pod application model
+## 12. Pod application model
 
 The deployment code uses generic app specs:
 
@@ -1684,7 +1321,7 @@ Service:    <app_name>-service
 PVC:        <app_name>-pvc
 ```
 
-Cortex is deployed as NodePort. LLM, memory, and tool apps are deployed as ClusterIP services.
+Cortex is deployed as NodePort. LLM, Memory, Tool, and Federation app services should generally be ClusterIP unless explicitly exposed.
 
 Current probe convention:
 
@@ -1694,7 +1331,7 @@ liveness:  /live
 startup:   /ready
 ```
 
-Current storage profile implementation in `pod_template.py`:
+Current storage profiles:
 
 ```text
 light  -> 20Gi
@@ -1702,15 +1339,38 @@ medium -> 50Gi
 high   -> 100Gi
 ```
 
-Current cleanup note: some command/type definitions still use `strong` instead of `high`.
+Current cleanup note: some command/type definitions may still use `strong` instead of `high`.
 
 ---
 
-## 12. Discovery, health, and routing
+## 13. Discovery, health, and routing
 
-### 12.1 DiscoveryService
+Cortex discovers routable backends from Kubernetes Services. Discovery is service-based, not pod-based.
 
-Cortex creates a `DiscoveryService` consisting of:
+A backend is any Kubernetes Service in the configured Cortex namespace with:
+
+```text
+orin.ai/backend=true
+```
+
+The service must also provide a role label:
+
+```text
+orin.ai/role=<role>
+```
+
+Known backend roles:
+
+```text
+cortex
+llm
+tool
+memory
+```
+
+### 13.1 Discovery service composition
+
+`DiscoveryService` wires together:
 
 ```text
 KubernetesDiscoveryProvider
@@ -1720,98 +1380,995 @@ RegistryRefresher
 BackendSelector
 ```
 
-The registry refreshes every 15 seconds by default.
-
-### 12.2 Discovery source
-
-Backends are discovered from Kubernetes Services in the configured namespace with:
+It is initialized with defaults such as:
 
 ```text
-orin.ai/backend=true
+refresh_interval_seconds = 15.0
+health_timeout = 2.0
 ```
 
-The service must also provide:
+The registry is refreshed periodically by `RegistryRefresher`.
+
+### 13.2 Kubernetes service discovery
+
+`KubernetesDiscoveryProvider` lists Services in the configured Cortex namespace using:
 
 ```text
-orin.ai/role=<role>
+label_selector = "orin.ai/backend=true"
 ```
 
-EndpointSlice readiness is used to count ready endpoints.
+It also lists EndpointSlices in the same namespace and counts ready endpoints per service.
 
-### 12.3 BackendDescriptor
+A service is skipped if:
 
-Discovered services become `BackendDescriptor` objects containing:
+```text
+orin.ai/role is missing
+no usable service port exists
+```
+
+The service port selection prefers a port named `http`; otherwise discovery uses the first service port.
+
+### 13.3 Backend URL convention
+
+Backend URLs are built from internal Kubernetes DNS:
+
+```text
+http://<service-name>.<namespace>.svc.cluster.local:<port>
+```
+
+Example:
+
+```text
+http://llm-medium-1-service.orin.svc.cluster.local:8080
+```
+
+This internal service URL is used only inside the Orin cluster. Federation must not expose it externally.
+
+### 13.4 BackendDescriptor
+
+Discovered services become `BackendDescriptor` objects:
+
+```python
+@dataclasses.dataclass(slots=True)
+class BackendDescriptor:
+    name: str
+    namespace: str
+    service_name: str
+    url: str
+
+    role: BackendRole | str
+    kind: str | None = None
+    model: str | None = None
+
+    capabilities: list[str] = field(default_factory=list)
+    modalities: list[str] = field(default_factory=list)
+
+    priority: int = 100
+    weight: float = 1.0
+    visibility: str = "internal"
+
+    health_path: str = "/health"
+    work_path: str = "/"
+    model_status_path: str | None = None
+
+    labels: dict[str, str] = field(default_factory=dict)
+    annotations: dict[str, str] = field(default_factory=dict)
+
+    health: BackendHealth = field(default_factory=BackendHealth)
+    runtime: RuntimeMetaData = field(default_factory=RuntimeMetaData)
+```
+
+The descriptor name is currently:
+
+```text
+<namespace>/<service-name>
+```
+
+Example:
+
+```text
+orin/llm-medium-1-service
+```
+
+### 13.5 Health probing
+
+`BackendHealthProber` probes every discovered backend.
+
+Probe flow:
+
+1. Check whether the service has at least one ready EndpointSlice endpoint.
+2. If no ready endpoints exist, mark backend unavailable.
+3. If ready endpoints exist, call `<backend.url>/health`.
+4. If `/health` fails, mark backend degraded.
+5. If the backend has `model_status_path`, call `<backend.url>/model_status`.
+6. If model status fails, mark backend degraded.
+7. If all required checks pass, mark backend healthy.
+
+For `llm` and `cortex` backends, discovery attempts model status probing through:
+
+```text
+/model_status
+```
+
+If the response contains runtime metadata, the prober updates:
+
+```text
+backend.runtime.effective_n_ctx
+```
+
+This value is later used for runtime-aware backend selection.
+
+### 13.6 Runtime metadata
+
+Current runtime metadata:
+
+```python
+@dataclasses.dataclass(slots=True)
+class RuntimeMetaData:
+    effective_n_ctx: int = 0
+```
+
+Example runtime preference:
+
+```text
+runtime_preference = [{"effective_n_ctx": 6000}]
+```
+
+This means the backend must have `effective_n_ctx >= 6000`.
+
+### 13.7 Capability summary
+
+`DiscoveryService.get_capability_summary()` returns a compact summary for task shaping and lightweight orchestration.
+
+Shape:
+
+```json
+{
+  "roles": ["llm", "memory"],
+  "capabilities_by_role": {
+    "llm": ["chat", "summarize", "analyze"]
+  },
+  "modalities_by_role": {
+    "llm": ["text"]
+  },
+  "deferred_available": false
+}
+```
+
+`deferred_available` is currently true when a discovered backend has role `cortex`.
+
+### 13.8 Backend selection
+
+Backend selection is handled by `BackendSelector`.
+
+A selection request can specify:
+
+```python
+@dataclass(slots=True)
+class BackendSelectionRequest:
+    role: str | None = None
+    required_capabilities: list[str] | None = None
+    required_modalities: list[str] | None = None
+    runtime_preference: list[dict[str, Any]] | None = None
+    healthy_only: bool = True
+```
+
+Selection filters backends in this order:
+
+1. `healthy_only`
+2. `runtime_preference`
+3. `role`
+4. `required_capabilities`
+5. `required_modalities`
+
+After filtering, candidates are sorted by:
+
+```text
+healthy first
+priority descending
+weight descending
+name ascending
+```
+
+### 13.9 Backend routing policy and Planner
+
+`BackendRoutingPolicy` performs primary healthy selection first. If no healthy backend matches and degraded fallback is allowed, it retries with `healthy_only=False` and may return a degraded backend.
+
+`Planner` is intentionally thin. It converts WorkPacket routing requirements into a backend selection request:
+
+```python
+class Planner:
+    def select_backend(self, packet: WorkPacket):
+        return self.routing_policy.select_backend(
+            role=packet.required_role,
+            required_capabilities=packet.required_capabilities,
+            required_modalities=packet.required_modalities,
+            runtime_preference=packet.routing_hints.runtime_preference,
+        )
+```
+
+---
+
+## 14. RouterService and BackendClient
+
+### 14.1 RouterService
+
+`RouterService` is the central dispatch layer for WorkPackets.
+
+It owns:
+
+```text
+backend selection
+packet submission
+accepted-work metadata
+polling
+batch send/retrieve operations
+```
+
+Dependencies:
+
+```text
+DiscoveryService
+BackendClient
+JobManager
+Planner
+```
+
+### 14.2 Sending one WorkPacket
+
+Main method:
+
+```python
+await router.send(packet)
+```
+
+Send flow:
+
+1. Resolve backend.
+2. Submit packet through `BackendClient`.
+3. If backend returns `completed` or `failed`, return that WorkResult.
+4. If backend returns `accepted`, attach backend metadata and return accepted WorkResult.
+5. If response shape is invalid, return failed WorkResult.
+
+Backend resolution first checks:
+
+```python
+packet.metadata["backend_name"]
+```
+
+If no explicit backend is found, RouterService calls:
+
+```python
+planner.select_backend(packet)
+```
+
+### 14.3 Accepted WorkResult contract
+
+When a backend accepts work asynchronously, RouterService returns a `WorkResult` with:
+
+```text
+status = accepted
+work_id = backend work id
+backend_name = selected backend name
+backend_model = selected backend model
+metadata.backend_ref = serialized backend reference
+metadata.work_details = work type and operation
+```
+
+`backend_ref` contains only the information needed to retrieve the result later:
 
 ```text
 name
 namespace
 service_name
 url
-role
-kind
-model
-capabilities
-modalities
-context_window
-max_output_tokens
-priority
-weight
-visibility
-health_path
 work_path
-models_path
-labels
-annotations
-health
-runtime.effective_n_ctx
 ```
 
-### 12.4 Health probing
+`work_details` contains:
 
-Health probing works as follows:
+```text
+work_type
+operation
+```
 
-1. if no ready EndpointSlice endpoints exist, backend is `unavailable`
-2. otherwise GET `<url><health_path>`
-3. if health fails, backend is `degraded`
-4. if `models_path` exists, GET `<url><models_path>`
-5. if model check succeeds, read `models[0].effective_n_ctx` into runtime metadata
-6. if checks pass, backend is `healthy`
+This is the contract for accepted or running work. Retrieval code should use `metadata["backend_ref"]`, not the older `backend_desc`.
 
-### 12.5 Backend selection
+### 14.4 Retrieval and polling
 
-Backend selection filters by:
+Single retrieval:
 
-- health
-- runtime preference, such as required `effective_n_ctx`
-- role
-- required capabilities
-- required modalities
+```python
+await router.retrieve_work(
+    work_id=work_id,
+    work_type=work_type,
+    operation=operation,
+    backend=backend_ref,
+)
+```
 
-Then it sorts by:
+Blocking retrieval:
 
-1. healthy first
-2. priority descending
-3. weight descending
-4. name ascending
+```python
+await router.retrieve_completed_work(
+    work_id=work_id,
+    work_type=work_type,
+    operation=operation,
+    backend=backend_ref,
+    poll_interval_seconds=1.0,
+    timeout_seconds=120.0,
+)
+```
 
-Routing is healthy-first with degraded fallback.
+It polls while status is:
 
-### 12.6 RouterService
+```text
+accepted
+running
+```
 
-`RouterService.execute(packet)` handles packet dispatch.
+and returns when the backend returns:
 
-If `packet.work_type == cortex`, the router sends it to the local `CortexMailbox`.
+```text
+completed
+failed
+```
 
-Otherwise it:
+If the timeout is reached, RouterService returns a failed WorkResult with timeout metadata.
 
-1. resolves a backend through the planner/routing policy
-2. POSTs the WorkPacket to `<backend.url><backend.work_path>`
-3. if the backend returns `completed` or `failed`, uses that result immediately
-4. otherwise polls `<backend.work_path>/<work_id>` until a completed result is available
+### 14.5 Batch send/retrieve
+
+Submit many WorkPackets:
+
+```python
+batch_id = await router.send_many(work_packets)
+```
+
+For each packet, RouterService starts a normal JobManager job:
+
+```text
+kind = router.sendmany
+runner = execute_send
+```
+
+Retrieve many WorkResults:
+
+```python
+retrieve_batch_id = await router.retrieve_many(results)
+```
+
+For each result:
+
+```text
+completed or failed -> passthrough job
+accepted or running -> retrieval job
+```
+
+Completed and failed results are not retrieved again. They are passed through using:
+
+```text
+kind = router.retrievemany.passthrough
+```
+
+Accepted and running results use:
+
+```text
+kind = router.retrievemany
+runner = execute_retrieve_completed
+```
+
+`execute_retrieve_completed()` requires:
+
+```text
+result.metadata["work_details"]
+result.metadata["backend_ref"]
+```
+
+### 14.6 BackendClient
+
+`BackendClient` is the internal HTTP client used by RouterService and backend-scoped command handlers.
+
+It supports both full `BackendDescriptor` objects and serialized backend reference dictionaries.
+
+Backend value access is normalized through:
+
+```python
+_backend_value(backend, key, default)
+```
+
+If `backend` is a dict, the value is read with `backend.get(key, default)`. Otherwise it is read with `getattr(backend, key, default)`.
+
+Packet submission:
+
+```python
+await backend_client.submit_packet(
+    backend=backend,
+    packet=packet,
+)
+```
+
+Work retrieval:
+
+```python
+await backend_client.retrieve_work(
+    backend=backend_ref,
+    work_id=work_id,
+)
+```
+
+URL construction:
+
+```text
+<backend.url><backend.work_path>
+<backend.url><backend.work_path>/<work_id>
+```
+
+The backend URL must start with `http://` or `https://`.
+
+Generic helpers:
+
+```python
+await backend_client.get_json(url=..., params=...)
+await backend_client.post_json(url=..., payload=...)
+```
+
+These helpers are used for backend health checks, model status checks, remote model loading, backend job status, and unload operations.
 
 ---
 
-## 13. Primer and model execution
+## 15. Federation architecture
+
+Federation is the external membrane between Orin and the outside world.
+
+External peers see only Federation-level concepts:
+
+```text
+FederationNetwork
+NetworkMember
+CapabilitySummary
+FederatedWorkEnvelope
+FederationWorkRecord
+```
+
+They must not see internal Orin implementation details.
+
+### 15.1 Source layout
+
+```text
+src/federation/
+  models.py
+  settings.py
+  storage.py
+  network_registry.py
+  join_tokens.py
+  members.py
+  identity.py
+  envelopes.py
+  policy.py
+  app.py
+  capabilities.py
+  cortex_bridge.py
+  federation_client.py
+```
+
+### 15.2 Runtime composition
+
+During FastAPI lifespan startup, Federation:
+
+1. loads the federation configuration file
+2. creates an internal HTTP client
+3. creates an external HTTP client
+4. creates `MemoryFederationStorage`
+5. loads or creates local cluster identity
+6. creates `LocalNonceStore`
+7. creates `NetworkRegistry`
+8. creates `JoinTokenService`
+9. creates `MemberService`
+10. creates `CapabilityService`
+11. creates `CortexBridge`
+
+Persistent federation state is stored through Memory via `MemoryFederationStorage`. Local files are used for identity keys, nonce/cache state, and temporary local state.
+
+### 15.3 Settings
+
+`FederationSettings` is loaded from the shared file-based configuration system:
+
+```python
+configuration.load_configuration_file("federation")
+configuration.get_configuration("federation")
+```
+
+Main settings:
+
+```text
+app_name = "orin-federation"
+protocol_version = "v1"
+host = "0.0.0.0"
+port = 8080
+cluster_id: str | None = None
+data_dir = /data/federation
+private_key_path: Path | None = None
+public_key_path: Path | None = None
+memory_base_url = http://memory-service:8080
+memory_work_path = /work
+public_base_url: str | None = None
+cortex_base_url = http://cortex-service:8080
+cortex_work_path = /work
+cortex_work_result_path = /work/{work_id}
+cortex_network_path = /network
+default_network_visibility = public
+default_join_mode = token
+request_ttl_seconds = 300
+allowed_clock_skew_seconds = 60
+nonce_ttl_seconds = 600
+max_request_bytes = 1_000_000
+enable_remote_work_submission = true
+enable_capability_publish = true
+enable_member_heartbeat = true
+```
+
+Configuration may provide key paths, but not raw key material. If key paths are omitted, defaults are:
+
+```text
+/data/federation/identity/ed25519_private.key
+/data/federation/identity/ed25519_public.key
+```
+
+### 15.4 Persistent storage
+
+Federation does not own a separate SQLite database. Persistent federation records are stored through the existing Memory service.
+
+Supported record types:
+
+```text
+network
+join_token
+member
+work
+```
+
+Expected Memory operations:
+
+```text
+federation_put_record
+federation_get_record
+federation_list_records
+federation_delete_record
+```
+
+Storage keys:
+
+```text
+network:    network_id
+join_token: token_id
+member:     <network_id>:<cluster_id>
+work:       <network_id>:<work_id>
+```
+
+### 15.5 Local nonce store
+
+`LocalNonceStore` is a local replay-protection cache. It is intentionally local file state, not persistent Memory state.
+
+Default path:
+
+```text
+/data/federation/cache/nonces.json
+```
+
+Default TTL:
+
+```text
+600 seconds
+```
+
+`check_and_remember(nonce)` returns true when the nonce is new and false when it has already been seen.
+
+### 15.6 Identity and signatures
+
+Federation identity is Ed25519-based.
+
+Public keys are encoded as:
+
+```text
+ed25519:<base64url>
+```
+
+Signatures are encoded as:
+
+```text
+ed25519:<base64url>
+```
+
+If `settings.cluster_id` is not configured, Federation derives a stable cluster ID from the public key:
+
+```text
+orin-<first_32_hex_chars_of_sha256(public_key_string)>
+```
+
+Canonical JSON for signatures:
+
+```python
+json.dumps(
+    payload,
+    sort_keys=True,
+    separators=(",", ":"),
+    ensure_ascii=False,
+).encode("utf-8")
+```
+
+Private key files are written with mode `0600`. Public key files are written with mode `0644`.
+
+### 15.7 Networks
+
+A `FederationNetwork` is the public concept that Orin clusters can discover and join.
+
+```python
+class FederationNetwork(BaseModel):
+    network_id: str
+    slug: str
+    name: str
+    description: str | None = None
+    visibility: "public | unlisted | private" = "public"
+    join_mode: "token | approval | open | closed" = "token"
+    owner_cluster_id: str
+    policy: NetworkPolicy
+    advertised_capabilities: list[CapabilitySummary]
+    member_count: int
+```
+
+Slug rules:
+
+```text
+3-64 characters
+lowercase letters
+numbers
+hyphens
+must start and end with a letter or number
+```
+
+`NetworkRegistry` owns network creation, lookup, listing, metadata updates, advertised capability updates, member-count refresh, deletion, and public-safe views.
+
+### 15.8 Network policy
+
+`NetworkPolicy` is default-deny and allow-list based.
+
+Default allowed work types:
+
+```text
+llm
+tool
+```
+
+Default allowed operations:
+
+```text
+chat
+summarize
+classify
+extract
+analyze
+search
+inspect
+```
+
+Policy fields include:
+
+```text
+allow_remote_work_submission
+allow_remote_result_polling
+allow_member_capability_publish
+allowed_work_types
+allowed_operations
+max_payload_bytes
+max_context_tokens
+max_result_tokens
+max_concurrent_jobs_per_member
+expose_member_list
+expose_exact_models
+expose_runtime_metadata
+```
+
+There is no deny-list in the current model.
+
+### 15.9 Join tokens
+
+Join tokens are bootstrap credentials only.
+
+Raw token format:
+
+```text
+orin_join_<token_id>.<secret>
+```
+
+Stored token records contain only a hash:
+
+```text
+token_hash = sha256(raw_token)
+```
+
+The raw token is returned once and must never be persisted.
+
+`JoinTokenService` owns token creation, validation, redemption, revocation, expiry, deletion, and listing. It does not create `NetworkMember` records.
+
+### 15.10 Members
+
+A `NetworkMember` is a joined cluster identity inside a FederationNetwork.
+
+```python
+class NetworkMember(BaseModel):
+    network_id: str
+    cluster_id: str
+    public_key: str
+    role: "owner | admin | member | guest" = "member"
+    status: "active | disabled | revoked | pending" = "active"
+    allowed_work_types: list[str] = ["llm", "tool"]
+    allowed_operations: list[str] = ["chat", "summarize", "analyze"]
+    advertised_capabilities: list[CapabilitySummary]
+```
+
+Only active members can heartbeat, publish capabilities, or submit work.
+
+A member can submit work only if:
+
+```text
+member.status == active
+work_type in member.allowed_work_types
+operation in member.allowed_operations
+```
+
+Both network policy and member policy must allow the requested work.
+
+### 15.11 FederatedWorkEnvelope
+
+External peers do not send raw internal WorkPackets directly. They send a signed envelope:
+
+```python
+class FederatedWorkEnvelope(BaseModel):
+    federation_version: str = "v1"
+    network_id: str
+    origin_cluster_id: str
+    target_cluster_id: str | None = None
+    request_id: str
+    issued_at: datetime
+    expires_at: datetime
+    nonce: str
+    packet: dict[str, Any]
+    signature: str
+    signature_algorithm: str = "ed25519"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+```
+
+The `packet` field is intentionally `dict[str, Any]`, not a direct internal `WorkPacket` type. This keeps the Federation model layer decoupled from Cortex/common imports.
+
+The envelope signature covers all envelope fields except `signature`. The signed payload still includes `signature_algorithm`.
+
+Envelope validation checks:
+
+```text
+federation version
+signature algorithm
+network_id, when expected
+origin_cluster_id, when expected
+issued_at / expires_at timing
+signature
+nonce replay, when nonce_store is provided
+```
+
+Envelope validation does not perform membership lookup, policy enforcement, WorkPacket validation, quota checks, or routing.
+
+### 15.12 Policy checks and packet sanitization
+
+Known runtime operations:
+
+```text
+chat
+summarize
+classify
+extract
+analyze
+search
+inspect
+```
+
+Federation policy checks include:
+
+```text
+remote work submission is enabled
+task object exists
+task.work_type exists and is a string
+task.operation exists and is a string
+operation is a known runtime operation
+work type is allowed by network policy
+operation is allowed by network policy
+payload size is within network/app limits
+requested context limit is within policy
+requested result-token limit is within policy
+member is active
+member is allowed to submit the work type
+member is allowed to submit the operation
+```
+
+Before a federated packet reaches Cortex, Federation removes dangerous or trusted-looking metadata keys:
+
+```text
+backend_ref
+backend_desc
+selected_backend
+internal
+trusted
+admin
+command
+deployment
+kubernetes
+ssh
+```
+
+Then it adds explicit federation-origin metadata:
+
+```python
+metadata["federation"] = {
+    "network_id": network.network_id,
+    "network_slug": network.slug,
+    "origin_cluster_id": member.cluster_id,
+    "member_role": member.role,
+    "request_id": request_id,
+}
+```
+
+Cortex should treat this as external-origin context, not trusted internal state.
+
+### 15.13 Capability summaries
+
+`CapabilityService` builds sanitized public Federation capability summaries from local Cortex discovery state.
+
+It reads:
+
+```text
+settings.cortex_network_url()
+```
+
+It accepts several Cortex network response shapes:
+
+```text
+[backend, backend]
+{"result": [...]}
+{"backends": [...]}
+{"network": [...]}
+{"items": [...]}
+{"descriptors": [...]}
+{"llm": [...], "tool": [...]}
+```
+
+Only public work types are advertised:
+
+```text
+llm
+tool
+```
+
+Multiple backend descriptors are merged into one public summary per work type so Federation does not reveal internal pod/service counts.
+
+Capability summaries may include:
+
+```text
+work_type
+operations
+modalities
+max_context_hint
+max_result_tokens_hint
+availability_hint
+latency_hint
+```
+
+Exact model names are included only if `expose_exact_models=true`.
+
+Runtime metadata is included only if `expose_runtime_metadata=true`, and only as coarse safe hints.
+
+### 15.14 CortexBridge
+
+`CortexBridge` bridges validated and sanitized Federation work into local Cortex.
+
+Expected Cortex contract:
+
+```text
+POST /work
+GET  /work/{work_id}
+```
+
+Expected response shape:
+
+```json
+{
+  "status": "accepted",
+  "work_id": "...",
+  "content": [],
+  "backend_name": "...",
+  "backend_model": "...",
+  "error": null,
+  "metadata": {}
+}
+```
+
+Supported Cortex statuses:
+
+```text
+accepted
+running
+completed
+failed
+```
+
+`CortexBridge` creates a `FederationWorkRecord` and keeps separate IDs:
+
+```text
+origin_work_id
+  Original WorkPacket id sent by the remote member.
+
+cortex_work_id
+  Internal Cortex job/work id used for local polling.
+
+work_id
+  Public Federation polling id returned to the remote member.
+```
+
+Current Phase 1 behavior: the public federation `work_id` is the Cortex work id. Later this can become an independent `fedwork:<id>` value.
+
+### 15.15 FederationClient
+
+`FederationClient` is the outbound client for talking to another Federation node. It only talks to Federation endpoints.
+
+It must not talk directly to:
+
+```text
+Cortex
+LLM
+Memory
+Tool
+Kubernetes
+backend services
+```
+
+Main methods:
+
+```text
+list_networks()
+get_network()
+get_network_capabilities()
+join_network()
+send_heartbeat()
+publish_capabilities()
+submit_work()
+get_work_result()
+submit_work_and_poll_once()
+```
+
+### 15.16 Current Federation flow
+
+Current supported flow:
+
+1. Create a FederationNetwork.
+2. Create a join token.
+3. Another cluster joins with token, cluster ID, and public key.
+4. Member sends signed heartbeat.
+5. Member publishes signed sanitized capabilities.
+6. Member submits a signed FederatedWorkEnvelope.
+7. Receiving Federation verifies envelope, membership, nonce, and policy.
+8. Federation sanitizes the packet.
+9. Federation submits the packet to local Cortex through CortexBridge.
+10. Federation stores the FederationWorkRecord through Memory.
+11. Remote member polls result through Federation.
+12. Federation refreshes accepted/running records from Cortex and returns result or error.
+
+### 15.17 Current Federation implementation notes
+
+- Local/admin endpoints for creating networks and join tokens are currently unprotected. Later they should be restricted to the local command interface or explicit admin policy.
+- Quota and concurrency enforcement are represented in policy fields but are not fully implemented in the policy layer yet.
+- Federated backend descriptors for normal Cortex routing are still a later phase. Current remote work submission goes through explicit Federation endpoints and CortexBridge.
+- Federation settings intentionally do not include bootstrap peers in the current phase. Bootstrap/relay discovery belongs to a later phase.
+
+---
+
+## 16. Primer and model execution
 
 `Primer` is the shared runtime facade used by Cortex and the LLM app.
 
@@ -1827,16 +2384,16 @@ It supports:
 - JSON chat
 - streaming text
 
-Primer uses the canonical `RuntimeMessage` format internally and renders messages through an adapter before sending them to the backend.
+Primer uses canonical `RuntimeMessage` internally and renders messages through an adapter before sending them to the backend.
 
-### 13.1 Message adapter
+### 16.1 Message adapter
 
 The current adapter is `OpenAIStyleMessageAdapter`.
 
 It renders:
 
 - text parts into text
-- json parts into text
+- JSON parts into text
 - image parts into image blocks
 - unsupported parts into textual placeholders
 
@@ -1848,7 +2405,7 @@ Do not output reasoning, chain-of-thought, or <think> tags. /no_think
 
 If a model still emits `<think>...</think>`, the adapter splits that into an internal reasoning message and a user-visible final message.
 
-### 13.2 Generation policies
+### 16.2 Generation policies
 
 Current token policy:
 
@@ -1878,47 +2435,34 @@ inspect:   0.1
 
 ---
 
-## 14. LLM backend lifecycle
+## 17. LLM backend lifecycle
 
 Typical LLM lifecycle:
 
 ```text
-POST /backend {"backend":"gguf"}
-POST /load    {"model_id":"...", "repo_id":"...", "filename":"...", "tokenizer_id":"..."}
-POST /work    WorkPacket
+POST /engine {"engine":"gguf"}
+POST /load   {"model_id":"...", "repo_id":"...", "filename":"...", "tokenizer_id":"..."}
+GET  /jobs/{job_id}
+POST /work   WorkPacket
 GET  /work/{work_id}
 POST /unload
 ```
 
 The LLM backend requires Primer readiness before accepting work. If Primer is not ready, `/work` returns HTTP 409 with `primer_not_ready`.
 
-LLM `/models` returns useful routing metadata after a model is loaded:
+LLM `/model_status` returns useful routing metadata after a model is loaded, including effective context size. Discovery probing uses this to populate:
 
-```json
-{
-  "ok": true,
-  "models": [
-    {
-      "id": "...",
-      "backend": "gguf",
-      "effective_n_ctx": 4096,
-      "n_gpu_layers": -1,
-      "n_batch": 512,
-      "runtime_profile": "balanced"
-    }
-  ]
-}
+```text
+BackendDescriptor.runtime.effective_n_ctx
 ```
-
-This is used by discovery probing to populate `BackendDescriptor.runtime.effective_n_ctx`.
 
 ---
 
-## 15. Memory backend
+## 18. Memory backend
 
-### 15.1 Memory operations
+### 18.1 Memory operations
 
-Memory supports these WorkPacket operations:
+Memory supports operations such as:
 
 ```text
 create_summary
@@ -1937,9 +2481,15 @@ create_session
 resolve_session
 create_message
 list_recent_messages
+federation_put_record
+federation_get_record
+federation_list_records
+federation_delete_record
 ```
 
-### 15.2 Persistence
+The Federation operations are used by `MemoryFederationStorage` for persistent Federation state.
+
+### 18.2 Persistence
 
 Default memory base directory:
 
@@ -1947,7 +2497,7 @@ Default memory base directory:
 ./cluster-memory
 ```
 
-Default storage:
+Default storage paths:
 
 ```text
 cluster-memory/memory.db
@@ -1957,9 +2507,9 @@ cluster-memory/docs/
 cluster-memory/yaml/
 ```
 
-### 15.3 SQLite tables
+### 18.3 SQLite tables
 
-Memory currently creates:
+Memory creates tables such as:
 
 ```text
 users
@@ -1972,7 +2522,7 @@ memory_claims
 work_items
 ```
 
-### 15.4 Prompt context
+### 18.4 Prompt context
 
 The `prompt_context` operation returns:
 
@@ -1984,9 +2534,9 @@ retrieved_chunks
 prompt_block
 ```
 
-Cortex uses this for interpretation, shaping, and last-assistant-message retrieval.
+Cortex uses this for interpretation, shaping, last-assistant-message retrieval, and final response building.
 
-### 15.5 Session behavior
+### 18.5 Session behavior
 
 `resolve_session` uses inactivity-based rollover:
 
@@ -1999,7 +2549,7 @@ Default maximum idle time from Cortex is currently 60 minutes.
 
 ---
 
-## 16. Terminal client
+## 19. Terminal client
 
 `terminal-chat.py` is a lightweight local terminal client for Cortex.
 
@@ -2031,11 +2581,13 @@ Terminal-output: terminal
 
 If that header is present, output goes into the command panel. Otherwise output is treated as assistant chat.
 
+For `/attach`, the terminal client should catch Ctrl+C in streaming mode and return to the terminal loop instead of exiting the whole client.
+
 ---
 
-## 17. Operations runbook
+## 20. Operations runbook
 
-### 17.1 Bootstrap
+### 20.1 Bootstrap
 
 Run the installer from the bootstrap/control host:
 
@@ -2057,7 +2609,7 @@ IMAGE_VERSION=1.0.0 \
 ./install-orin.sh
 ```
 
-### 17.2 Health checks
+### 20.2 Health checks
 
 ```bash
 kubectl get nodes -o wide
@@ -2080,7 +2632,7 @@ Memory inside cluster:
 kubectl exec -n orin netdebug -- sh -lc 'curl -s http://memory-service:8080/health'
 ```
 
-### 17.3 Debug pod
+### 20.3 Debug pod
 
 ```bash
 kubectl run netdebug \
@@ -2090,7 +2642,7 @@ kubectl run netdebug \
   --command -- /bin/sh -c "sleep 86400"
 ```
 
-### 17.4 Terminal client
+### 20.4 Terminal client
 
 ```bash
 python terminal-chat.py
@@ -2111,7 +2663,7 @@ Useful command sequence:
 /list_pods
 ```
 
-### 17.5 Add and install a node
+### 20.5 Add and install a node
 
 Add node to inventory:
 
@@ -2137,7 +2689,7 @@ List nodes:
 /list_nodes --verbose
 ```
 
-### 17.6 Deploy an LLM pod
+### 20.6 Deploy an LLM pod
 
 ```text
 /deploy_pod llm light --platform jetson
@@ -2155,59 +2707,108 @@ List pods:
 /list_pods --verbose
 ```
 
-### 17.7 Load a model
+### 20.7 Load a model
 
-Inside the Configuration folder:
+Cortex-local model load from the Configuration folder:
 
 ```text
-/cd ..
+/cd /
 /cd Configuration
-/backend gguf
+/model_aliases
 /load_model qwen35-4b
-/models
+/job_status <job_id>
+/attach
+```
+
+LLM backend model load from a selected backend folder:
+
+```text
+/cd /
+/cd Cluster
+/cd <llm-backend>
+/model_status
+/load_model qwen35-4b
+/job_status <job_id>
+/attach
 ```
 
 For Hugging Face exploration:
 
 ```text
+/cd /
+/cd Configuration
 /cd ModelDownloader
 /huggingface search qwen
 /huggingface gguf unsloth/Qwen3.5-9B-GGUF
 ```
 
+### 20.8 Federation manual test outline
+
+A minimal Federation test flow:
+
+```text
+create network
+create join token
+join network with token, cluster_id, public_key
+send signed heartbeat
+publish signed capabilities
+submit signed FederatedWorkEnvelope
+poll federated work result
+```
+
+Exact curl examples should be documented separately once the command-router Federation folder or test script is finalized.
+
 ---
 
-## 18. Known implementation cleanup
+## 21. Known implementation notes and cleanup
 
 Current known cleanup items:
 
-1. The `/task` command pipeline and `CortexMailbox` deferred pipeline should be unified through WorkPackets routed to the closest/best Cortex backend.
-2. The LLM runtime class is currently named `CortexRuntime`; rename it to `LLMRuntime` or similar.
-3. `tool/` and `federation/` are empty and should be documented only as planned roles.
-4. Image naming should be cleaned up so `amd64` and `arm64` share the standard runtime image while Jetson keeps its own image.
-5. `PodImageConfig.image_for()` should treat `arm64` and `amd64` as separate values in a set, not as a single combined string.
-6. `DeploymentService._build_pod_factory_defaults()` should read registry/version from the configuration file instead of hardcoding `orin-gw:5000` and `1.0.0`.
-7. Storage profile naming is inconsistent: `pod_template.py` uses `high`, while other command/type code still references `strong`.
-8. Routed streaming WorkPackets are not fully aligned yet because `RouterService.retrieve_work()` expects JSON but LLM streaming can return `StreamingResponse`.
-9. `MemoryRuntime.handle_egress()` is currently a placeholder because memory work completes synchronously on POST.
-10. `memory.sql` contains work item persistence helpers, but they are not yet part of the active WorkPacket memory contract.
-11. Several memory error strings still say `Summary Instance` even for other request types.
-12. Some mutable Pydantic defaults should be changed to `Field(default_factory=dict)`.
-13. Direct `/load` for GGUF should consistently pass or infer the Hugging Face provider when `repo_id` and `filename` are supplied.
-14. Router polling should eventually handle `failed` during polling and use a timeout.
-15. `Planner.derive_requirements()` and `Planner.select_backend()` should be aligned so routing requirements are consistently derived from WorkPackets.
+1. The `get_job_result` branches in Harness should either be added to the lightweight interpretation model or removed.
+2. `RouterService.retrieve_work()` treats `backend` contractually as a dict but some error metadata still uses object-style `getattr`.
+3. `summarize_jobs_for_prompt()` includes payload details for completed jobs; this should become a compact result summary.
+4. Some storage profile naming may still reference `strong` while the active pod template uses `high`.
+5. Image naming should be cleaned up so `amd64` and `arm64` share the standard runtime image while Jetson keeps its own image.
+6. `PodImageConfig.image_for()` should treat `arm64` and `amd64` as separate platform values, not as one combined string.
+7. `DeploymentService._build_pod_factory_defaults()` should read registry/version from configuration instead of hardcoding defaults.
+8. Routed streaming WorkPackets are not fully aligned if a backend returns a streaming response where RouterService expects JSON.
+9. `MemoryRuntime.handle_egress()` may remain a placeholder when memory work completes synchronously on POST.
+10. Several memory error strings still say `Summary Instance` for other request types.
+11. Mutable Pydantic defaults should consistently use `Field(default_factory=...)`.
+12. Direct `/load` for GGUF should consistently pass or infer the Hugging Face provider when `repo_id` and `filename` are supplied.
+13. Federation local/admin endpoints for network and token creation need local admin protection or command-router-only access.
+14. Federation quota/concurrency fields exist in policy but are not fully enforced yet.
+15. Federated backend descriptors for normal Cortex routing are a later phase.
+16. Tool backend implementation remains future work.
+17. Deployment inventory is still in-memory and should eventually be persisted.
+
+Removed stale items from older drafts:
+
+```text
+Federation as an empty/planned folder
+old /task pipeline as the current background mechanism
+memoryrequest field spelling
+backend /network command as the current selected-backend display command
+orin.ai/health_path, orin.ai/work_path, orin.ai/models_path as active discovery annotations
+LLM /models as the active model-status discovery endpoint
+accepted_not_executed Federation placeholder as current behavior
+```
 
 ---
 
-## 19. Near-term architecture direction
+## 22. Near-term architecture direction
 
-The next architecture cleanup should focus on:
+Next architecture cleanup should focus on:
 
-1. making WorkPacket the single execution unit across Cortex, LLM, memory, tool, and deferred work
-2. unifying `/task` and `CortexMailbox`
-3. finishing the standard-vs-Jetson image split
+1. keeping WorkPacket as the single execution unit across Cortex, LLM, Memory, Tool, and Federation paths
+2. stabilizing Harness lightweight interpretation and background pipeline behavior
+3. completing the standard-vs-Jetson image split
 4. making service discovery metadata patching part of normal model/runtime operations
-5. adding the first real tool backend
-6. defining the federation boundary only after local WorkPacket routing is stable
-7. persisting deployment inventory beyond the current in-memory inventory
-8. replacing old gateway/orchestrator terminology with Cortex/LLM/memory/tool/federation terminology throughout the code and documentation
+5. adding the first real Tool backend
+6. protecting local/admin Federation endpoints
+7. enforcing Federation quota/concurrency policy
+8. adding command-router support for Federation operations
+9. persisting deployment inventory beyond current in-memory inventory
+10. replacing any remaining old gateway/orchestrator terminology with Cortex/LLM/Memory/Tool/Federation terminology
+
+The final direction is a public, no-pay overlay network where Orin installs can discover FederationNetworks, join authorized networks with tokens, and exchange signed policy-limited WorkPackets without exposing internal cluster structure.
