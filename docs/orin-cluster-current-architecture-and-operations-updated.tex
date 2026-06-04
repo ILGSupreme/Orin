@@ -1,0 +1,3508 @@
+% Options for packages loaded elsewhere
+\PassOptionsToPackage{unicode}{hyperref}
+\PassOptionsToPackage{hyphens}{url}
+%
+\documentclass[
+]{article}
+\usepackage{amsmath,amssymb}
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+  \usepackage{textcomp} % provide euro and other symbols
+\else % if luatex or xetex
+  \usepackage{unicode-math} % this also loads fontspec
+  \defaultfontfeatures{Scale=MatchLowercase}
+  \defaultfontfeatures[\rmfamily]{Ligatures=TeX,Scale=1}
+\fi
+\usepackage{lmodern}
+\ifPDFTeX\else
+  % xetex/luatex font selection
+\fi
+% Use upquote if available, for straight quotes in verbatim environments
+\IfFileExists{upquote.sty}{\usepackage{upquote}}{}
+\IfFileExists{microtype.sty}{% use microtype if available
+  \usepackage[]{microtype}
+  \UseMicrotypeSet[protrusion]{basicmath} % disable protrusion for tt fonts
+}{}
+\makeatletter
+\@ifundefined{KOMAClassName}{% if non-KOMA class
+  \IfFileExists{parskip.sty}{%
+    \usepackage{parskip}
+  }{% else
+    \setlength{\parindent}{0pt}
+    \setlength{\parskip}{6pt plus 2pt minus 1pt}}
+}{% if KOMA class
+  \KOMAoptions{parskip=half}}
+\makeatother
+\usepackage{xcolor}
+\usepackage{listings}
+\newcommand{\passthrough}[1]{#1}
+\lstset{defaultdialect=[5.3]Lua}
+\lstset{defaultdialect=[x86masm]Assembler}
+\usepackage{longtable,booktabs,array}
+\usepackage{calc} % for calculating minipage widths
+% Correct order of tables after \paragraph or \subparagraph
+\usepackage{etoolbox}
+\makeatletter
+\patchcmd\longtable{\par}{\if@noskipsec\mbox{}\fi\par}{}{}
+\makeatother
+% Allow footnotes in longtable head/foot
+\IfFileExists{footnotehyper.sty}{\usepackage{footnotehyper}}{\usepackage{footnote}}
+\makesavenoteenv{longtable}
+\setlength{\emergencystretch}{3em} % prevent overfull lines
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\setcounter{secnumdepth}{5}
+\ifLuaTeX
+  \usepackage{selnolig}  % disable illegal ligatures
+\fi
+\usepackage{bookmark}
+\IfFileExists{xurl.sty}{\usepackage{xurl}}{} % add URL line breaks if available
+\urlstyle{same}
+\hypersetup{
+  pdftitle={Orin Cluster - Current Architecture and Operations},
+  pdfauthor={Samuel Padilla},
+  hidelinks,
+  pdfcreator={LaTeX via pandoc}}
+
+\title{Orin Cluster - Current Architecture and Operations}
+\usepackage{etoolbox}
+\makeatletter
+\providecommand{\subtitle}[1]{% add subtitle to \maketitle
+  \apptocmd{\@title}{\par {\large #1 \par}}{}{}
+}
+\makeatother
+\subtitle{Current-state technical overview and operations reference}
+\author{Samuel Padilla}
+\date{June 4, 2026}
+
+\begin{document}
+\maketitle
+
+{
+\setcounter{tocdepth}{3}
+\tableofcontents
+}
+\section{Purpose}\label{purpose}
+
+Orin Cluster is a Kubernetes-based local edge-AI assistant platform. The
+active architecture is centered on \textbf{Cortex} as the local ingress,
+routing, command, and orchestration process. Runtime work is represented
+with canonical \textbf{WorkPackets} and routed to discovered backend
+services.
+
+The current implementation is no longer best described as a
+gateway/orchestrator/Ollama split. The active shape is:
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Cortex}: ingress, Harness, command interface, deployment
+  operations, discovery, routing, local fast response, JobManager, and
+  Memory/session integration.
+\item
+  \textbf{LLM}: Primer-backed WorkPacket executor for model inference.
+\item
+  \textbf{Memory}: WorkPacket backend for users, sessions, chat history,
+  claims, notes, summaries, prompt context, and Federation records.
+\item
+  \textbf{Tool}: planned backend role for non-LLM tools. The role is
+  represented in protocols and deployment paths, but no complete tool
+  backend is documented here yet.
+\item
+  \textbf{Federation}: external communication boundary for public
+  network discovery, token-gated joining, signed WorkPacket envelopes,
+  capability advertisement, and federated work/result exchange.
+\item
+  \textbf{Common}: shared protocol, runtime, Primer, adapter,
+  JobManager, model-loading, and Hugging Face helpers.
+\end{itemize}
+
+The current direction is:
+
+\begin{lstlisting}
+WorkPacket is the common execution unit.
+RouterService is the common routing/submission path.
+JobManager is the common async job and pipeline mechanism.
+Federation is the external membrane and must not expose internal cluster structure.
+\end{lstlisting}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{Repository structure}\label{repository-structure}
+
+Current project shape:
+
+\begin{lstlisting}
+orin-cluster/
+  canonical-unified-image/
+  documentation/
+  src/
+    common/
+    cortex/
+    federation/
+    llm/
+    memory/
+    tool/
+  install-orin.sh
+  terminal-chat.py
+\end{lstlisting}
+
+Important source areas:
+
+\begin{lstlisting}
+src/common/
+  Shared protocols, RuntimeMessage, WorkPacket, WorkResult, Primer,
+  adapters, JobManager, and runtime policies.
+
+src/cortex/
+  Cortex app, Harness, command router, deployment service,
+  Kubernetes discovery, routing, planner, and backend client.
+
+src/llm/
+  Primer-backed LLM backend app.
+
+src/memory/
+  Memory backend app, SQLite/file-backed persistence, session/message logic,
+  prompt context, and Federation storage operations.
+
+src/federation/
+  Federation models, settings, Memory-backed storage, network registry,
+  join tokens, members, identity/signing, envelopes, policy,
+  capability summaries, Cortex bridge, and outbound client.
+
+src/tool/
+  Planned backend role for non-LLM tools.
+\end{lstlisting}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{Image model}\label{image-model}
+
+The intended image split is:
+
+\begin{lstlisting}
+standard runtime, amd64/arm64:
+  FROM orin-gw:5000/primer-runtime:0.2
+
+jetson runtime:
+  FROM orin-gw:5000/primer-runtime:jetson-orin.0.2
+\end{lstlisting}
+
+The application folders can have standard and Jetson Dockerfiles:
+
+\begin{lstlisting}
+Dockerfile
+Dockerfile.jetson
+\end{lstlisting}
+
+The long-term model should distinguish only between:
+
+\begin{lstlisting}
+standard runtime: amd64 and arm64
+Jetson runtime: Jetson-specific base/runtime
+\end{lstlisting}
+
+Current cleanup note: some deployment code has carried three-way
+platform image selection for \passthrough{\lstinline!jetson!},
+\passthrough{\lstinline!arm64!}, and \passthrough{\lstinline!amd64!}.
+The preferred direction is for \passthrough{\lstinline!amd64!} and
+\passthrough{\lstinline!arm64!} to share the standard runtime image
+naming while Jetson keeps its separate runtime image.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{\texorpdfstring{Bootstrap model:
+\texttt{install-orin.sh}}{Bootstrap model: install-orin.sh}}\label{bootstrap-model-install-orinsh}
+
+\passthrough{\lstinline!install-orin.sh!} is the initial host/bootstrap
+installer. It is not the long-term general pod deployment mechanism.
+
+Its responsibilities are:
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  detect host platform and GPU state
+\item
+  optionally configure the local test registry for k3s/containerd
+\item
+  install k3s server on the bootstrap/control host
+\item
+  create namespace and RBAC
+\item
+  create the Cortex SSH-key secret
+\item
+  create the k3s join-token secret
+\item
+  write the deployment configuration file
+\item
+  create the deployment configuration ConfigMap
+\item
+  label the bootstrap node
+\item
+  deploy the initial Memory app
+\item
+  wait for Memory rollout
+\item
+  deploy the initial Cortex app
+\item
+  wait for Cortex rollout
+\end{enumerate}
+
+\subsection{4.1 Default bootstrap
+values}\label{41-default-bootstrap-values}
+
+Important defaults:
+
+\begin{lstlisting}
+ORIN_NAMESPACE=orin
+HOST_ALIAS=$(hostname)
+HOST_NAME=$(hostname)
+HOST_IP=$(hostname -I | awk '{print $1}')
+K3S_NODE_NAME=$HOST_ALIAS
+SSH_USER=ubuntu
+SSH_KEY=~/.ssh/id_ed25519
+SSH_KEY_MOUNT_PATH=/data/ssh/id_ed25519
+SSH_KEY_SECRET_NAME=cortex-ssh-key
+SSH_PORT=22
+PLATFORM=auto
+NVIDIA_GPU=auto
+CORTEX_SIZE=light
+CORTEX_NODE_PORT=30080
+CORTEX_SERVICE_ACCOUNT=cortex
+REGISTRY=orin-gw:5000
+IMAGE_VERSION=1.0.0
+CONFIG_PATH=/data/configuration
+K3S_DATA_DIR=/data/k3s
+K3S_STORAGE_DIR=/data/k3s-storage
+CONFIGURE_LOCAL_REGISTRY=true
+LOCAL_REGISTRY_ENDPOINT=http://${REGISTRY}
+\end{lstlisting}
+
+\subsection{4.2 Configuration file}\label{42-configuration-file}
+
+The installer writes JSON configuration to:
+
+\begin{lstlisting}
+/data/configuration
+\end{lstlisting}
+
+The Cortex pod receives that file through the ConfigMap:
+
+\begin{lstlisting}
+deployment-configuration
+\end{lstlisting}
+
+mounted at:
+
+\begin{lstlisting}
+/data/configuration
+\end{lstlisting}
+
+The configuration seeds the initial host/control node and deployment
+defaults. It is not the final source of truth for every future node.
+Additional nodes are added later through Cortex\textquotesingle s
+command interface and \passthrough{\lstinline!DeploymentService!}.
+
+\subsection{4.3 Secrets}\label{43-secrets}
+
+The installer creates:
+
+\begin{lstlisting}
+cortex-ssh-key
+  mounted in Cortex at /data/ssh/id_ed25519
+
+k3s-join-token
+  contains key: token
+\end{lstlisting}
+
+Cortex uses the SSH key for node operations and reads the k3s join token
+through the Kubernetes API when installing k3s agents on additional
+nodes.
+
+\subsection{4.4 Bootstrap deployments}\label{44-bootstrap-deployments}
+
+The installer deploys the minimum working runtime:
+
+\begin{lstlisting}
+memory
+cortex
+\end{lstlisting}
+
+Cortex is exposed as:
+
+\begin{lstlisting}
+Service: cortex-service
+Type: NodePort
+NodePort: 30080
+\end{lstlisting}
+
+Memory is exposed internally as:
+
+\begin{lstlisting}
+Service: memory-service
+Type: ClusterIP
+\end{lstlisting}
+
+Federation deployment support exists as a target direction, but this
+document treats the initial installer as a Cortex/Memory bootstrap path
+unless the installer has explicitly been extended for Federation in the
+current branch.
+
+\subsection{4.5 Bootstrap RBAC}\label{45-bootstrap-rbac}
+
+The Cortex service account needs permissions to manage cluster resources
+and discover backends.
+
+The installer creates a \passthrough{\lstinline!ClusterRole!} and
+\passthrough{\lstinline!ClusterRoleBinding!} for:
+
+\begin{lstlisting}
+nodes: get, list, watch, patch, update
+namespaces: get, list, create
+pods: get, list, watch, create, patch, update, delete
+services: get, list, watch, create, patch, update, delete
+persistentvolumeclaims: get, list, watch, create, patch, update, delete
+configmaps: get, list, watch, create, patch, update, delete
+secrets: get, list, watch
+deployments: get, list, watch, create, patch, update, delete
+endpointslices: get, list, watch
+\end{lstlisting}
+
+EndpointSlice access is required because backend discovery counts ready
+endpoints from EndpointSlices.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{Runtime applications}\label{runtime-applications}
+
+\subsection{5.1 Cortex}\label{51-cortex}
+
+Cortex is the main local runtime. It owns:
+
+\begin{itemize}
+\tightlist
+\item
+  public ingress for terminal/chat requests
+\item
+  Harness response flow
+\item
+  slash-command handling
+\item
+  local Primer-backed fast response path
+\item
+  user/session/message persistence through Memory WorkPackets
+\item
+  backend discovery and registry refresh
+\item
+  backend routing and WorkPacket submission
+\item
+  deployment operations through
+  \passthrough{\lstinline!DeploymentService!}
+\item
+  JobManager-based background jobs and pipelines
+\item
+  direct WorkPacket handling for internal/Federation use
+\end{itemize}
+
+At startup, Cortex wires components such as:
+
+\begin{lstlisting}
+Primer
+DeploymentService
+DiscoveryService
+BackendRoutingPolicy
+BackendClient
+Planner
+RouterService
+CommandRouter
+JobManager
+Harness
+\end{lstlisting}
+
+Cortex starts discovery refresh during lifespan startup and stops the
+Primer backend on shutdown.
+
+\subsection{5.2 Harness}\label{52-harness}
+
+Harness is the ingress layer for terminal and chat requests. It
+validates sessions, persists user messages through Memory, performs
+lightweight interpretation, optionally executes deterministic terminal
+actions, optionally starts background pipelines, and returns direct or
+fast responses.
+
+Harness supports two ingress modes:
+
+\begin{lstlisting}
+terminal
+chat
+\end{lstlisting}
+
+Terminal mode is command/help/status oriented and should not start
+background jobs.
+
+Chat mode normally answers directly. It starts background work only when
+the lightweight interpreter chooses the
+\passthrough{\lstinline!start\_pipeline!} action.
+
+\subsection{5.3 LLM}\label{53-llm}
+
+The LLM app is a Primer-backed WorkPacket executor. It exposes
+backend/model lifecycle endpoints and a packet execution API.
+
+It supports:
+
+\begin{lstlisting}
+POST /engine or equivalent backend-engine loading path
+POST /load
+POST /unload
+POST /work
+GET  /work/{work_id}
+GET  /model_status
+GET  /live
+GET  /ready
+GET  /health
+GET  /attach
+\end{lstlisting}
+
+The active discovery convention expects model/runtime status at:
+
+\begin{lstlisting}
+/model_status
+\end{lstlisting}
+
+This replaces older documentation that treated
+\passthrough{\lstinline!/models!} as the active discovery status
+endpoint.
+
+Cortex discovers LLM services through Kubernetes service metadata and
+routes \passthrough{\lstinline!work\_type=llm!} packets to them.
+
+\subsection{5.4 Memory}\label{54-memory}
+
+The Memory app is a synchronous WorkPacket backend. Cortex and
+Federation route Memory WorkPackets to it for:
+
+\begin{itemize}
+\tightlist
+\item
+  user upsert
+\item
+  session resolution
+\item
+  chat message creation
+\item
+  recent conversation retrieval
+\item
+  claims
+\item
+  notes
+\item
+  summaries
+\item
+  prompt context
+\item
+  Federation persistent records
+\end{itemize}
+
+The Memory backend normally returns completed
+\passthrough{\lstinline!WorkResult!} values directly from
+\passthrough{\lstinline!POST /work!}.
+
+\subsection{5.5 Tool}\label{55-tool}
+
+The Tool role is present in protocols, routing hints, deployment
+commands, and Federation public capability mapping. A complete current
+tool backend is not documented here yet.
+
+\subsection{5.6 Federation}\label{56-federation}
+
+Federation is the external communication boundary for Orin clusters.
+
+It handles:
+
+\begin{lstlisting}
+public network discovery
+token-gated network joining
+member identity
+signed member requests
+signed federated work envelopes
+policy enforcement
+sanitized capability advertisement
+federated work submission
+federated result polling
+\end{lstlisting}
+
+Federation must not expose internal Orin cluster structure. External
+peers must not see Cortex URLs, LLM URLs, Memory URLs, Kubernetes
+services, pod names, node IPs, SSH details, deployment configuration,
+model paths, memory contents, slash commands, backend load/unload
+controls, or internal backend refs.
+
+External communication goes through Federation endpoints only.
+Federation validates, verifies, authorizes, sanitizes, and then hands
+accepted work into local Cortex through
+\passthrough{\lstinline!CortexBridge!}.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{Runtime endpoints}\label{runtime-endpoints}
+
+\subsection{6.1 Cortex endpoints}\label{61-cortex-endpoints}
+
+\begin{longtable}[]{@{}lrl@{}}
+\toprule\noalign{}
+Endpoint & Method & Purpose \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\passthrough{\lstinline!/work!} & POST & Main ingress. In chat/terminal
+flows this is session-based; internal/Federation work can use
+WorkPacket-shaped requests where supported by the current Cortex app. \\
+\passthrough{\lstinline!/work/\{work\_id\}!} & GET & Poll
+internal/deferred work result where supported. \\
+\passthrough{\lstinline!/network!} & GET & List discovered backend
+descriptors. \\
+\passthrough{\lstinline!/network/\{role\}!} & GET & List discovered
+candidates for a role. \\
+\passthrough{\lstinline!/load!} & POST & Start local Cortex model-load
+job when using Cortex-local Primer. \\
+\passthrough{\lstinline!/unload!} & POST & Stop local Cortex Primer
+backend/model. \\
+\passthrough{\lstinline!/jobs/\{job\_id\}!} or command
+\passthrough{\lstinline!/job\_status!} & GET/command & Inspect jobs
+depending on app surface. \\
+\passthrough{\lstinline!/attach!} & GET & Stream local Cortex logs when
+configured. \\
+\passthrough{\lstinline!/live!} & GET & Process liveness. \\
+\passthrough{\lstinline!/ready!} & GET & Readiness and Primer status. \\
+\passthrough{\lstinline!/health!} & GET & Basic health endpoint. \\
+\end{longtable}
+
+\subsection{6.2 LLM endpoints}\label{62-llm-endpoints}
+
+\begin{longtable}[]{@{}lrl@{}}
+\toprule\noalign{}
+Endpoint & Method & Purpose \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\passthrough{\lstinline!/engine!} or backend-load equivalent & POST &
+Load/select \passthrough{\lstinline!gguf!} or
+\passthrough{\lstinline!vllm!} backend engine. \\
+\passthrough{\lstinline!/load!} & POST & Start model-load job. \\
+\passthrough{\lstinline!/jobs/\{job\_id\}!} & GET & Read backend job
+status. \\
+\passthrough{\lstinline!/unload!} & POST & Stop current
+backend/model. \\
+\passthrough{\lstinline!/work!} & POST & Accept a
+\passthrough{\lstinline!WorkPacket!}. \\
+\passthrough{\lstinline!/work/\{work\_id\}!} & GET & Poll submitted LLM
+work. \\
+\passthrough{\lstinline!/model\_status!} & GET & Return loaded
+model/runtime metadata, including effective context. \\
+\passthrough{\lstinline!/attach!} & GET & Stream backend logs. \\
+\passthrough{\lstinline!/live!} & GET & Process liveness. \\
+\passthrough{\lstinline!/ready!} & GET & Readiness and Primer status. \\
+\passthrough{\lstinline!/health!} & GET & Basic health endpoint. \\
+\end{longtable}
+
+\subsection{6.3 Memory endpoints}\label{63-memory-endpoints}
+
+\begin{longtable}[]{@{}lrl@{}}
+\toprule\noalign{}
+Endpoint & Method & Purpose \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\passthrough{\lstinline!/work!} & POST & Execute Memory
+\passthrough{\lstinline!WorkPacket!} operations synchronously. \\
+\passthrough{\lstinline!/work/\{work\_id\}!} & GET & Placeholder or
+lookup path; Memory work usually completes on POST. \\
+\passthrough{\lstinline!/live!} & GET & Process liveness. \\
+\passthrough{\lstinline!/ready!} & GET & Readiness. \\
+\passthrough{\lstinline!/health!} & GET & Basic health endpoint. \\
+\end{longtable}
+
+\subsection{6.4 Federation endpoints}\label{64-federation-endpoints}
+
+\begin{longtable}[]{@{}lrl@{}}
+\toprule\noalign{}
+Endpoint & Method & Purpose \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+\passthrough{\lstinline!/live!} & GET & Process liveness. \\
+\passthrough{\lstinline!/ready!} & GET & Readiness, cluster ID, protocol
+version. \\
+\passthrough{\lstinline!/health!} & GET & Basic health and cluster
+ID. \\
+\passthrough{\lstinline!/federation/networks!} & GET & List public
+Federation networks. \\
+\passthrough{\lstinline!/federation/networks!} & POST & Create local
+Federation network. Local/admin endpoint. \\
+\passthrough{\lstinline!/federation/networks/\{slug\}!} & GET & Get
+public-safe network view. \\
+\passthrough{\lstinline!/federation/networks/\{slug\}/tokens!} & POST &
+Create join token. Local/admin endpoint. \\
+\passthrough{\lstinline!/federation/networks/\{slug\}/join!} & POST &
+Join network using token, cluster ID, and public key. \\
+\passthrough{\lstinline!/federation/networks/\{slug\}/capabilities!} &
+GET & Read public network capabilities. \\
+\passthrough{\lstinline!/federation/networks/\{slug\}/capabilities/refresh!}
+& POST & Refresh local advertised capabilities from Cortex discovery. \\
+\passthrough{\lstinline!/federation/networks/\{network\_id\}/heartbeat!}
+& POST & Signed member heartbeat. \\
+\passthrough{\lstinline!/federation/networks/\{network\_id\}/capabilities!}
+& POST & Signed member capability publish. \\
+\passthrough{\lstinline!/federation/networks/\{network\_id\}/work!} &
+POST & Submit signed federated WorkPacket envelope. \\
+\passthrough{\lstinline!/federation/networks/\{network\_id\}/work/\{work\_id\}!}
+& GET & Poll federated work result. \\
+\end{longtable}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{Canonical runtime protocol}\label{canonical-runtime-protocol}
+
+The current architecture uses internal canonical message and work types
+instead of treating OpenAI chat messages as the universal internal
+contract.
+
+\subsection{7.1 Runtime messages}\label{71-runtime-messages}
+
+\begin{lstlisting}[language=Python]
+PartType = Literal["text", "image", "audio", "video", "json", "binary"]
+PartEncoding = Literal["plain", "base64"]
+Visibility = Literal["user", "internal"]
+
+MessageRole = Literal[
+    "system",
+    "developer",
+    "user",
+    "assistant",
+    "tool",
+    "context",
+]
+
+class ContentPart(BaseModel):
+    type: PartType
+    data: str
+    encoding: PartEncoding = "plain"
+    mime_type: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+class RuntimeMessage(BaseModel):
+    role: MessageRole
+    parts: list[ContentPart] = Field(default_factory=list)
+    name: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+\end{lstlisting}
+
+Current implementation note:
+\passthrough{\lstinline!ContentPart.mime\_type!} may be auto-filled from
+\passthrough{\lstinline!type!} and \passthrough{\lstinline!encoding!}
+when missing, for example \passthrough{\lstinline!text/plain!}.
+
+When JSON-shaped payloads are embedded inside a text prompt for the
+model, prefer \passthrough{\lstinline!type="text"!},
+\passthrough{\lstinline!encoding="plain"!}, and
+\passthrough{\lstinline!mime\_type="text/plain"!} unless the part is
+intended to be treated as an actual
+\passthrough{\lstinline!application/json!} content part.
+
+\subsection{7.2 Ingress and egress}\label{72-ingress-and-egress}
+
+\begin{lstlisting}[language=Python]
+class InferenceSession(BaseModel):
+    user_id: str
+    session_id: str | None = None
+    channel: str = "api"
+    stream: bool = False
+    content: list[RuntimeMessage]
+    metadata: dict[str, Any]
+
+class EgressResponse(BaseModel):
+    content: list[RuntimeMessage]
+    work_id: str | None = None
+    session_id: str | None = None
+    metadata: dict[str, object] = {}
+\end{lstlisting}
+
+\subsection{7.3 Work packets}\label{73-work-packets}
+
+\begin{lstlisting}[language=Python]
+class WorkType(str, Enum):
+    LLM = "llm"
+    TOOL = "tool"
+    CORTEX = "cortex"
+    MEMORY = "memory"
+
+class WorkDisposition(str, Enum):
+    DIRECT = "direct"
+    DEFERRED = "deferred"
+
+class RoutingHints(BaseModel):
+    role: WorkType | None = None
+    required_capabilities: list[str] = Field(default_factory=list)
+    required_modalities: list[str] = Field(default_factory=list)
+    runtime_preference: list[dict[str, Any]] = Field(default_factory=list)
+    latency_preference: str = "normal"
+
+class CanonicalTask(BaseModel):
+    work_type: WorkType
+    operation: str
+    messages: list[RuntimeMessage] = Field(default_factory=list)
+    memory_request: BaseRuntimeMemoryRequest | None = None
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    constraints: dict[str, Any] = Field(default_factory=dict)
+    routing_hints: RoutingHints = Field(default_factory=RoutingHints)
+
+class WorkPacket(BaseModel):
+    work_id: str
+    disposition: WorkDisposition = WorkDisposition.DIRECT
+    task: CanonicalTask
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+class WorkResult(BaseModel):
+    status: str
+    work_id: str
+    content: list[RuntimeMessage] = Field(default_factory=list)
+    backend_name: str | None = None
+    backend_model: str | None = None
+    error: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+\end{lstlisting}
+
+Allowed \passthrough{\lstinline!WorkResult.status!} values:
+
+\begin{lstlisting}
+accepted
+running
+completed
+failed
+\end{lstlisting}
+
+Important current field name:
+
+\begin{lstlisting}
+memory_request
+\end{lstlisting}
+
+Older text or code that says \passthrough{\lstinline!memoryrequest!} is
+stale.
+
+\subsection{7.4 WorkResult federation
+sanitization}\label{74-workresult-federation-sanitization}
+
+\passthrough{\lstinline!WorkResult.sanitize\_for\_federation()!} returns
+a reduced WorkResult intended for external Federation egress.
+
+It preserves:
+
+\begin{lstlisting}
+status
+work_id
+content
+backend_name
+backend_model
+error
+\end{lstlisting}
+
+It drops most metadata and only keeps sanitized
+\passthrough{\lstinline!work\_details!} when present:
+
+\begin{lstlisting}
+work_type
+operation
+\end{lstlisting}
+
+This prevents internal routing metadata such as backend refs, selected
+backend details, trusted internal flags, or local execution context from
+leaking through Federation.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{Harness ingress and response
+flow}\label{harness-ingress-and-response-flow}
+
+Harness validates the incoming session, persists the user message
+through Memory, performs lightweight interpretation, optionally executes
+a deterministic terminal action or starts a background pipeline, and
+then returns either a direct response or a fast model-generated
+response.
+
+\subsection{8.1 Session validation}\label{81-session-validation}
+
+For each ingress request, Harness:
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  validates the incoming \passthrough{\lstinline!InferenceSession!} as
+  an \passthrough{\lstinline!InferenceObject!}
+\item
+  upserts the user through Memory
+\item
+  resolves or creates a session through Memory if no
+  \passthrough{\lstinline!session\_id!} was provided
+\item
+  inserts the incoming user message into Memory
+\item
+  continues to terminal or chat response handling
+\end{enumerate}
+
+\subsection{8.2 Lightweight
+interpretation}\label{82-lightweight-interpretation}
+
+Harness builds a small interpretation context containing:
+
+\begin{lstlisting}
+Ingress context:
+- mode
+- user_id
+- session_id
+- channel
+
+Session background jobs:
+- compact job summary, when jobs exist
+
+Available mode commands/actions:
+- command_router.get_commands(mode)
+\end{lstlisting}
+
+This context is intentionally small. It gives the lightweight
+interpreter enough information to choose an action without exposing full
+backend state or large runtime details.
+
+\subsection{8.3 Terminal mode}\label{83-terminal-mode}
+
+Terminal mode is for CLI help, deterministic inspection, and safe
+terminal/system information actions. It should not start background
+work.
+
+Terminal interpretation model:
+
+\begin{lstlisting}
+{
+  "mode": "terminal",
+  "intent": "terminal_help | system_status | job_status | normal_chat | unknown",
+  "action": "answer_only | terminal_info_action | report_job_status",
+  "terminal_action": "string | null"
+}
+\end{lstlisting}
+
+If the action is \passthrough{\lstinline!terminal\_info\_action!},
+Harness executes the selected command-router action through:
+
+\begin{lstlisting}[language=Python]
+command_router.execute_harness_action(
+    terminal_action,
+    mode="terminal",
+)
+\end{lstlisting}
+
+Only safe information actions are executed automatically.
+
+If the action is \passthrough{\lstinline!report\_job\_status!}, Harness
+reads session jobs from JobManager and formats session job status.
+
+\subsection{8.4 Chat mode}\label{84-chat-mode}
+
+Chat mode is the normal assistant path.
+
+Chat interpretation model:
+
+\begin{lstlisting}
+{
+  "mode": "chat",
+  "action": "answer_only | start_pipeline | report_job_status",
+  "pipeline": "chat | null"
+}
+\end{lstlisting}
+
+Normal questions should use \passthrough{\lstinline!answer\_only!}.
+
+Background work starts when the user explicitly asks for deeper,
+detailed, researched, verified, current, multi-step, or comprehensive
+work. When the action is \passthrough{\lstinline!start\_pipeline!},
+Harness starts a JobManager pipeline:
+
+\begin{lstlisting}
+kind: harness.chat
+pipeline: chat
+\end{lstlisting}
+
+The immediate response does not wait for the full result:
+
+\begin{lstlisting}
+A deeper response is being worked on. Background job `<job_id>` has been started. Ask for the status or result later.
+\end{lstlisting}
+
+If the action is \passthrough{\lstinline!report\_job\_status!}, Harness
+returns formatted job status for the current session.
+
+\subsection{8.5 Fast response path}\label{85-fast-response-path}
+
+If Harness does not return a direct terminal/action/job-status response,
+it builds a fast response prompt.
+
+The fast response prompt can include:
+
+\begin{itemize}
+\tightlist
+\item
+  current user message
+\item
+  last assistant message from Memory
+\item
+  compact response context
+\item
+  internal response instruction derived from lightweight interpretation
+\item
+  background job id, if one was started
+\end{itemize}
+
+The fast response is generated through the local Primer using the
+\passthrough{\lstinline!chat!} generation policy.
+
+\subsection{8.6 Chat background
+pipeline}\label{86-chat-background-pipeline}
+
+The current \passthrough{\lstinline!chat!} pipeline stages are:
+
+\begin{lstlisting}
+get_prompt
+interpret_turn
+shape_turn
+build_packets
+read_and_send_packets
+build_final_response_message
+\end{lstlisting}
+
+Stage responsibilities:
+
+\begin{lstlisting}
+get_prompt:
+  Fetch prompt context from Memory for the current session.
+
+interpret_turn:
+  Build turn-interpretation messages and route an llm.inspect WorkPacket
+  through RouterService. Primer is used for token estimation; actual work
+  is routed to an LLM backend.
+
+shape_turn:
+  Read the interpretation result, build task-shaping messages, and route
+  another llm.inspect WorkPacket through RouterService.
+
+build_packets:
+  Convert shaped tasks into canonical WorkPackets.
+
+read_and_send_packets:
+  Submit built WorkPackets through router.send_many(), wait for send batch,
+  call router.retrieve_many(), and wait for retrieve batch.
+
+build_final_response_message:
+  Build the final response prompt from the original user message, prompt
+  context, and collated packet results. Then route an llm.analyze WorkPacket
+  and poll until completion or failure.
+\end{lstlisting}
+
+The shaper output is normalized before packet creation. Accepted shapes
+include:
+
+\begin{lstlisting}
+task_items
+items
+tasks
+\end{lstlisting}
+
+The normalization step guards against the model incorrectly routing
+LLM-style work to Cortex. Operations such as
+\passthrough{\lstinline!chat!}, \passthrough{\lstinline!summarize!},
+\passthrough{\lstinline!classify!}, \passthrough{\lstinline!extract!},
+and \passthrough{\lstinline!analyze!} are normalized toward
+\passthrough{\lstinline!llm!} routing when appropriate.
+
+\subsection{8.7 WorkPacket ingress
+pipeline}\label{87-workpacket-ingress-pipeline}
+
+Harness also defines a smaller \passthrough{\lstinline!work\_pipeline!}
+for direct WorkPacket ingress.
+
+Current behavior:
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  If \passthrough{\lstinline!packet.task.work\_type == "llm"!}, start
+  pipeline \passthrough{\lstinline!work\_pipeline!}.
+\item
+  Return
+  \passthrough{\lstinline!WorkResult(status="accepted", work\_id=<job\_id>)!}.
+\item
+  Store the original packet work id in metadata as
+  \passthrough{\lstinline!original\_work\_id!}.
+\item
+  Poll the JobManager job through
+  \passthrough{\lstinline!retrieve\_work\_packet()!}.
+\item
+  Return a sanitized WorkResult for federation-safe egress.
+\end{enumerate}
+
+The current direct WorkPacket path only accepts LLM work. Other work
+types return failed with \passthrough{\lstinline!unknown work type!}.
+
+\subsection{8.8 Current implementation
+note}\label{88-current-implementation-note}
+
+The Harness implementation contains branches for a
+\passthrough{\lstinline!get\_job\_result!} action, but the current
+lightweight interpretation model does not include
+\passthrough{\lstinline!get\_job\_result!} as a valid action. Treat this
+as an implementation stub until the type model is updated.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{Command interface}\label{command-interface}
+
+The command router exposes a folder-style terminal interface. Commands
+and folders are represented as structured objects, and the same command
+inventory is also exposed to Harness for lightweight interpretation.
+
+\subsection{9.1 Command model}\label{91-command-model}
+
+Main concepts:
+
+\begin{lstlisting}
+ShellState
+  path: list[str]
+  selected_backend_name: str | None
+
+CommandContext
+  router: CommandRouter
+  backend: BackendDescriptor | None
+  backend_client -> router.backend_client
+
+Command
+  command: str
+  desc: str
+  kind: "text" | "stream"
+  handler
+  modes: set["terminal" | "chat"]
+  harness_action: str | None
+  safe_info_action: bool
+  suggest_only: bool
+
+CommandFolder
+  name: str
+  desc: str
+  commands: list[Command]
+  folders: dict[str, CommandFolder]
+  dynamic: bool
+\end{lstlisting}
+
+All text command handlers use:
+
+\begin{lstlisting}[language=Python]
+handler(ctx: CommandContext, args: str)
+\end{lstlisting}
+
+Stream commands use the same context but return an async iterator.
+
+\passthrough{\lstinline!CommandContext!} is important because
+backend-scoped commands no longer need special hardcoded router paths.
+If the shell is currently inside
+\passthrough{\lstinline!Root / Cluster / <backend>!}, the context
+contains the selected backend. Otherwise
+\passthrough{\lstinline!ctx.backend!} is \passthrough{\lstinline!None!}.
+
+\subsection{9.2 Global commands}\label{92-global-commands}
+
+Global commands:
+
+\begin{lstlisting}
+/help
+/commands
+/cd
+/render
+/attach
+\end{lstlisting}
+
+\passthrough{\lstinline!/attach!} is a stream command. In a backend
+folder it attaches to the selected backend\textquotesingle s
+\passthrough{\lstinline!/attach!} endpoint. Outside a backend folder it
+attaches to the local Cortex log stream, if configured.
+
+\subsection{9.3 Current folder tree}\label{93-current-folder-tree}
+
+\begin{lstlisting}
+Root
+  /help
+  /commands
+  /cd
+  /attach
+  /render
+
+  Deployment
+    /list_pods
+    /list_nodes
+    /deploy_pod
+    /delete_pod
+    /install_k3s
+    /add_node
+    /remove_node
+    /label_node
+    /update_discovery_meta
+
+  Cluster
+    /show
+    /cluster_snapshot
+    <dynamic backend folders>
+
+  Configuration
+    /model_aliases
+    /job_status
+    /load_model
+    /unload_model
+    /engine
+
+    ModelDownloader
+      /huggingface
+\end{lstlisting}
+
+The old backend \passthrough{\lstinline!/network!} command has been
+replaced by \passthrough{\lstinline!/show!} in the Cluster context.
+
+\subsection{9.4 Dynamic Cluster folder}\label{94-dynamic-cluster-folder}
+
+\passthrough{\lstinline!Cluster!} is a dynamic folder. When the user
+enters:
+
+\begin{lstlisting}
+/cd Cluster
+\end{lstlisting}
+
+the router lists discovered backends from the backend registry and
+exposes each backend as a child folder.
+
+Example:
+
+\begin{lstlisting}
+Root / Cluster
+  /show
+  /cluster_snapshot
+
+  llm-medium-1-service
+  memory-service
+\end{lstlisting}
+
+When the user enters a backend folder:
+
+\begin{lstlisting}
+/cd llm-medium-1-service
+\end{lstlisting}
+
+the router sets:
+
+\begin{lstlisting}[language=Python]
+shell_state.path = ["Root", "Cluster", backend.name]
+shell_state.selected_backend_name = backend.name
+\end{lstlisting}
+
+The current folder is then resolved from the selected backend role. If
+the backend role is known, the role-specific folder is used. Otherwise
+the generic backend folder is used.
+
+\subsection{9.5 Backend command
+folders}\label{95-backend-command-folders}
+
+Generic backend commands:
+
+\begin{lstlisting}
+/show
+/health
+/update_discovery_meta
+\end{lstlisting}
+
+LLM backend commands:
+
+\begin{lstlisting}
+/show
+/health
+/update_discovery_meta
+/model_status
+/load_model
+/job_status
+/unload_model
+\end{lstlisting}
+
+Memory currently uses the generic backend command folder.
+
+Future role folders can be added for Tool, Cortex, and Federation.
+
+\subsection{9.6 Human visibility versus Harness action
+inventory}\label{96-human-visibility-versus-harness-action-inventory}
+
+The human terminal remains folder-oriented.
+\passthrough{\lstinline!/commands!} shows the commands visible in the
+current folder plus global commands.
+
+Harness is different. The AI should not be limited by the human
+user\textquotesingle s current CLI folder.
+\passthrough{\lstinline!CommandRouter.get\_commands(mode)!} returns the
+broader action inventory available to the lightweight interpreter.
+
+Each returned command entry contains:
+
+\begin{lstlisting}
+action
+command
+description
+folder
+safe_info_action
+suggest_only
+requires_backend
+backend_role
+\end{lstlisting}
+
+This lets Harness decide whether a user request can be fulfilled by a
+safe deterministic terminal action.
+
+\subsection{9.7 Safe and suggest-only
+actions}\label{97-safe-and-suggest-only-actions}
+
+Commands are tagged for Harness use.
+
+\begin{lstlisting}
+safe_info_action=True
+\end{lstlisting}
+
+means Harness may execute the command automatically for information
+retrieval.
+
+\begin{lstlisting}
+suggest_only=True
+\end{lstlisting}
+
+means Harness should not execute the command automatically. It can
+suggest the command or explain it, but execution requires the user to
+explicitly issue that command.
+
+Examples of safe information actions:
+
+\begin{lstlisting}
+list_commands
+render_current_folder
+list_pods
+list_nodes
+show_cluster
+cluster_snapshot
+model_status
+job_status
+show_backend
+backend_health
+\end{lstlisting}
+
+Examples of suggest-only or mutating actions:
+
+\begin{lstlisting}
+change_folder
+attach_logs
+deploy_pod
+delete_pod
+install_k3s
+add_node
+remove_node
+label_node
+update_discovery_meta
+load_model
+unload_model
+engine_status
+huggingface
+\end{lstlisting}
+
+\passthrough{\lstinline!execute\_harness\_action()!} enforces this at
+runtime. It rejects unknown actions, non-safe actions, and suggest-only
+actions.
+
+\subsection{9.8 Model and Hugging Face
+commands}\label{98-model-and-hugging-face-commands}
+
+Current model alias examples:
+
+\begin{lstlisting}
+qwen35-0.8b
+qwen35-2B
+qwen35-4b
+qwen35-9b
+\end{lstlisting}
+
+The \passthrough{\lstinline!/huggingface!} command supports:
+
+\begin{lstlisting}
+/huggingface search <query>
+/huggingface info <repo_id>
+/huggingface gguf <repo_id>
+/huggingface alias add <alias> <repo_id> [--file filename] [--tokenizer tokenizer_id]
+\end{lstlisting}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{JobManager}\label{jobmanager}
+
+\passthrough{\lstinline!JobManager!} is the shared runtime mechanism for
+asynchronous jobs, background pipelines, command-triggered long-running
+work, router batch work, and Harness background work.
+
+It is generic and is not model-load specific.
+
+\subsection{10.1 Core job types}\label{101-core-job-types}
+
+\begin{lstlisting}[language=Python]
+JobStatus = Literal["accepted", "running", "completed", "failed"]
+StageStatus = Literal["accepted", "running", "completed", "failed"]
+
+@dataclass(slots=True)
+class JobSpec:
+    kind: str
+    payload: dict[str, Any] = field(default_factory=dict)
+    job_id: str | None = None
+
+@dataclass(slots=True)
+class Job:
+    job_id: str
+    spec: JobSpec
+    status: JobStatus = "accepted"
+    error: str | None = None
+
+    pipeline_name: str | None = None
+    current_stage: str | None = None
+    stage_index: int = 0
+    stage_count: int = 0
+    stage_status: StageStatus | None = None
+    stage_results: dict[str, dict[str, Any]] = field(default_factory=dict)
+    latest_result: dict[str, Any] = field(default_factory=dict)
+    progress_message: str | None = None
+\end{lstlisting}
+
+A job can be either a single runner job or a pipeline job with multiple
+stages.
+
+Single jobs are used for simple async operations such as router
+send/retrieve jobs and local model-load jobs.
+
+Pipeline jobs are used for staged workflows such as Harness background
+chat.
+
+\subsection{10.2 Pipeline model}\label{102-pipeline-model}
+
+A pipeline is a named list of stages:
+
+\begin{lstlisting}[language=Python]
+@dataclass(slots=True)
+class PipelineStage:
+    name: str
+    runner: PipelineStageRunner
+    poller: PipelineStagePoller | None = None
+    timeout_seconds: float = 120.0
+    poll_interval_seconds: float = 1.0
+
+@dataclass(slots=True)
+class PipelineDefinition:
+    name: str
+    stages: list[PipelineStage]
+\end{lstlisting}
+
+If the runner returns \passthrough{\lstinline!completed!} or
+\passthrough{\lstinline!failed!}, the stage ends immediately.
+
+If the runner returns \passthrough{\lstinline!accepted!} or
+\passthrough{\lstinline!running!}, the stage must have a poller. The
+poller is called until the result becomes
+\passthrough{\lstinline!completed!} or \passthrough{\lstinline!failed!},
+or until the stage timeout expires.
+
+If a stage returns \passthrough{\lstinline!accepted!} or
+\passthrough{\lstinline!running!} without a poller, the stage fails.
+
+\subsection{10.3 Separate job and pipeline
+semaphores}\label{103-separate-job-and-pipeline-semaphores}
+
+\passthrough{\lstinline!JobManager!} uses two separate semaphores:
+
+\begin{lstlisting}
+job_semaphore
+pipeline_semaphore
+\end{lstlisting}
+
+This avoids a deadlock where a parent pipeline holds the only job slot
+while waiting for child router jobs that also need the same slot.
+
+Normal jobs run under \passthrough{\lstinline!job\_semaphore!}.
+
+Pipeline jobs run under \passthrough{\lstinline!pipeline\_semaphore!}.
+
+This means a running pipeline can safely start child jobs through
+RouterService and wait for their batch results.
+
+\subsection{10.4 Starting jobs and
+pipelines}\label{104-starting-jobs-and-pipelines}
+
+Normal job:
+
+\begin{lstlisting}[language=Python]
+job_manager.start(
+    spec=JobSpec(kind="...", payload={...}),
+    runner=runner,
+    on_completed=optional_hook,
+)
+\end{lstlisting}
+
+Pipeline job:
+
+\begin{lstlisting}[language=Python]
+job_manager.define_pipeline("chat", stages=[...])
+
+job_manager.start_pipeline(
+    spec=JobSpec(kind="harness.chat", payload={...}),
+    pipeline="chat",
+)
+\end{lstlisting}
+
+The returned job starts as \passthrough{\lstinline!accepted!}. When
+execution begins, it becomes \passthrough{\lstinline!running!}.
+
+When a runner returns, the result is converted to a JSON-safe dictionary
+with:
+
+\begin{lstlisting}[language=Python]
+formatting.as_dict(result)
+\end{lstlisting}
+
+and stored in:
+
+\begin{lstlisting}
+job.latest_result
+\end{lstlisting}
+
+If the runner returns a \passthrough{\lstinline!WorkResult!} with
+\passthrough{\lstinline!status="failed"!}, the job is marked failed and
+\passthrough{\lstinline!job.error!} is set from the WorkResult error.
+
+\subsection{10.5 Batch work}\label{105-batch-work}
+
+\passthrough{\lstinline!JobManager!} supports lightweight batches
+through \passthrough{\lstinline!BatchWork!}:
+
+\begin{lstlisting}[language=Python]
+@dataclass(slots=True)
+class BatchWork:
+    job_ids: list[str] = field(default_factory=list)
+    batch_id: str = ""
+\end{lstlisting}
+
+A batch stores only job IDs. It does not store
+\passthrough{\lstinline!asyncio.Task!} objects.
+
+Creating a batch:
+
+\begin{lstlisting}[language=Python]
+batch_id = job_manager.create_batch(jobs)
+\end{lstlisting}
+
+Waiting for a batch:
+
+\begin{lstlisting}[language=Python]
+await job_manager.batch_progress(batch_id)
+\end{lstlisting}
+
+\passthrough{\lstinline!batch\_progress()!} returns a list of normalized
+job results once every job in the batch has status
+\passthrough{\lstinline!completed!} or \passthrough{\lstinline!failed!}.
+
+Default behavior:
+
+\begin{lstlisting}
+blocking: true
+poll interval: 1 second
+timeout: 300 seconds
+\end{lstlisting}
+
+\subsection{10.6 Job inspection}\label{106-job-inspection}
+
+Useful inspection methods:
+
+\begin{lstlisting}
+get(job_id)
+get_progress(job_id)
+list_jobs()
+list_active_jobs()
+list_jobs_for_session(session_id)
+list_active_jobs_for_session(session_id)
+summarize_jobs_for_prompt(session_id)
+\end{lstlisting}
+
+Current status meanings:
+
+\begin{lstlisting}
+accepted  = job has been created and queued
+running   = job or pipeline stage is currently running
+completed = job finished successfully
+failed    = job failed
+\end{lstlisting}
+
+Current implementation note:
+\passthrough{\lstinline!summarize\_jobs\_for\_prompt()!} includes
+payload details for completed jobs. This is useful while debugging but
+may be too noisy for model-facing summaries. Long term, completed job
+summaries should prefer a compact result summary.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{Deployment service and
+inventory}\label{deployment-service-and-inventory}
+
+\passthrough{\lstinline!DeploymentService!} owns the mutable in-memory
+\passthrough{\lstinline!Inventory!}. It reads
+\passthrough{\lstinline!/data/configuration!} during startup and seeds
+the initial host/control node into inventory.
+
+\subsection{11.1 Inventory model}\label{111-inventory-model}
+
+\begin{lstlisting}
+Inventory
+  nodes: list[Node]
+
+Node
+  alias
+  machine_settings
+    host
+    ip
+    platform: amd64 | arm64 | jetson
+    nvidia_gpu
+  ssh_config
+    default_user
+    default_key
+    port
+    auth_method
+  kubernetes_settings
+    k3s_node_name
+    namespace
+    data_dir=/data/k3s
+    default_local_storage_path=/data/k3s-storage
+\end{lstlisting}
+
+\subsection{11.2 DeploymentService
+responsibilities}\label{112-deploymentservice-responsibilities}
+
+\passthrough{\lstinline!DeploymentService!} supports:
+
+\begin{itemize}
+\tightlist
+\item
+  adding/removing inventory nodes
+\item
+  listing inventory nodes with Kubernetes status
+\item
+  labeling Kubernetes nodes
+\item
+  checking passwordless sudo over SSH
+\item
+  installing k3s server/agent over SSH
+\item
+  deploying pod apps through the Kubernetes Python client
+\item
+  deleting pod apps
+\item
+  listing deployed pod apps
+\item
+  patching service discovery metadata
+\item
+  resolving pod placement
+\end{itemize}
+
+\subsection{11.3 Node placement labels}\label{113-node-placement-labels}
+
+Node labels are used for scheduling and compatibility:
+
+\begin{lstlisting}
+orin.role.backend=true
+orin.platform=<amd64|arm64|jetson>
+orin.gpu=<true|false>
+\end{lstlisting}
+
+Optional role preference labels are soft scheduling hints:
+
+\begin{lstlisting}
+orin.role.cortex=true
+orin.role.llm=true
+orin.role.tool=true
+orin.role.memory=true
+\end{lstlisting}
+
+These are not the same as service discovery labels.
+
+\subsection{11.4 Service discovery
+metadata}\label{114-service-discovery-metadata}
+
+Service labels and annotations are used for backend discovery and
+routing.
+
+Required service labels:
+
+\begin{lstlisting}
+labels:
+  orin.ai/backend: "true"
+  orin.ai/role: "<role>"
+\end{lstlisting}
+
+Supported discovery annotations:
+
+\begin{lstlisting}
+annotations:
+  orin.ai/kind: "<kind>"
+  orin.ai/model: "<model-id>"
+  orin.ai/capabilities: "[\"chat\"]"
+  orin.ai/modalities: "[\"text\"]"
+  orin.ai/priority: "100"
+  orin.ai/weight: "1.0"
+  orin.ai/visibility: "internal"
+\end{lstlisting}
+
+Current convention-based paths:
+
+\begin{lstlisting}
+health_path = /health
+work_path = /work
+model_status_path = /model_status for llm and cortex
+model_status_path = None for other roles
+\end{lstlisting}
+
+Older annotations such as these are no longer required by the current
+discovery provider:
+
+\begin{lstlisting}
+orin.ai/health_path
+orin.ai/work_path
+orin.ai/models_path
+\end{lstlisting}
+
+The current discovery provider hardcodes the standard endpoint
+convention instead.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{Pod application model}\label{pod-application-model}
+
+The deployment code uses generic app specs:
+
+\begin{lstlisting}
+PodDeploymentSpec
+PodServiceSpec
+PodPvcSpec
+PodDiscoverySpec
+PodProbeSpec
+PlacementDecision
+\end{lstlisting}
+
+For an app named \passthrough{\lstinline!<app\_name>!}, generated
+resources are:
+
+\begin{lstlisting}
+Deployment: <app_name>
+Service:    <app_name>-service
+PVC:        <app_name>-pvc
+\end{lstlisting}
+
+Cortex is deployed as NodePort. LLM, Memory, Tool, and Federation app
+services should generally be ClusterIP unless explicitly exposed.
+
+Current probe convention:
+
+\begin{lstlisting}
+readiness: /ready
+liveness:  /live
+startup:   /ready
+\end{lstlisting}
+
+Current storage profiles:
+
+\begin{lstlisting}
+light  -> 20Gi
+medium -> 50Gi
+high   -> 100Gi
+\end{lstlisting}
+
+Current cleanup note: some command/type definitions may still use
+\passthrough{\lstinline!strong!} instead of
+\passthrough{\lstinline!high!}.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{Discovery, health, and
+routing}\label{discovery-health-and-routing}
+
+Cortex discovers routable backends from Kubernetes Services. Discovery
+is service-based, not pod-based.
+
+A backend is any Kubernetes Service in the configured Cortex namespace
+with:
+
+\begin{lstlisting}
+orin.ai/backend=true
+\end{lstlisting}
+
+The service must also provide a role label:
+
+\begin{lstlisting}
+orin.ai/role=<role>
+\end{lstlisting}
+
+Known backend roles:
+
+\begin{lstlisting}
+cortex
+llm
+tool
+memory
+\end{lstlisting}
+
+\subsection{13.1 Discovery service
+composition}\label{131-discovery-service-composition}
+
+\passthrough{\lstinline!DiscoveryService!} wires together:
+
+\begin{lstlisting}
+KubernetesDiscoveryProvider
+BackendHealthProber
+InMemoryBackendRegistry
+RegistryRefresher
+BackendSelector
+\end{lstlisting}
+
+It is initialized with defaults such as:
+
+\begin{lstlisting}
+refresh_interval_seconds = 15.0
+health_timeout = 2.0
+\end{lstlisting}
+
+The registry is refreshed periodically by
+\passthrough{\lstinline!RegistryRefresher!}.
+
+\subsection{13.2 Kubernetes service
+discovery}\label{132-kubernetes-service-discovery}
+
+\passthrough{\lstinline!KubernetesDiscoveryProvider!} lists Services in
+the configured Cortex namespace using:
+
+\begin{lstlisting}
+label_selector = "orin.ai/backend=true"
+\end{lstlisting}
+
+It also lists EndpointSlices in the same namespace and counts ready
+endpoints per service.
+
+A service is skipped if:
+
+\begin{lstlisting}
+orin.ai/role is missing
+no usable service port exists
+\end{lstlisting}
+
+The service port selection prefers a port named
+\passthrough{\lstinline!http!}; otherwise discovery uses the first
+service port.
+
+\subsection{13.3 Backend URL
+convention}\label{133-backend-url-convention}
+
+Backend URLs are built from internal Kubernetes DNS:
+
+\begin{lstlisting}
+http://<service-name>.<namespace>.svc.cluster.local:<port>
+\end{lstlisting}
+
+Example:
+
+\begin{lstlisting}
+http://llm-medium-1-service.orin.svc.cluster.local:8080
+\end{lstlisting}
+
+This internal service URL is used only inside the Orin cluster.
+Federation must not expose it externally.
+
+\subsection{13.4 BackendDescriptor}\label{134-backenddescriptor}
+
+Discovered services become \passthrough{\lstinline!BackendDescriptor!}
+objects:
+
+\begin{lstlisting}[language=Python]
+@dataclasses.dataclass(slots=True)
+class BackendDescriptor:
+    name: str
+    namespace: str
+    service_name: str
+    url: str
+
+    role: BackendRole | str
+    kind: str | None = None
+    model: str | None = None
+
+    capabilities: list[str] = field(default_factory=list)
+    modalities: list[str] = field(default_factory=list)
+
+    priority: int = 100
+    weight: float = 1.0
+    visibility: str = "internal"
+
+    health_path: str = "/health"
+    work_path: str = "/"
+    model_status_path: str | None = None
+
+    labels: dict[str, str] = field(default_factory=dict)
+    annotations: dict[str, str] = field(default_factory=dict)
+
+    health: BackendHealth = field(default_factory=BackendHealth)
+    runtime: RuntimeMetaData = field(default_factory=RuntimeMetaData)
+\end{lstlisting}
+
+The descriptor name is currently:
+
+\begin{lstlisting}
+<namespace>/<service-name>
+\end{lstlisting}
+
+Example:
+
+\begin{lstlisting}
+orin/llm-medium-1-service
+\end{lstlisting}
+
+\subsection{13.5 Health probing}\label{135-health-probing}
+
+\passthrough{\lstinline!BackendHealthProber!} probes every discovered
+backend.
+
+Probe flow:
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  Check whether the service has at least one ready EndpointSlice
+  endpoint.
+\item
+  If no ready endpoints exist, mark backend unavailable.
+\item
+  If ready endpoints exist, call
+  \passthrough{\lstinline!<backend.url>/health!}.
+\item
+  If \passthrough{\lstinline!/health!} fails, mark backend degraded.
+\item
+  If the backend has \passthrough{\lstinline!model\_status\_path!}, call
+  \passthrough{\lstinline!<backend.url>/model\_status!}.
+\item
+  If model status fails, mark backend degraded.
+\item
+  If all required checks pass, mark backend healthy.
+\end{enumerate}
+
+For \passthrough{\lstinline!llm!} and \passthrough{\lstinline!cortex!}
+backends, discovery attempts model status probing through:
+
+\begin{lstlisting}
+/model_status
+\end{lstlisting}
+
+If the response contains runtime metadata, the prober updates:
+
+\begin{lstlisting}
+backend.runtime.effective_n_ctx
+\end{lstlisting}
+
+This value is later used for runtime-aware backend selection.
+
+\subsection{13.6 Runtime metadata}\label{136-runtime-metadata}
+
+Current runtime metadata:
+
+\begin{lstlisting}[language=Python]
+@dataclasses.dataclass(slots=True)
+class RuntimeMetaData:
+    effective_n_ctx: int = 0
+\end{lstlisting}
+
+Example runtime preference:
+
+\begin{lstlisting}
+runtime_preference = [{"effective_n_ctx": 6000}]
+\end{lstlisting}
+
+This means the backend must have
+\passthrough{\lstinline!effective\_n\_ctx >= 6000!}.
+
+\subsection{13.7 Capability summary}\label{137-capability-summary}
+
+\passthrough{\lstinline!DiscoveryService.get\_capability\_summary()!}
+returns a compact summary for task shaping and lightweight
+orchestration.
+
+Shape:
+
+\begin{lstlisting}
+{
+  "roles": ["llm", "memory"],
+  "capabilities_by_role": {
+    "llm": ["chat", "summarize", "analyze"]
+  },
+  "modalities_by_role": {
+    "llm": ["text"]
+  },
+  "deferred_available": false
+}
+\end{lstlisting}
+
+\passthrough{\lstinline!deferred\_available!} is currently true when a
+discovered backend has role \passthrough{\lstinline!cortex!}.
+
+\subsection{13.8 Backend selection}\label{138-backend-selection}
+
+Backend selection is handled by
+\passthrough{\lstinline!BackendSelector!}.
+
+A selection request can specify:
+
+\begin{lstlisting}[language=Python]
+@dataclass(slots=True)
+class BackendSelectionRequest:
+    role: str | None = None
+    required_capabilities: list[str] | None = None
+    required_modalities: list[str] | None = None
+    runtime_preference: list[dict[str, Any]] | None = None
+    healthy_only: bool = True
+\end{lstlisting}
+
+Selection filters backends in this order:
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  \passthrough{\lstinline!healthy\_only!}
+\item
+  \passthrough{\lstinline!runtime\_preference!}
+\item
+  \passthrough{\lstinline!role!}
+\item
+  \passthrough{\lstinline!required\_capabilities!}
+\item
+  \passthrough{\lstinline!required\_modalities!}
+\end{enumerate}
+
+After filtering, candidates are sorted by:
+
+\begin{lstlisting}
+healthy first
+priority descending
+weight descending
+name ascending
+\end{lstlisting}
+
+\subsection{13.9 Backend routing policy and
+Planner}\label{139-backend-routing-policy-and-planner}
+
+\passthrough{\lstinline!BackendRoutingPolicy!} performs primary healthy
+selection first. If no healthy backend matches and degraded fallback is
+allowed, it retries with \passthrough{\lstinline!healthy\_only=False!}
+and may return a degraded backend.
+
+\passthrough{\lstinline!Planner!} is intentionally thin. It converts
+WorkPacket routing requirements into a backend selection request:
+
+\begin{lstlisting}[language=Python]
+class Planner:
+    def select_backend(self, packet: WorkPacket):
+        return self.routing_policy.select_backend(
+            role=packet.required_role,
+            required_capabilities=packet.required_capabilities,
+            required_modalities=packet.required_modalities,
+            runtime_preference=packet.routing_hints.runtime_preference,
+        )
+\end{lstlisting}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{RouterService and
+BackendClient}\label{routerservice-and-backendclient}
+
+\subsection{14.1 RouterService}\label{141-routerservice}
+
+\passthrough{\lstinline!RouterService!} is the central dispatch layer
+for WorkPackets.
+
+It owns:
+
+\begin{lstlisting}
+backend selection
+packet submission
+accepted-work metadata
+polling
+batch send/retrieve operations
+\end{lstlisting}
+
+Dependencies:
+
+\begin{lstlisting}
+DiscoveryService
+BackendClient
+JobManager
+Planner
+\end{lstlisting}
+
+\subsection{14.2 Sending one
+WorkPacket}\label{142-sending-one-workpacket}
+
+Main method:
+
+\begin{lstlisting}[language=Python]
+await router.send(packet)
+\end{lstlisting}
+
+Send flow:
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  Resolve backend.
+\item
+  Submit packet through \passthrough{\lstinline!BackendClient!}.
+\item
+  If backend returns \passthrough{\lstinline!completed!} or
+  \passthrough{\lstinline!failed!}, return that WorkResult.
+\item
+  If backend returns \passthrough{\lstinline!accepted!}, attach backend
+  metadata and return accepted WorkResult.
+\item
+  If response shape is invalid, return failed WorkResult.
+\end{enumerate}
+
+Backend resolution first checks:
+
+\begin{lstlisting}[language=Python]
+packet.metadata["backend_name"]
+\end{lstlisting}
+
+If no explicit backend is found, RouterService calls:
+
+\begin{lstlisting}[language=Python]
+planner.select_backend(packet)
+\end{lstlisting}
+
+\subsection{14.3 Accepted WorkResult
+contract}\label{143-accepted-workresult-contract}
+
+When a backend accepts work asynchronously, RouterService returns a
+\passthrough{\lstinline!WorkResult!} with:
+
+\begin{lstlisting}
+status = accepted
+work_id = backend work id
+backend_name = selected backend name
+backend_model = selected backend model
+metadata.backend_ref = serialized backend reference
+metadata.work_details = work type and operation
+\end{lstlisting}
+
+\passthrough{\lstinline!backend\_ref!} contains only the information
+needed to retrieve the result later:
+
+\begin{lstlisting}
+name
+namespace
+service_name
+url
+work_path
+\end{lstlisting}
+
+\passthrough{\lstinline!work\_details!} contains:
+
+\begin{lstlisting}
+work_type
+operation
+\end{lstlisting}
+
+This is the contract for accepted or running work. Retrieval code should
+use \passthrough{\lstinline!metadata["backend\_ref"]!}, not the older
+\passthrough{\lstinline!backend\_desc!}.
+
+\subsection{14.4 Retrieval and polling}\label{144-retrieval-and-polling}
+
+Single retrieval:
+
+\begin{lstlisting}[language=Python]
+await router.retrieve_work(
+    work_id=work_id,
+    work_type=work_type,
+    operation=operation,
+    backend=backend_ref,
+)
+\end{lstlisting}
+
+Blocking retrieval:
+
+\begin{lstlisting}[language=Python]
+await router.retrieve_completed_work(
+    work_id=work_id,
+    work_type=work_type,
+    operation=operation,
+    backend=backend_ref,
+    poll_interval_seconds=1.0,
+    timeout_seconds=120.0,
+)
+\end{lstlisting}
+
+It polls while status is:
+
+\begin{lstlisting}
+accepted
+running
+\end{lstlisting}
+
+and returns when the backend returns:
+
+\begin{lstlisting}
+completed
+failed
+\end{lstlisting}
+
+If the timeout is reached, RouterService returns a failed WorkResult
+with timeout metadata.
+
+\subsection{14.5 Batch send/retrieve}\label{145-batch-sendretrieve}
+
+Submit many WorkPackets:
+
+\begin{lstlisting}[language=Python]
+batch_id = await router.send_many(work_packets)
+\end{lstlisting}
+
+For each packet, RouterService starts a normal JobManager job:
+
+\begin{lstlisting}
+kind = router.sendmany
+runner = execute_send
+\end{lstlisting}
+
+Retrieve many WorkResults:
+
+\begin{lstlisting}[language=Python]
+retrieve_batch_id = await router.retrieve_many(results)
+\end{lstlisting}
+
+For each result:
+
+\begin{lstlisting}
+completed or failed -> passthrough job
+accepted or running -> retrieval job
+\end{lstlisting}
+
+Completed and failed results are not retrieved again. They are passed
+through using:
+
+\begin{lstlisting}
+kind = router.retrievemany.passthrough
+\end{lstlisting}
+
+Accepted and running results use:
+
+\begin{lstlisting}
+kind = router.retrievemany
+runner = execute_retrieve_completed
+\end{lstlisting}
+
+\passthrough{\lstinline!execute\_retrieve\_completed()!} requires:
+
+\begin{lstlisting}
+result.metadata["work_details"]
+result.metadata["backend_ref"]
+\end{lstlisting}
+
+\subsection{14.6 BackendClient}\label{146-backendclient}
+
+\passthrough{\lstinline!BackendClient!} is the internal HTTP client used
+by RouterService and backend-scoped command handlers.
+
+It supports both full \passthrough{\lstinline!BackendDescriptor!}
+objects and serialized backend reference dictionaries.
+
+Backend value access is normalized through:
+
+\begin{lstlisting}[language=Python]
+_backend_value(backend, key, default)
+\end{lstlisting}
+
+If \passthrough{\lstinline!backend!} is a dict, the value is read with
+\passthrough{\lstinline!backend.get(key, default)!}. Otherwise it is
+read with \passthrough{\lstinline!getattr(backend, key, default)!}.
+
+Packet submission:
+
+\begin{lstlisting}[language=Python]
+await backend_client.submit_packet(
+    backend=backend,
+    packet=packet,
+)
+\end{lstlisting}
+
+Work retrieval:
+
+\begin{lstlisting}[language=Python]
+await backend_client.retrieve_work(
+    backend=backend_ref,
+    work_id=work_id,
+)
+\end{lstlisting}
+
+URL construction:
+
+\begin{lstlisting}
+<backend.url><backend.work_path>
+<backend.url><backend.work_path>/<work_id>
+\end{lstlisting}
+
+The backend URL must start with \passthrough{\lstinline!http://!} or
+\passthrough{\lstinline!https://!}.
+
+Generic helpers:
+
+\begin{lstlisting}[language=Python]
+await backend_client.get_json(url=..., params=...)
+await backend_client.post_json(url=..., payload=...)
+\end{lstlisting}
+
+These helpers are used for backend health checks, model status checks,
+remote model loading, backend job status, and unload operations.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{Federation architecture}\label{federation-architecture}
+
+Federation is the external membrane between Orin and the outside world.
+
+External peers see only Federation-level concepts:
+
+\begin{lstlisting}
+FederationNetwork
+NetworkMember
+CapabilitySummary
+FederatedWorkEnvelope
+FederationWorkRecord
+\end{lstlisting}
+
+They must not see internal Orin implementation details.
+
+\subsection{15.1 Source layout}\label{151-source-layout}
+
+\begin{lstlisting}
+src/federation/
+  models.py
+  settings.py
+  storage.py
+  network_registry.py
+  join_tokens.py
+  members.py
+  identity.py
+  envelopes.py
+  policy.py
+  app.py
+  capabilities.py
+  cortex_bridge.py
+  federation_client.py
+\end{lstlisting}
+
+\subsection{15.2 Runtime composition}\label{152-runtime-composition}
+
+During FastAPI lifespan startup, Federation:
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  loads the federation configuration file
+\item
+  creates an internal HTTP client
+\item
+  creates an external HTTP client
+\item
+  creates \passthrough{\lstinline!MemoryFederationStorage!}
+\item
+  loads or creates local cluster identity
+\item
+  creates \passthrough{\lstinline!LocalNonceStore!}
+\item
+  creates \passthrough{\lstinline!NetworkRegistry!}
+\item
+  creates \passthrough{\lstinline!JoinTokenService!}
+\item
+  creates \passthrough{\lstinline!MemberService!}
+\item
+  creates \passthrough{\lstinline!CapabilityService!}
+\item
+  creates \passthrough{\lstinline!CortexBridge!}
+\end{enumerate}
+
+Persistent federation state is stored through Memory via
+\passthrough{\lstinline!MemoryFederationStorage!}. Local files are used
+for identity keys, nonce/cache state, and temporary local state.
+
+\subsection{15.3 Settings}\label{153-settings}
+
+\passthrough{\lstinline!FederationSettings!} is loaded from the shared
+file-based configuration system:
+
+\begin{lstlisting}[language=Python]
+configuration.load_configuration_file("federation")
+configuration.get_configuration("federation")
+\end{lstlisting}
+
+Main settings:
+
+\begin{lstlisting}
+app_name = "orin-federation"
+protocol_version = "v1"
+host = "0.0.0.0"
+port = 8080
+cluster_id: str | None = None
+data_dir = /data/federation
+private_key_path: Path | None = None
+public_key_path: Path | None = None
+memory_base_url = http://memory-service:8080
+memory_work_path = /work
+public_base_url: str | None = None
+cortex_base_url = http://cortex-service:8080
+cortex_work_path = /work
+cortex_work_result_path = /work/{work_id}
+cortex_network_path = /network
+default_network_visibility = public
+default_join_mode = token
+request_ttl_seconds = 300
+allowed_clock_skew_seconds = 60
+nonce_ttl_seconds = 600
+max_request_bytes = 1_000_000
+enable_remote_work_submission = true
+enable_capability_publish = true
+enable_member_heartbeat = true
+\end{lstlisting}
+
+Configuration may provide key paths, but not raw key material. If key
+paths are omitted, defaults are:
+
+\begin{lstlisting}
+/data/federation/identity/ed25519_private.key
+/data/federation/identity/ed25519_public.key
+\end{lstlisting}
+
+\subsection{15.4 Persistent storage}\label{154-persistent-storage}
+
+Federation does not own a separate SQLite database. Persistent
+federation records are stored through the existing Memory service.
+
+Supported record types:
+
+\begin{lstlisting}
+network
+join_token
+member
+work
+\end{lstlisting}
+
+Expected Memory operations:
+
+\begin{lstlisting}
+federation_put_record
+federation_get_record
+federation_list_records
+federation_delete_record
+\end{lstlisting}
+
+Storage keys:
+
+\begin{lstlisting}
+network:    network_id
+join_token: token_id
+member:     <network_id>:<cluster_id>
+work:       <network_id>:<work_id>
+\end{lstlisting}
+
+\subsection{15.5 Local nonce store}\label{155-local-nonce-store}
+
+\passthrough{\lstinline!LocalNonceStore!} is a local replay-protection
+cache. It is intentionally local file state, not persistent Memory
+state.
+
+Default path:
+
+\begin{lstlisting}
+/data/federation/cache/nonces.json
+\end{lstlisting}
+
+Default TTL:
+
+\begin{lstlisting}
+600 seconds
+\end{lstlisting}
+
+\passthrough{\lstinline!check\_and\_remember(nonce)!} returns true when
+the nonce is new and false when it has already been seen.
+
+\subsection{15.6 Identity and
+signatures}\label{156-identity-and-signatures}
+
+Federation identity is Ed25519-based.
+
+Public keys are encoded as:
+
+\begin{lstlisting}
+ed25519:<base64url>
+\end{lstlisting}
+
+Signatures are encoded as:
+
+\begin{lstlisting}
+ed25519:<base64url>
+\end{lstlisting}
+
+If \passthrough{\lstinline!settings.cluster\_id!} is not configured,
+Federation derives a stable cluster ID from the public key:
+
+\begin{lstlisting}
+orin-<first_32_hex_chars_of_sha256(public_key_string)>
+\end{lstlisting}
+
+Canonical JSON for signatures:
+
+\begin{lstlisting}[language=Python]
+json.dumps(
+    payload,
+    sort_keys=True,
+    separators=(",", ":"),
+    ensure_ascii=False,
+).encode("utf-8")
+\end{lstlisting}
+
+Private key files are written with mode \passthrough{\lstinline!0600!}.
+Public key files are written with mode \passthrough{\lstinline!0644!}.
+
+\subsection{15.7 Networks}\label{157-networks}
+
+A \passthrough{\lstinline!FederationNetwork!} is the public concept that
+Orin clusters can discover and join.
+
+\begin{lstlisting}[language=Python]
+class FederationNetwork(BaseModel):
+    network_id: str
+    slug: str
+    name: str
+    description: str | None = None
+    visibility: "public | unlisted | private" = "public"
+    join_mode: "token | approval | open | closed" = "token"
+    owner_cluster_id: str
+    policy: NetworkPolicy
+    advertised_capabilities: list[CapabilitySummary]
+    member_count: int
+\end{lstlisting}
+
+Slug rules:
+
+\begin{lstlisting}
+3-64 characters
+lowercase letters
+numbers
+hyphens
+must start and end with a letter or number
+\end{lstlisting}
+
+\passthrough{\lstinline!NetworkRegistry!} owns network creation, lookup,
+listing, metadata updates, advertised capability updates, member-count
+refresh, deletion, and public-safe views.
+
+\subsection{15.8 Network policy}\label{158-network-policy}
+
+\passthrough{\lstinline!NetworkPolicy!} is default-deny and allow-list
+based.
+
+Default allowed work types:
+
+\begin{lstlisting}
+llm
+tool
+\end{lstlisting}
+
+Default allowed operations:
+
+\begin{lstlisting}
+chat
+summarize
+classify
+extract
+analyze
+search
+inspect
+\end{lstlisting}
+
+Policy fields include:
+
+\begin{lstlisting}
+allow_remote_work_submission
+allow_remote_result_polling
+allow_member_capability_publish
+allowed_work_types
+allowed_operations
+max_payload_bytes
+max_context_tokens
+max_result_tokens
+max_concurrent_jobs_per_member
+expose_member_list
+expose_exact_models
+expose_runtime_metadata
+\end{lstlisting}
+
+There is no deny-list in the current model.
+
+\subsection{15.9 Join tokens}\label{159-join-tokens}
+
+Join tokens are bootstrap credentials only.
+
+Raw token format:
+
+\begin{lstlisting}
+orin_join_<token_id>.<secret>
+\end{lstlisting}
+
+Stored token records contain only a hash:
+
+\begin{lstlisting}
+token_hash = sha256(raw_token)
+\end{lstlisting}
+
+The raw token is returned once and must never be persisted.
+
+\passthrough{\lstinline!JoinTokenService!} owns token creation,
+validation, redemption, revocation, expiry, deletion, and listing. It
+does not create \passthrough{\lstinline!NetworkMember!} records.
+
+\subsection{15.10 Members}\label{1510-members}
+
+A \passthrough{\lstinline!NetworkMember!} is a joined cluster identity
+inside a FederationNetwork.
+
+\begin{lstlisting}[language=Python]
+class NetworkMember(BaseModel):
+    network_id: str
+    cluster_id: str
+    public_key: str
+    role: "owner | admin | member | guest" = "member"
+    status: "active | disabled | revoked | pending" = "active"
+    allowed_work_types: list[str] = ["llm", "tool"]
+    allowed_operations: list[str] = ["chat", "summarize", "analyze"]
+    advertised_capabilities: list[CapabilitySummary]
+\end{lstlisting}
+
+Only active members can heartbeat, publish capabilities, or submit work.
+
+A member can submit work only if:
+
+\begin{lstlisting}
+member.status == active
+work_type in member.allowed_work_types
+operation in member.allowed_operations
+\end{lstlisting}
+
+Both network policy and member policy must allow the requested work.
+
+\subsection{15.11
+FederatedWorkEnvelope}\label{1511-federatedworkenvelope}
+
+External peers do not send raw internal WorkPackets directly. They send
+a signed envelope:
+
+\begin{lstlisting}[language=Python]
+class FederatedWorkEnvelope(BaseModel):
+    federation_version: str = "v1"
+    network_id: str
+    origin_cluster_id: str
+    target_cluster_id: str | None = None
+    request_id: str
+    issued_at: datetime
+    expires_at: datetime
+    nonce: str
+    packet: dict[str, Any]
+    signature: str
+    signature_algorithm: str = "ed25519"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+\end{lstlisting}
+
+The \passthrough{\lstinline!packet!} field is intentionally
+\passthrough{\lstinline!dict[str, Any]!}, not a direct internal
+\passthrough{\lstinline!WorkPacket!} type. This keeps the Federation
+model layer decoupled from Cortex/common imports.
+
+The envelope signature covers all envelope fields except
+\passthrough{\lstinline!signature!}. The signed payload still includes
+\passthrough{\lstinline!signature\_algorithm!}.
+
+Envelope validation checks:
+
+\begin{lstlisting}
+federation version
+signature algorithm
+network_id, when expected
+origin_cluster_id, when expected
+issued_at / expires_at timing
+signature
+nonce replay, when nonce_store is provided
+\end{lstlisting}
+
+Envelope validation does not perform membership lookup, policy
+enforcement, WorkPacket validation, quota checks, or routing.
+
+\subsection{15.12 Policy checks and packet
+sanitization}\label{1512-policy-checks-and-packet-sanitization}
+
+Known runtime operations:
+
+\begin{lstlisting}
+chat
+summarize
+classify
+extract
+analyze
+search
+inspect
+\end{lstlisting}
+
+Federation policy checks include:
+
+\begin{lstlisting}
+remote work submission is enabled
+task object exists
+task.work_type exists and is a string
+task.operation exists and is a string
+operation is a known runtime operation
+work type is allowed by network policy
+operation is allowed by network policy
+payload size is within network/app limits
+requested context limit is within policy
+requested result-token limit is within policy
+member is active
+member is allowed to submit the work type
+member is allowed to submit the operation
+\end{lstlisting}
+
+Before a federated packet reaches Cortex, Federation removes dangerous
+or trusted-looking metadata keys:
+
+\begin{lstlisting}
+backend_ref
+backend_desc
+selected_backend
+internal
+trusted
+admin
+command
+deployment
+kubernetes
+ssh
+\end{lstlisting}
+
+Then it adds explicit federation-origin metadata:
+
+\begin{lstlisting}[language=Python]
+metadata["federation"] = {
+    "network_id": network.network_id,
+    "network_slug": network.slug,
+    "origin_cluster_id": member.cluster_id,
+    "member_role": member.role,
+    "request_id": request_id,
+}
+\end{lstlisting}
+
+Cortex should treat this as external-origin context, not trusted
+internal state.
+
+\subsection{15.13 Capability summaries}\label{1513-capability-summaries}
+
+\passthrough{\lstinline!CapabilityService!} builds sanitized public
+Federation capability summaries from local Cortex discovery state.
+
+It reads:
+
+\begin{lstlisting}
+settings.cortex_network_url()
+\end{lstlisting}
+
+It accepts several Cortex network response shapes:
+
+\begin{lstlisting}
+[backend, backend]
+{"result": [...]}
+{"backends": [...]}
+{"network": [...]}
+{"items": [...]}
+{"descriptors": [...]}
+{"llm": [...], "tool": [...]}
+\end{lstlisting}
+
+Only public work types are advertised:
+
+\begin{lstlisting}
+llm
+tool
+\end{lstlisting}
+
+Multiple backend descriptors are merged into one public summary per work
+type so Federation does not reveal internal pod/service counts.
+
+Capability summaries may include:
+
+\begin{lstlisting}
+work_type
+operations
+modalities
+max_context_hint
+max_result_tokens_hint
+availability_hint
+latency_hint
+\end{lstlisting}
+
+Exact model names are included only if
+\passthrough{\lstinline!expose\_exact\_models=true!}.
+
+Runtime metadata is included only if
+\passthrough{\lstinline!expose\_runtime\_metadata=true!}, and only as
+coarse safe hints.
+
+\subsection{15.14 CortexBridge}\label{1514-cortexbridge}
+
+\passthrough{\lstinline!CortexBridge!} bridges validated and sanitized
+Federation work into local Cortex.
+
+Expected Cortex contract:
+
+\begin{lstlisting}
+POST /work
+GET  /work/{work_id}
+\end{lstlisting}
+
+Expected response shape:
+
+\begin{lstlisting}
+{
+  "status": "accepted",
+  "work_id": "...",
+  "content": [],
+  "backend_name": "...",
+  "backend_model": "...",
+  "error": null,
+  "metadata": {}
+}
+\end{lstlisting}
+
+Supported Cortex statuses:
+
+\begin{lstlisting}
+accepted
+running
+completed
+failed
+\end{lstlisting}
+
+\passthrough{\lstinline!CortexBridge!} creates a
+\passthrough{\lstinline!FederationWorkRecord!} and keeps separate IDs:
+
+\begin{lstlisting}
+origin_work_id
+  Original WorkPacket id sent by the remote member.
+
+cortex_work_id
+  Internal Cortex job/work id used for local polling.
+
+work_id
+  Public Federation polling id returned to the remote member.
+\end{lstlisting}
+
+Current Phase 1 behavior: the public federation
+\passthrough{\lstinline!work\_id!} is the Cortex work id. Later this can
+become an independent \passthrough{\lstinline!fedwork:<id>!} value.
+
+\subsection{15.15 FederationClient}\label{1515-federationclient}
+
+\passthrough{\lstinline!FederationClient!} is the outbound client for
+talking to another Federation node. It only talks to Federation
+endpoints.
+
+It must not talk directly to:
+
+\begin{lstlisting}
+Cortex
+LLM
+Memory
+Tool
+Kubernetes
+backend services
+\end{lstlisting}
+
+Main methods:
+
+\begin{lstlisting}
+list_networks()
+get_network()
+get_network_capabilities()
+join_network()
+send_heartbeat()
+publish_capabilities()
+submit_work()
+get_work_result()
+submit_work_and_poll_once()
+\end{lstlisting}
+
+\subsection{15.16 Current Federation
+flow}\label{1516-current-federation-flow}
+
+Current supported flow:
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  Create a FederationNetwork.
+\item
+  Create a join token.
+\item
+  Another cluster joins with token, cluster ID, and public key.
+\item
+  Member sends signed heartbeat.
+\item
+  Member publishes signed sanitized capabilities.
+\item
+  Member submits a signed FederatedWorkEnvelope.
+\item
+  Receiving Federation verifies envelope, membership, nonce, and policy.
+\item
+  Federation sanitizes the packet.
+\item
+  Federation submits the packet to local Cortex through CortexBridge.
+\item
+  Federation stores the FederationWorkRecord through Memory.
+\item
+  Remote member polls result through Federation.
+\item
+  Federation refreshes accepted/running records from Cortex and returns
+  result or error.
+\end{enumerate}
+
+\subsection{15.17 Current Federation implementation
+notes}\label{1517-current-federation-implementation-notes}
+
+\begin{itemize}
+\tightlist
+\item
+  Local/admin endpoints for creating networks and join tokens are
+  currently unprotected. Later they should be restricted to the local
+  command interface or explicit admin policy.
+\item
+  Quota and concurrency enforcement are represented in policy fields but
+  are not fully implemented in the policy layer yet.
+\item
+  Federated backend descriptors for normal Cortex routing are still a
+  later phase. Current remote work submission goes through explicit
+  Federation endpoints and CortexBridge.
+\item
+  Federation settings intentionally do not include bootstrap peers in
+  the current phase. Bootstrap/relay discovery belongs to a later phase.
+\end{itemize}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{Primer and model execution}\label{primer-and-model-execution}
+
+\passthrough{\lstinline!Primer!} is the shared runtime facade used by
+Cortex and the LLM app.
+
+It supports:
+
+\begin{itemize}
+\tightlist
+\item
+  backend loading: \passthrough{\lstinline!gguf!} or
+  \passthrough{\lstinline!vllm!}
+\item
+  model provider loading: currently Hugging Face
+\item
+  model file download/ensure logic
+\item
+  model loading into backend
+\item
+  OpenAI-style message adapter loading
+\item
+  token counting
+\item
+  text chat
+\item
+  JSON chat
+\item
+  streaming text
+\end{itemize}
+
+Primer uses canonical \passthrough{\lstinline!RuntimeMessage!}
+internally and renders messages through an adapter before sending them
+to the backend.
+
+\subsection{16.1 Message adapter}\label{161-message-adapter}
+
+The current adapter is
+\passthrough{\lstinline!OpenAIStyleMessageAdapter!}.
+
+It renders:
+
+\begin{itemize}
+\tightlist
+\item
+  text parts into text
+\item
+  JSON parts into text
+\item
+  image parts into image blocks
+\item
+  unsupported parts into textual placeholders
+\end{itemize}
+
+When \passthrough{\lstinline!nothink=True!}, it injects:
+
+\begin{lstlisting}
+Do not output reasoning, chain-of-thought, or <think> tags. /no_think
+\end{lstlisting}
+
+If a model still emits \passthrough{\lstinline!<think>...</think>!}, the
+adapter splits that into an internal reasoning message and a
+user-visible final message.
+
+\subsection{16.2 Generation policies}\label{162-generation-policies}
+
+Current token policy:
+
+\begin{lstlisting}
+chat:      384
+summarize: 640
+classify:  64
+extract:  128
+analyze:  900
+search:   256
+inspect:  256
+\end{lstlisting}
+
+Current temperature policy:
+
+\begin{lstlisting}
+chat:      0.7
+summarize: 0.3
+classify:  0.1
+extract:   0.1
+analyze:   0.4
+search:    0.2
+inspect:   0.1
+\end{lstlisting}
+
+\passthrough{\lstinline!SAFETY\_TOKEN\_SIZE!} is currently
+\passthrough{\lstinline!64!}.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{LLM backend lifecycle}\label{llm-backend-lifecycle}
+
+Typical LLM lifecycle:
+
+\begin{lstlisting}
+POST /engine {"engine":"gguf"}
+POST /load   {"model_id":"...", "repo_id":"...", "filename":"...", "tokenizer_id":"..."}
+GET  /jobs/{job_id}
+POST /work   WorkPacket
+GET  /work/{work_id}
+POST /unload
+\end{lstlisting}
+
+The LLM backend requires Primer readiness before accepting work. If
+Primer is not ready, \passthrough{\lstinline!/work!} returns HTTP 409
+with \passthrough{\lstinline!primer\_not\_ready!}.
+
+LLM \passthrough{\lstinline!/model\_status!} returns useful routing
+metadata after a model is loaded, including effective context size.
+Discovery probing uses this to populate:
+
+\begin{lstlisting}
+BackendDescriptor.runtime.effective_n_ctx
+\end{lstlisting}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{Memory backend}\label{memory-backend}
+
+\subsection{18.1 Memory operations}\label{181-memory-operations}
+
+Memory supports operations such as:
+
+\begin{lstlisting}
+create_summary
+list_summaries
+create_note
+list_notes
+create_memory_event
+list_memory_events
+create_memory_claim
+list_memory_claims
+search_memory_claims
+retrieve
+prompt_context
+upsert_user
+create_session
+resolve_session
+create_message
+list_recent_messages
+federation_put_record
+federation_get_record
+federation_list_records
+federation_delete_record
+\end{lstlisting}
+
+The Federation operations are used by
+\passthrough{\lstinline!MemoryFederationStorage!} for persistent
+Federation state.
+
+\subsection{18.2 Persistence}\label{182-persistence}
+
+Default memory base directory:
+
+\begin{lstlisting}
+./cluster-memory
+\end{lstlisting}
+
+Default storage paths:
+
+\begin{lstlisting}
+cluster-memory/memory.db
+cluster-memory/notes/
+cluster-memory/summaries/
+cluster-memory/docs/
+cluster-memory/yaml/
+\end{lstlisting}
+
+\subsection{18.3 SQLite tables}\label{183-sqlite-tables}
+
+Memory creates tables such as:
+
+\begin{lstlisting}
+users
+chat_sessions
+chat_messages
+session_summaries
+note_index
+memory_events
+memory_claims
+work_items
+\end{lstlisting}
+
+\subsection{18.4 Prompt context}\label{184-prompt-context}
+
+The \passthrough{\lstinline!prompt\_context!} operation returns:
+
+\begin{lstlisting}
+recent_messages
+claims
+summaries
+retrieved_chunks
+prompt_block
+\end{lstlisting}
+
+Cortex uses this for interpretation, shaping, last-assistant-message
+retrieval, and final response building.
+
+\subsection{18.5 Session behavior}\label{185-session-behavior}
+
+\passthrough{\lstinline!resolve\_session!} uses inactivity-based
+rollover:
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  find latest active session for user/channel
+\item
+  if none exists, create a session
+\item
+  if the latest active session is older than
+  \passthrough{\lstinline!max\_idle\_minutes!}, close it and create a
+  new one
+\item
+  otherwise reuse the active session
+\end{enumerate}
+
+Default maximum idle time from Cortex is currently 60 minutes.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{Terminal client}\label{terminal-client}
+
+\passthrough{\lstinline!terminal-chat.py!} is a lightweight local
+terminal client for Cortex.
+
+Default target:
+
+\begin{lstlisting}
+http://orin-gw:30080/work
+\end{lstlisting}
+
+Default user:
+
+\begin{lstlisting}
+terminal-user
+\end{lstlisting}
+
+The client sends canonical \passthrough{\lstinline!InferenceSession!}
+payloads using \passthrough{\lstinline!RuntimeMessage!} content.
+
+On startup it sends:
+
+\begin{lstlisting}
+/render
+\end{lstlisting}
+
+It separates command output from chat output by checking the response
+header:
+
+\begin{lstlisting}
+Terminal-output: terminal
+\end{lstlisting}
+
+If that header is present, output goes into the command panel. Otherwise
+output is treated as assistant chat.
+
+For \passthrough{\lstinline!/attach!}, the terminal client should catch
+Ctrl+C in streaming mode and return to the terminal loop instead of
+exiting the whole client.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{Operations runbook}\label{operations-runbook}
+
+\subsection{20.1 Bootstrap}\label{201-bootstrap}
+
+Run the installer from the bootstrap/control host:
+
+\begin{lstlisting}[language=bash]
+./install-orin.sh
+\end{lstlisting}
+
+Useful environment overrides:
+
+\begin{lstlisting}[language=bash]
+ORIN_NAMESPACE=orin \
+HOST_ALIAS=orin-gw \
+HOST_NAME=orin-gw \
+HOST_IP=<host-ip> \
+PLATFORM=jetson \
+NVIDIA_GPU=true \
+REGISTRY=orin-gw:5000 \
+IMAGE_VERSION=1.0.0 \
+./install-orin.sh
+\end{lstlisting}
+
+\subsection{20.2 Health checks}\label{202-health-checks}
+
+\begin{lstlisting}[language=bash]
+kubectl get nodes -o wide
+kubectl get pods -n orin -o wide
+kubectl get svc -n orin
+kubectl get deployments -n orin
+\end{lstlisting}
+
+Cortex:
+
+\begin{lstlisting}[language=bash]
+curl -s http://orin-gw:30080/health
+curl -s http://orin-gw:30080/ready
+curl -s http://orin-gw:30080/network
+\end{lstlisting}
+
+Memory inside cluster:
+
+\begin{lstlisting}[language=bash]
+kubectl exec -n orin netdebug -- sh -lc 'curl -s http://memory-service:8080/health'
+\end{lstlisting}
+
+\subsection{20.3 Debug pod}\label{203-debug-pod}
+
+\begin{lstlisting}[language=bash]
+kubectl run netdebug \
+  -n orin \
+  --image=nicolaka/netshoot \
+  --restart=Never \
+  --command -- /bin/sh -c "sleep 86400"
+\end{lstlisting}
+
+\subsection{20.4 Terminal client}\label{204-terminal-client}
+
+\begin{lstlisting}[language=bash]
+python terminal-chat.py
+\end{lstlisting}
+
+Initial command menu:
+
+\begin{lstlisting}
+/render
+\end{lstlisting}
+
+Useful command sequence:
+
+\begin{lstlisting}
+/commands
+/cd Deployment
+/list_nodes
+/list_pods
+\end{lstlisting}
+
+\subsection{20.5 Add and install a
+node}\label{205-add-and-install-a-node}
+
+Add node to inventory:
+
+\begin{lstlisting}
+/add_node orin-node-1 --host orin-node-1 --ip 192.168.50.11 --platform jetson --gpu
+\end{lstlisting}
+
+Install k3s agent:
+
+\begin{lstlisting}
+/install_k3s orin-node-1
+\end{lstlisting}
+
+Sync labels and add role preference:
+
+\begin{lstlisting}
+/label_node orin-node-1 --role llm
+\end{lstlisting}
+
+List nodes:
+
+\begin{lstlisting}
+/list_nodes --verbose
+\end{lstlisting}
+
+\subsection{20.6 Deploy an LLM pod}\label{206-deploy-an-llm-pod}
+
+\begin{lstlisting}
+/deploy_pod llm light --platform jetson
+\end{lstlisting}
+
+or pin to a node:
+
+\begin{lstlisting}
+/deploy_pod llm light --node orin-node-1
+\end{lstlisting}
+
+List pods:
+
+\begin{lstlisting}
+/list_pods --verbose
+\end{lstlisting}
+
+\subsection{20.7 Load a model}\label{207-load-a-model}
+
+Cortex-local model load from the Configuration folder:
+
+\begin{lstlisting}
+/cd /
+/cd Configuration
+/model_aliases
+/load_model qwen35-4b
+/job_status <job_id>
+/attach
+\end{lstlisting}
+
+LLM backend model load from a selected backend folder:
+
+\begin{lstlisting}
+/cd /
+/cd Cluster
+/cd <llm-backend>
+/model_status
+/load_model qwen35-4b
+/job_status <job_id>
+/attach
+\end{lstlisting}
+
+For Hugging Face exploration:
+
+\begin{lstlisting}
+/cd /
+/cd Configuration
+/cd ModelDownloader
+/huggingface search qwen
+/huggingface gguf unsloth/Qwen3.5-9B-GGUF
+\end{lstlisting}
+
+\subsection{20.8 Federation manual test
+outline}\label{208-federation-manual-test-outline}
+
+A minimal Federation test flow:
+
+\begin{lstlisting}
+create network
+create join token
+join network with token, cluster_id, public_key
+send signed heartbeat
+publish signed capabilities
+submit signed FederatedWorkEnvelope
+poll federated work result
+\end{lstlisting}
+
+Exact curl examples should be documented separately once the
+command-router Federation folder or test script is finalized.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{Known implementation notes and
+cleanup}\label{known-implementation-notes-and-cleanup}
+
+Current known cleanup items:
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  The \passthrough{\lstinline!get\_job\_result!} branches in Harness
+  should either be added to the lightweight interpretation model or
+  removed.
+\item
+  \passthrough{\lstinline!RouterService.retrieve\_work()!} treats
+  \passthrough{\lstinline!backend!} contractually as a dict but some
+  error metadata still uses object-style
+  \passthrough{\lstinline!getattr!}.
+\item
+  \passthrough{\lstinline!summarize\_jobs\_for\_prompt()!} includes
+  payload details for completed jobs; this should become a compact
+  result summary.
+\item
+  Some storage profile naming may still reference
+  \passthrough{\lstinline!strong!} while the active pod template uses
+  \passthrough{\lstinline!high!}.
+\item
+  Image naming should be cleaned up so \passthrough{\lstinline!amd64!}
+  and \passthrough{\lstinline!arm64!} share the standard runtime image
+  while Jetson keeps its own image.
+\item
+  \passthrough{\lstinline!PodImageConfig.image\_for()!} should treat
+  \passthrough{\lstinline!arm64!} and \passthrough{\lstinline!amd64!} as
+  separate platform values, not as one combined string.
+\item
+  \passthrough{\lstinline!DeploymentService.\_build\_pod\_factory\_defaults()!}
+  should read registry/version from configuration instead of hardcoding
+  defaults.
+\item
+  Routed streaming WorkPackets are not fully aligned if a backend
+  returns a streaming response where RouterService expects JSON.
+\item
+  \passthrough{\lstinline!MemoryRuntime.handle\_egress()!} may remain a
+  placeholder when memory work completes synchronously on POST.
+\item
+  Several memory error strings still say
+  \passthrough{\lstinline!Summary Instance!} for other request types.
+\item
+  Mutable Pydantic defaults should consistently use
+  \passthrough{\lstinline!Field(default\_factory=...)!}.
+\item
+  Direct \passthrough{\lstinline!/load!} for GGUF should consistently
+  pass or infer the Hugging Face provider when
+  \passthrough{\lstinline!repo\_id!} and
+  \passthrough{\lstinline!filename!} are supplied.
+\item
+  Federation local/admin endpoints for network and token creation need
+  local admin protection or command-router-only access.
+\item
+  Federation quota/concurrency fields exist in policy but are not fully
+  enforced yet.
+\item
+  Federated backend descriptors for normal Cortex routing are a later
+  phase.
+\item
+  Tool backend implementation remains future work.
+\item
+  Deployment inventory is still in-memory and should eventually be
+  persisted.
+\end{enumerate}
+
+Removed stale items from older drafts:
+
+\begin{lstlisting}
+Federation as an empty/planned folder
+old /task pipeline as the current background mechanism
+memoryrequest field spelling
+backend /network command as the current selected-backend display command
+orin.ai/health_path, orin.ai/work_path, orin.ai/models_path as active discovery annotations
+LLM /models as the active model-status discovery endpoint
+accepted_not_executed Federation placeholder as current behavior
+\end{lstlisting}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\section{Near-term architecture
+direction}\label{near-term-architecture-direction}
+
+Next architecture cleanup should focus on:
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  keeping WorkPacket as the single execution unit across Cortex, LLM,
+  Memory, Tool, and Federation paths
+\item
+  stabilizing Harness lightweight interpretation and background pipeline
+  behavior
+\item
+  completing the standard-vs-Jetson image split
+\item
+  making service discovery metadata patching part of normal
+  model/runtime operations
+\item
+  adding the first real Tool backend
+\item
+  protecting local/admin Federation endpoints
+\item
+  enforcing Federation quota/concurrency policy
+\item
+  adding command-router support for Federation operations
+\item
+  persisting deployment inventory beyond current in-memory inventory
+\item
+  replacing any remaining old gateway/orchestrator terminology with
+  Cortex/LLM/Memory/Tool/Federation terminology
+\end{enumerate}
+
+The final direction is a public, no-pay overlay network where Orin
+installs can discover FederationNetworks, join authorized networks with
+tokens, and exchange signed policy-limited WorkPackets without exposing
+internal cluster structure.
+
+\end{document}
