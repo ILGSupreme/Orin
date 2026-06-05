@@ -224,7 +224,7 @@ class Harness:
         
         result = WorkResult.model_validate(job.get_result())
 
-        return WorkResult.sanitize_for_federation(result)
+        return result.sanitize_for_federation()
 
     # ---------------------------------------------------------------------------
     # Private Class Function Calls
@@ -924,7 +924,7 @@ async def execute_work_packet(job: Job, router: RouterService) -> WorkResult:
     packet = WorkPacket.model_validate(job.spec.payload["packet"])
     result = await router.send(packet=packet)
     if result.status in {"completed", "failed"}:
-        return WorkResult.sanitize_for_federation(result)
+        return result.sanitize_for_federation()
 
     return result
 

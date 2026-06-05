@@ -156,8 +156,6 @@ class FederationClient:
             },
         )
 
-        #request = PublishCapabilitiesRequest.model_validate(body)
-
         data = await self._post_json(
             self._url(base_url, f"/federation/networks/{network_id}/capabilities"),
             body

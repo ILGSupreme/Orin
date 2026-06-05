@@ -104,23 +104,35 @@ class WorkResult(BaseModel):
             )
         return value
 
-    @classmethod
-    def sanitize_for_federation(cls, other: WorkResult) -> WorkResult:
+    def sanitize_for_federation(
+        self,
+        *,
+        expose_exact_models: bool = False,
+        expose_runtime_metadata: bool = False,
+    ) -> WorkResult:
+        """
+        Return a Federation-safe WorkResult.
+
+        This removes internal routing/backend metadata. Exact model names and
+        runtime metadata are exposed only when explicitly allowed by the caller.
+        """
+
         metadata: dict[str, Any] = {}
-        work_details = other.metadata.get("work_details")
-        if isinstance(work_details, dict):
-            metadata["work_details"] = {
-                "work_type": work_details.get("work_type"),
-                "operation": work_details.get("operation"),
+        if expose_runtime_metadata:
+            work_details = self.metadata.get("work_details")
+            if isinstance(work_details, dict):
+                metadata["work_details"] = {
+                    key: value
+                    for key, value in work_details.items()
+                    if key in {"work_type", "operation"}
+                }
+        return self.model_copy(
+            deep=True,
+            update={
+                "backend_name":None,
+                "backend_model":self.backend_model if expose_exact_models else None,
+                "metadata":metadata,
             }
-        return cls(
-            status=other.status,
-            work_id=other.work_id,
-            content=other.content,
-            backend_name=other.backend_name,
-            backend_model=other.backend_model,
-            error=other.error,
-            metadata=metadata,
         )
 
 

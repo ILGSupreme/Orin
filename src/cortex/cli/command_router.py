@@ -516,6 +516,52 @@ class CommandRouter:
                         )
                     },
                 ),
+                "Federation": CommandFolder(
+                    name="Federation",
+                    desc="Federation network controls",
+                    commands=[
+                        self._cmd(
+                            command="/network_list",
+                            desc="List public Federation networks",
+                            handler=self.handle_federation_network_list,
+                            modes={"terminal", "chat"},
+                            harness_action="federation_network_list",
+                            safe_info_action=True,
+                        ),
+                        self._cmd(
+                            command="/network_show",
+                            desc="Show a Federation network by slug",
+                            handler=self.handle_federation_network_show,
+                            modes={"terminal", "chat"},
+                            harness_action="federation_network_show",
+                            safe_info_action=True,
+                        ),
+                        self._cmd(
+                            command="/network_create",
+                            desc="Create a local Federation network",
+                            handler=self.handle_federation_network_create,
+                            modes={"terminal"},
+                            harness_action="federation_network_create",
+                            suggest_only=True,
+                        ),
+                        self._cmd(
+                            command="/network_token_create",
+                            desc="Create a join token for a Federation network",
+                            handler=self.handle_federation_network_token_create,
+                            modes={"terminal"},
+                            harness_action="federation_network_token_create",
+                            suggest_only=True,
+                        ),
+                        self._cmd(
+                            command="/network_capabilities_refresh",
+                            desc="Refresh local advertised capabilities for a Federation network",
+                            handler=self.handle_federation_network_capabilities_refresh,
+                            modes={"terminal"},
+                            harness_action="federation_network_capabilities_refresh",
+                            suggest_only=True,
+                        ),
+                    ],
+                ),
             },
         )
 
@@ -1085,6 +1131,54 @@ class CommandRouter:
                 commands[cmd.command] = cmd
 
         return list(commands.values())
+    
+    def _federation_base_url(self) -> str:
+        namespace = self.deployment_service.namespace
+        return f"http://federation-service.{namespace}.svc.cluster.local:8080"
+
+
+    def _format_json(self, value) -> str:
+        return json.dumps(value, indent=2, ensure_ascii=False, default=str)
+
+
+    def _parse_duration_seconds(self, value: str) -> int:
+        value = value.strip().lower()
+
+        if value.endswith("d"):
+            return int(value[:-1]) * 24 * 60 * 60
+        if value.endswith("h"):
+            return int(value[:-1]) * 60 * 60
+        if value.endswith("m"):
+            return int(value[:-1]) * 60
+        if value.endswith("s"):
+            return int(value[:-1])
+
+        return int(value)
+
+
+    def _default_federation_policy(self) -> dict:
+        return {
+            "allow_remote_work_submission": True,
+            "allow_remote_result_polling": True,
+            "allow_member_capability_publish": True,
+            "allowed_work_types": ["llm", "tool"],
+            "allowed_operations": [
+                "chat",
+                "summarize",
+                "classify",
+                "extract",
+                "analyze",
+                "search",
+                "inspect",
+            ],
+            "max_payload_bytes": 1_000_000,
+            "max_context_tokens": 4096,
+            "max_result_tokens": 1024,
+            "max_concurrent_jobs_per_member": 1,
+            "expose_member_list": False,
+            "expose_exact_models": False,
+            "expose_runtime_metadata": False,
+        }
 
     # ---------------------------------------------------------------------------
     # Handle Functions
@@ -2202,6 +2296,230 @@ class CommandRouter:
                 )
 
         return "\n".join(lines)
+    
+    # ---------------------------------------------------------------------------
+    # Federation Functions
+    # ---------------------------------------------------------------------------
+    
+    async def handle_federation_network_list(
+        self,
+        ctx: CommandContext,
+        args: str = "",
+    ) -> str:
+        try:
+            data = await self.backend_client.get_json(
+                url=f"{self._federation_base_url()}/federation/networks",
+            )
+        except Exception as exc:
+            return f"Failed to list Federation networks: {exc}\n"
+
+        networks = data.get("networks") or []
+
+        if not networks:
+            return "No public Federation networks found.\n"
+
+        lines = ["Federation networks", "==================", ""]
+
+        for network in networks:
+            lines.append(
+                f"{network.get('slug'):<28} "
+                f"id={network.get('network_id')} "
+                f"join={network.get('join_mode')} "
+                f"members={network.get('member_count', 0)}"
+            )
+
+        return "\n".join(lines) + "\n"
+
+
+    async def handle_federation_network_show(
+        self,
+        ctx: CommandContext,
+        args: str = "",
+    ) -> str:
+        slug = args.strip()
+
+        if not slug:
+            return (
+                "Missing network slug.\n\n"
+                "Usage:\n"
+                "  /network_show <slug>\n"
+            )
+
+        try:
+            data = await self.backend_client.get_json(
+                url=f"{self._federation_base_url()}/federation/networks/{slug}",
+            )
+        except Exception as exc:
+            return f"Failed to show Federation network: {exc}\n"
+
+        return self._format_json(data) + "\n"
+
+
+    async def handle_federation_network_create(
+        self,
+        ctx: CommandContext,
+        args: str = "",
+    ) -> str:
+        parser = argparse.ArgumentParser(prog="/network_create", add_help=False)
+        parser.add_argument("slug", nargs="?")
+        parser.add_argument("--name", default=None)
+        parser.add_argument("--desc", "--description", dest="description", default=None)
+        parser.add_argument("--public", action="store_true")
+        parser.add_argument("--unlisted", action="store_true")
+        parser.add_argument("--private", action="store_true")
+        parser.add_argument("--join", choices=["token", "approval", "open", "closed"], default="token")
+
+        try:
+            parsed = parser.parse_args(shlex.split(args))
+        except SystemExit:
+            return (
+                "Invalid usage.\n\n"
+                "Usage:\n"
+                "  /network_create <slug> --name \"Name\" --desc \"Description\" "
+                "[--public|--unlisted|--private] [--join token|approval|open|closed]\n"
+            )
+
+        if not parsed.slug:
+            return (
+                "Missing network slug.\n\n"
+                "Usage:\n"
+                "  /network_create <slug> --name \"Name\" --desc \"Description\"\n"
+            )
+
+        visibility = "public"
+        if parsed.unlisted:
+            visibility = "unlisted"
+        if parsed.private:
+            visibility = "private"
+
+        payload = {
+            "slug": parsed.slug,
+            "name": parsed.name or parsed.slug.replace("-", " ").title(),
+            "description": parsed.description,
+            "visibility": visibility,
+            "join_mode": parsed.join,
+            "policy": self._default_federation_policy(),
+        }
+
+        try:
+            data = await self.backend_client.post_json(
+                url=f"{self._federation_base_url()}/federation/networks",
+                payload=payload,
+            )
+        except Exception as exc:
+            return f"Failed to create Federation network: {exc}\n"
+
+        network = data.get("network") or {}
+
+        return (
+            "Federation network created.\n\n"
+            f"Slug: {network.get('slug')}\n"
+            f"Network ID: {network.get('network_id')}\n"
+            f"Visibility: {network.get('visibility')}\n"
+            f"Join mode: {network.get('join_mode')}\n"
+        )
+
+
+    async def handle_federation_network_token_create(
+        self,
+        ctx: CommandContext,
+        args: str = "",
+    ) -> str:
+        parser = argparse.ArgumentParser(prog="/network_token_create", add_help=False)
+        parser.add_argument("slug", nargs="?")
+        parser.add_argument("--uses", "--max-uses", dest="max_uses", type=int, default=1)
+        parser.add_argument("--expires", default="7d")
+
+        try:
+            parsed = parser.parse_args(shlex.split(args))
+        except SystemExit:
+            return (
+                "Invalid usage.\n\n"
+                "Usage:\n"
+                "  /network_token_create <slug> --uses 10 --expires 7d\n"
+            )
+
+        if not parsed.slug:
+            return (
+                "Missing network slug.\n\n"
+                "Usage:\n"
+                "  /network_token_create <slug> --uses 10 --expires 7d\n"
+            )
+
+        payload = {
+            "scopes": ["join"],
+            "max_uses": parsed.max_uses,
+            "expires_in_seconds": self._parse_duration_seconds(parsed.expires),
+        }
+
+        try:
+            data = await self.backend_client.post_json(
+                url=(
+                    f"{self._federation_base_url()}"
+                    f"/federation/networks/{parsed.slug}/tokens"
+                ),
+                payload=payload,
+            )
+        except Exception as exc:
+            return f"Failed to create Federation join token: {exc}\n"
+
+        return (
+            "Federation join token created.\n\n"
+            f"Token ID: {data.get('token_id')}\n"
+            f"Expires at: {data.get('expires_at')}\n\n"
+            "Raw token:\n"
+            f"{data.get('token')}\n\n"
+            "This raw token is returned once. Save it now.\n"
+        )
+
+
+    async def handle_federation_network_capabilities_refresh(
+        self,
+        ctx: CommandContext,
+        args: str = "",
+    ) -> str:
+        slug = args.strip()
+
+        if not slug:
+            return (
+                "Missing network slug.\n\n"
+                "Usage:\n"
+                "  /network_capabilities_refresh <slug>\n"
+            )
+
+        try:
+            data = await self.backend_client.post_json(
+                url=(
+                    f"{self._federation_base_url()}"
+                    f"/federation/networks/{slug}/capabilities/refresh"
+                ),
+                payload={},
+            )
+        except Exception as exc:
+            return f"Failed to refresh Federation capabilities: {exc}\n"
+
+        capabilities = data.get("capabilities") or []
+
+        lines = [
+            "Federation capabilities refreshed.",
+            "",
+            f"Network: {data.get('slug')} ({data.get('network_id')})",
+            "",
+            "Capabilities:",
+        ]
+
+        if not capabilities:
+            lines.append("  -")
+        else:
+            for capability in capabilities:
+                lines.append(
+                    f"  - {capability.get('work_type')}: "
+                    f"operations={capability.get('operations', [])}, "
+                    f"modalities={capability.get('modalities', [])}, "
+                    f"context={capability.get('max_context_hint')}"
+                )
+
+        return "\n".join(lines) + "\n"
 
     def handle_help(self, ctx: CommandContext, args: str) -> str:
         return (

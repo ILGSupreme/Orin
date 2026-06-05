@@ -119,9 +119,9 @@ def envelope_signing_bytes(envelope: FederatedWorkEnvelope) -> bytes:
     return canonical_json_bytes(envelope_signing_payload(envelope))
 
 
-def verify_envelope_signature(
+def verify_envelope_signature_body(
     *,
-    envelope: FederatedWorkEnvelope,
+    body: dict[str, Any],
     public_key: str,
 ) -> None:
     """
@@ -131,26 +131,50 @@ def verify_envelope_signature(
     membership, role, policy, quotas, or work permissions.
     """
 
+    signature = body.get("signature")
+    if not isinstance(signature, str) or not signature:
+        raise EnvelopeError("Missing envelope signature")
+
     require_valid_signature(
         public_key=public_key,
-        payload=envelope_signing_bytes(envelope),
-        signature=envelope.signature,
+        payload=envelope_body_signing_bytes(body),
+        signature=signature,
     )
 
 
+def envelope_body_signing_payload(body: dict[str, Any]) -> dict[str, Any]:
+    """
+    Return the canonical payload used for signing and verification.
+
+    Do not include the signature itself. Everything else is part of the signed
+    envelope, including signature_algorithm.
+    """
+
+    return {key: value for key, value in body.items() if key != "signature"}
+
+
+def envelope_body_signing_bytes(body: dict[str, Any]) -> bytes:
+    return canonical_json_bytes(envelope_body_signing_payload(body))
+
+
 def validate_envelope_timing(
-    envelope: FederatedWorkEnvelope,
     *,
+    body: dict[str, Any],
     settings: FederationSettings | None = None,
     now: datetime | None = None,
 ) -> None:
     settings = settings or get_settings()
 
-    current_time = now or utc_now()
-    current_time = ensure_aware(current_time)
+    issued_at = parse_datetime_field(
+        body=body,
+        field_name="issued_at",
+    )
+    expires_at = parse_datetime_field(
+        body=body,
+        field_name="expires_at",
+    )
 
-    issued_at = ensure_aware(envelope.issued_at)
-    expires_at = ensure_aware(envelope.expires_at)
+    current_time = ensure_aware(now or utc_now())
 
     max_future_time = current_time + timedelta(
         seconds=settings.allowed_clock_skew_seconds
@@ -170,32 +194,66 @@ def validate_envelope_timing(
         raise EnvelopeExpiredError("Envelope expiry exceeds allowed request TTL")
 
 
-def validate_envelope_version(
-    envelope: FederatedWorkEnvelope,
+def validate_envelope_target(
     *,
+    body: dict[str, Any],
+    expected_target_cluster_id: str | None,
+) -> None:
+    target_cluster_id = body.get("target_cluster_id")
+
+    if target_cluster_id is None:
+        return
+
+    if not isinstance(target_cluster_id, str) or not target_cluster_id:
+        raise EnvelopeError("Invalid target_cluster_id")
+
+    if (
+        expected_target_cluster_id is not None
+        and target_cluster_id != expected_target_cluster_id
+    ):
+        raise EnvelopeError(
+            "Envelope target_cluster_id does not match this federation node"
+        )
+
+
+def validate_envelope_version(
+    *,
+    body: dict[str, Any],
     settings: FederationSettings | None = None,
 ) -> None:
     settings = settings or get_settings()
 
-    if envelope.federation_version != settings.protocol_version:
+    federation_version: str | None = body.get("federation_version", None)
+    if not isinstance(federation_version, str) or not federation_version:
+        raise EnvelopeError("Missing envelope federation version")
+
+    if federation_version != settings.protocol_version:
         raise EnvelopeVersionError(
-            f"Unsupported federation version: {envelope.federation_version}"
+            f"Unsupported federation version: {federation_version}"
         )
 
 
-def validate_signature_algorithm(envelope: FederatedWorkEnvelope) -> None:
-    if envelope.signature_algorithm != "ed25519":
+def validate_signature_algorithm(body: dict[str, Any]) -> None:
+    signature_algorithm: str | None = body.get("signature_algorithm", None)
+    if not isinstance(signature_algorithm, str) or not signature_algorithm:
+        raise EnvelopeError("Missing envelope signature")
+
+    if signature_algorithm != "ed25519":
         raise EnvelopeSignatureAlgorithmError(
-            f"Unsupported signature algorithm: {envelope.signature_algorithm}"
+            f"Unsupported signature algorithm: {signature_algorithm}"
         )
 
 
 def validate_envelope_origin(
     *,
-    envelope: FederatedWorkEnvelope,
+    body: dict[str, Any],
     expected_origin_cluster_id: str,
 ) -> None:
-    if envelope.origin_cluster_id != expected_origin_cluster_id:
+    origin_cluster_id: str | None = body.get("origin_cluster_id", None)
+    if not isinstance(origin_cluster_id, str) or not origin_cluster_id:
+        raise EnvelopeError("Missing envelope origin_cluster_id")
+
+    if origin_cluster_id != expected_origin_cluster_id:
         raise EnvelopeIdentityMismatchError(
             "Envelope origin_cluster_id does not match expected member identity"
         )
@@ -203,30 +261,38 @@ def validate_envelope_origin(
 
 def validate_envelope_network(
     *,
-    envelope: FederatedWorkEnvelope,
+    body: dict[str, Any],
     expected_network_id: str,
 ) -> None:
-    if envelope.network_id != expected_network_id:
+    network_id: str | None = body.get("network_id", None)
+    if not isinstance(network_id, str) or not network_id:
+        raise EnvelopeError("Missing envelope network_id")
+
+    if network_id != expected_network_id:
         raise EnvelopeIdentityMismatchError(
             "Envelope network_id does not match target network"
         )
 
 
 def check_and_remember_nonce(
-    envelope: FederatedWorkEnvelope,
     *,
+    body: dict[str, Any],
     nonce_store: LocalNonceStore,
 ) -> None:
-    if not nonce_store.check_and_remember(envelope.nonce):
+    nonce: str | None = body.get("nonce", None)
+    if not isinstance(nonce, str) or not nonce:
+        raise EnvelopeError("Missing envelope nonce")
+    if not nonce_store.check_and_remember(nonce):
         raise EnvelopeReplayError("Envelope nonce has already been seen")
 
 
 def validate_and_verify_envelope(
     *,
-    envelope: FederatedWorkEnvelope,
+    body: dict[str, Any],
     public_key: str,
     expected_network_id: str | None = None,
     expected_origin_cluster_id: str | None = None,
+    expected_target_cluster_id: str | None = None,
     nonce_store: LocalNonceStore | None = None,
     settings: FederationSettings | None = None,
 ) -> None:
@@ -250,30 +316,35 @@ def validate_and_verify_envelope(
       - quota checks
     """
 
-    validate_envelope_version(envelope, settings=settings)
-    validate_signature_algorithm(envelope)
-    validate_envelope_timing(envelope, settings=settings)
+    validate_envelope_version(body=body, settings=settings)
+    validate_signature_algorithm(body=body)
+    validate_envelope_timing(body=body, settings=settings)
 
     if expected_network_id is not None:
         validate_envelope_network(
-            envelope=envelope,
+            body=body,
             expected_network_id=expected_network_id,
         )
 
     if expected_origin_cluster_id is not None:
         validate_envelope_origin(
-            envelope=envelope,
+            body=body,
             expected_origin_cluster_id=expected_origin_cluster_id,
         )
 
-    verify_envelope_signature(
-        envelope=envelope,
+    validate_envelope_target(
+        body=body,
+        expected_target_cluster_id=expected_target_cluster_id,
+    )
+
+    verify_envelope_signature_body(
+        body=body,
         public_key=public_key,
     )
 
     if nonce_store is not None:
         check_and_remember_nonce(
-            envelope,
+            body=body,
             nonce_store=nonce_store,
         )
 
@@ -283,6 +354,24 @@ def parse_envelope(raw: dict[str, Any]) -> FederatedWorkEnvelope:
         return FederatedWorkEnvelope.model_validate(raw)
     except Exception as exc:
         raise EnvelopeError("Invalid FederatedWorkEnvelope") from exc
+    
+def parse_datetime_field(
+    *,
+    body: dict[str, Any],
+    field_name: str,
+) -> datetime:
+    value = body.get(field_name)
+
+    if not isinstance(value, str) or not value:
+        raise EnvelopeError(f"Missing envelope {field_name}")
+
+    try:
+        # Accept normal ISO strings and common JSON/RFC3339 Z suffix.
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise EnvelopeError(f"Invalid envelope {field_name}") from exc
+
+    return ensure_aware(parsed)
 
 
 def envelope_to_json(envelope: FederatedWorkEnvelope) -> dict[str, Any]:

@@ -14,7 +14,7 @@ from federation.models import CapabilitySummary
 
 FEDERATION_URL = "http://orin-gw:30081"
 NETWORK_SLUG = "public-text-inference"
-JOIN_TOKEN = "orin_join_59b162de-1b4c-472e-b2e5-343a556064b1.n1lxsU82i1rA9gdvte2zrmtF4x3Seynm7Vsz5LXdy1M"
+JOIN_TOKEN = "orin_join_feb7832c-5839-4900-89d4-d9fefa08e74e.FRcq_FRtaPgDTe3qQfm2o9QsAdg2yvBj54tBTkNdNek"
 
 
 async def main() -> None:

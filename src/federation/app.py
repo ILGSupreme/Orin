@@ -8,29 +8,31 @@ from typing import Any
 
 import httpx
 from fastapi import Body, FastAPI, HTTPException, Request, status
+from pydantic import ValidationError
 
 from common.system import configuration
 from federation.capabilities import CapabilityError, CapabilityService
 from federation.cortex_bridge import CortexBridge, CortexBridgeError
-from federation.join_tokens import JoinTokenError, JoinTokenService
-
-from .envelopes import (
+from federation.envelopes import (
     EnvelopeError,
     validate_and_verify_envelope,
 )
-from .identity import (
+from federation.identity import (
+    ClusterIdentity,
     IdentityError,
     canonical_json_bytes,
     load_or_create_cluster_identity,
     require_valid_signature,
 )
-from .members import MemberError, MemberService
-from .models import (
+from federation.join_tokens import JoinTokenError, JoinTokenService
+from federation.members import MemberError, MemberService
+from federation.models import (
     CreateJoinTokenRequest,
     CreateJoinTokenResponse,
     CreateNetworkRequest,
     CreateNetworkResponse,
     FederatedWorkEnvelope,
+    FederationNetwork,
     FederationWorkRecord,
     GetFederatedWorkResponse,
     HeartbeatRequest,
@@ -41,16 +43,16 @@ from .models import (
     PublishCapabilitiesResponse,
     SubmitFederatedWorkResponse,
 )
-from .network_registry import NetworkRegistry, NetworkRegistryError
-from .policy import (
+from federation.network_registry import NetworkRegistry, NetworkRegistryError
+from federation.policy import (
     FederationPolicyError,
     check_capability_publish_allowed,
     check_federated_work_allowed,
     check_result_polling_allowed,
     sanitize_packet_for_cortex,
 )
-from .settings import FederationSettings, get_settings
-from .storage import LocalNonceStore, MemoryFederationStorage
+from federation.settings import FederationSettings, get_settings
+from federation.storage import LocalNonceStore, MemoryFederationStorage
 
 
 def utc_now() -> datetime:
@@ -162,6 +164,10 @@ def capabilities(request: Request) -> CapabilityService:
 
 def cortex_bridge(request: Request) -> CortexBridge:
     return request.app.state.cortex_bridge
+
+
+def identity(request: Request) -> ClusterIdentity:
+    return request.app.state.identity
 
 
 # ---------------------------------------------------------------------------
@@ -584,34 +590,46 @@ async def publish_capabilities(
 async def submit_federated_work(
     request: Request,
     network_id: str,
-    envelope: FederatedWorkEnvelope,
+    body: dict[str, Any] = Body(...),
 ) -> SubmitFederatedWorkResponse:
     """
     Accept a signed federated work envelope.
 
-    Phase 1 validates membership, signature, nonce, and policy, then stores
-    the work record as accepted. Real execution should be moved into
-    cortex_bridge.py next.
+    Validates network membership, envelope signature, nonce/expiry, and
+    network/member policy. The packet is sanitized, tagged with federation
+    origin metadata, submitted to local Cortex through CortexBridge, persisted
+    as a FederationWorkRecord, and returned as a public polling id.
     """
-
     try:
         cfg = settings(request)
+
+        origin_cluster_id = body.get("origin_cluster_id")
+        local_cluster_id = identity(request).cluster_id
+
+        if not isinstance(origin_cluster_id, str) or not origin_cluster_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Missing origin_cluster_id",
+            )
 
         network = await network_registry(request).require_network(network_id)
 
         member = await members(request).require_active_member(
             network_id=network.network_id,
-            cluster_id=envelope.origin_cluster_id,
+            cluster_id=origin_cluster_id,
         )
 
         validate_and_verify_envelope(
-            envelope=envelope,
+            body=body,
             public_key=member.public_key,
             expected_network_id=network.network_id,
             expected_origin_cluster_id=member.cluster_id,
+            expected_target_cluster_id=local_cluster_id,
             nonce_store=nonce_store(request),
             settings=cfg,
         )
+
+        envelope = FederatedWorkEnvelope.model_validate(body)
 
         check_federated_work_allowed(
             network=network,
@@ -656,6 +674,11 @@ async def submit_federated_work(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid federated work envelope: {exc}",
+        ) from exc
 
 
 @app.get(
@@ -685,6 +708,7 @@ async def get_federated_work(
 
         if record.status in {"accepted", "running"}:
             record = await refresh_work_record(
+                network=network,
                 record=record,
                 cortex=cortex_bridge(request),
                 storage=storage(request),
@@ -783,6 +807,7 @@ def _verify_signed_request(
 
 async def refresh_work_record(
     *,
+    network: FederationNetwork,
     record: FederationWorkRecord,
     cortex: CortexBridge,
     storage: MemoryFederationStorage,
@@ -794,12 +819,17 @@ async def refresh_work_record(
 
     cortex_result = await cortex.get_work_result(cortex_work_id)
 
+    sanitized_result = cortex_result.sanitize_for_federation(
+        expose_exact_models=network.policy.expose_exact_models,
+        expose_runtime_metadata=network.policy.expose_runtime_metadata,
+    )
+
     now = utc_now()
 
     updated = record.model_copy(
         update={
             "status": cortex_result.status,
-            "result": cortex_result.model_dump(mode="json"),
+            "result": sanitized_result.model_dump(mode="json"),
             "error": cortex_result.error,
             "updated_at": now,
         }
