@@ -1,4 +1,4 @@
-# Orin
+# Orin (Not Finished)
 
 Orin is a local edge-AI cluster runtime for Kubernetes, developed by Nordavind.
 
