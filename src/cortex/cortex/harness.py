@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Literal, Union, overload
+from typing import Any, Literal, overload
 
 from fastapi.responses import StreamingResponse
 from pydantic import TypeAdapter
@@ -46,6 +46,7 @@ from cortex.router.service import RouterService
 SystemInformationMode = Literal["lightweight", "response", "full"]
 SystemInformationPurpose = Literal["interpretation", "response"]
 
+root_logger = logging.getLogger()
 
 @dataclass(slots=True)
 class ResponsePlan:
@@ -163,7 +164,7 @@ class Harness:
         ingression_type: IngressMode,
         request: InferenceSession,
         stream: bool = False,
-    ) -> Union[StreamingResponse, EgressResponse]:
+    ) -> StreamingResponse | EgressResponse:
         _inference_object: InferenceObject = await self._validate_session(req=request)
 
         match ingression_type:
@@ -237,7 +238,8 @@ class Harness:
             rsp = await memory.upsert_user(router=self.router, inference_object=_iobj)
 
             if not rsp:
-                logging.info("failed to create/update user")
+                root_logger.info("failed to create/update user")
+                #logging.info("failed to create/update user")
                 raise ValueError("Memory service did not create/update user")
 
             session_id = _iobj.session_id
@@ -256,11 +258,13 @@ class Harness:
                 router=self.router, inference_object=_iobj, message=_iobj.content
             )
             if any(rsp.status == "failed" for rsp in responses):
-                logging.info(f"Encountered failed responses: {responses}")
+                root_logger.info(f"Encountered failed responses: {responses}")
+                #logging.info(f"Encountered failed responses: {responses}")
 
             return _iobj
-        except Exception as e:
-            raise e
+        except Exception:
+            root_logger.exception("Validate Session fault")
+            raise
 
     # ---------------------------------------------------------------------------
     # Private Response Functions
@@ -353,7 +357,7 @@ class Harness:
             messages=runtime_messages
         )
 
-        logging.info(f"estimated tokens: {effective_tokens}")
+        root_logger.info(f"estimated tokens: {effective_tokens}")
 
         fits = self.primer._can_fit_request(
             effective_n_ctx=self.primer.status()["effective_n_ctx"],
@@ -362,7 +366,7 @@ class Harness:
         )
 
         if not fits:
-            logging.error("Message can not be inferred correctly by backend")
+            root_logger.error("Message can not be inferred correctly by backend")
 
         if inference_object.stream:
             return StreamingResponse(
@@ -602,7 +606,7 @@ class Harness:
             reserved_output_tokens=reserved_output_tokens,
             messages=runtime_messages,
         )
-        logging.info(f"estimated tokens: {total_tokens}")
+        root_logger.info(f"estimated tokens: {total_tokens}")
         fits = self.primer._can_fit_request(
             effective_n_ctx=effective_tokens,
             reserved_output_tokens=reserved_output_tokens,
@@ -680,7 +684,7 @@ class Harness:
             mode=prompt_mode,
         )
 
-        logging.info(f"commands: {commands_information}")
+        root_logger.info(f"commands: {commands_information}")
 
         if commands_information:
             commands_text = (
@@ -830,12 +834,12 @@ def _extract_shaped_task_list(
         elif isinstance(value.get("tasks"), list):
             value = value["tasks"]
         else:
-            raise ValueError(
+            raise TypeError(
                 "Shaped task JSON object must contain a 'task_items', 'items', or 'tasks' list."
             )
 
     if not isinstance(value, list):
-        raise ValueError(
+        raise TypeError(
             f"Shaped task JSON must be a list or object with task_items/items/tasks. "
             f"Got: {type(value).__name__}"
         )
@@ -844,7 +848,7 @@ def _extract_shaped_task_list(
 
     for index, item in enumerate(value):
         if not isinstance(item, dict):
-            raise ValueError(
+            raise TypeError(
                 f"Shaped task at index {index} must be an object. "
                 f"Got: {type(item).__name__}: {item!r}"
             )
@@ -1010,7 +1014,8 @@ async def execute_interpret_turn(job: Job, router: RouterService, primer: Primer
         reserved_output_tokens=reserved_output_tokens,
         messages=runtime_messages,
     )
-    logging.info(f"estimated tokens: {total_tokens}")
+    root_logger.info(f"estimated tokens: {total_tokens}")
+    #logging.info(f"estimated tokens: {total_tokens}")
     cpacket = packing.create_canonical_task(
         work_type=WorkType.LLM,
         operation="inspect",
@@ -1077,10 +1082,7 @@ async def execute_shape_tasks(job: Job, router: RouterService, primer: Primer):
     payload_response = WorkResult.model_validate(job.spec.payload.get("response"))
     _interpreted = unified_types.extract_last_assistant_text(payload_response.content)
 
-    try:
-        interpreted = json.loads(_interpreted)
-    except json.JSONDecodeError as e:
-        raise e
+    interpreted = json.loads(_interpreted)
 
     if not interpreted:
         raise ValueError("interpreted is None")
@@ -1159,7 +1161,7 @@ async def execute_build_work_packets(job: Job, router: RouterService, primer: Pr
     payload_result = WorkResult.model_validate(job.spec.payload.get("response"))
     shaped = unified_types.extract_last_assistant_text(payload_result.content)
 
-    logging.info(shaped)
+    root_logger.info(shaped)
 
     try:
         shaped_raw = json.loads(shaped)
@@ -1173,13 +1175,13 @@ async def execute_build_work_packets(job: Job, router: RouterService, primer: Pr
             error=e.msg,
         )
 
-    logging.info(shaped_tasks)
+    root_logger.info(shaped_tasks)
 
     work_packets = await _build_work_packets(
         user_id=inference_object.user_id, shaped_tasks=shaped_tasks, primer=primer
     )
 
-    logging.info(f"work packets: {work_packets}")
+    root_logger.info(f"work packets: {work_packets}")
 
     batch_id = await router.send_many(work_packets)
 
@@ -1210,13 +1212,13 @@ async def execute_read_and_send_packets(
             error="batch id not found",
         )
 
-    logging.info("batch sequence")
+    root_logger.info("batch sequence")
 
     batch_results_raw = await job_manager.batch_progress(batch_id=send_batch_id)
 
     batch_results = batch_result_adapter.validate_python(batch_results_raw)
 
-    logging.info("batch sequence second part")
+    root_logger.info("batch sequence second part")
 
     retrieve_batch_id = await router.retrieve_many(results=batch_results)
 

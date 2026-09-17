@@ -233,8 +233,11 @@ async def terminal_chat(req: InferenceSession, request: Request):
         "cumtime"
     ).print_stats(25)
 
-    logging.info("terminal_chat profile by tottime:\n%s", total_buffer.getvalue())
-    logging.info("terminal_chat profile by cumtime:\n%s", cumulative_buffer.getvalue())
+    root_logger.info("terminal_chat profile by tottime:\n%s", total_buffer.getvalue())
+    root_logger.info("terminal_chat profile by cumtime:\n%s", cumulative_buffer.getvalue())
+
+    #logging.info("terminal_chat profile by tottime:\n%s", total_buffer.getvalue())
+    #logging.info("terminal_chat profile by cumtime:\n%s", cumulative_buffer.getvalue())
 
     return content
 

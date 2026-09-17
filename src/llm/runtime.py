@@ -11,6 +11,7 @@ from common.protocol.routing_types import (
     WorkResult,
 )
 
+root_logger = logging.getLogger()
 
 class GenerativeModelRuntime:
     def __init__(self, *, primer: Primer, job_manager: JobManager) -> None:
@@ -119,7 +120,7 @@ class GenerativeModelRuntime:
         current_engine = self.primer.status().get("engine")
 
         if current_engine != engine:
-            logging.info(
+            root_logger.info(
                 "Switching engine: %s -> %s",
                 current_engine,
                 engine,
@@ -137,7 +138,7 @@ class GenerativeModelRuntime:
             if not repo_id or not filename:
                 raise ValueError("GGUF engine requires repo_id and filename")
 
-            logging.info(
+            root_logger.info(
                 "Loading GGUF model: model=%s repo=%s file=%s revision=%s",
                 model_id,
                 repo_id,
@@ -156,7 +157,7 @@ class GenerativeModelRuntime:
             )
 
         else:
-            logging.info(
+            root_logger.info(
                 "Loading model: model=%s engine=%s provider=%s",
                 model_id,
                 active_engine,

@@ -32,6 +32,8 @@ FEDERATION_RECORD_OPS = {
 
 TRequest = TypeVar("TRequest", bound=BaseModel)
 
+root_logger = logging.getLogger()
+
 
 class MemoryRuntime:
     def __init__(self) -> None:
@@ -43,7 +45,7 @@ class MemoryRuntime:
         memory_request = req.task.memory_request
         inputs = req.task.inputs
 
-        logging.info(f"Request: {req}")
+        root_logger.info(f"Request: {req}")
 
         try:
             if op in FEDERATION_RECORD_OPS:
@@ -364,7 +366,7 @@ class MemoryRuntime:
             return self._fail(req=req, error=f"missing required input {e.args[0]}")
             # )
         except Exception as e:
-            logging.exception("MemoryRuntime operation failed: %s", op)
+            root_logger.exception("MemoryRuntime operation failed: %s", op)
             return self._fail(req=req, error=str(e))
 
     async def handle_egress(self, work_id: str):
@@ -443,14 +445,14 @@ class MemoryRuntime:
 
         value = inputs.get("value", inputs.get("record"))
         if not isinstance(value, dict):
-            raise ValueError("Missing or invalid input: value")
+            raise TypeError("Missing or invalid input: value")
 
         parent_id = self._optional_str_input(inputs, "parent_id", "network_id")
         slug = self._optional_str_input(inputs, "slug")
 
         metadata = inputs.get("metadata") or {}
         if not isinstance(metadata, dict):
-            raise ValueError("Invalid input: metadata")
+            raise TypeError("Invalid input: metadata")
 
         record = self._memoryDB.put_federation_record(
             record_type=record_type,

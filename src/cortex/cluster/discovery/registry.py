@@ -10,6 +10,7 @@ from cortex.cluster.discovery.types import (
     BackendDescriptor,
 )
 
+root_logger = logging.getLogger()
 
 class BackendRegistry(ABC):
     @abstractmethod
@@ -45,7 +46,7 @@ class InMemoryBackendRegistry(BackendRegistry):
             if self.prober is not None:
                 backends = await self.prober.probe_all(backends)
 
-            logging.info(f"refresh: {backends}")
+            root_logger.info(f"refresh: {backends}")
 
             self._backends = sorted(
                 backends,
@@ -57,7 +58,7 @@ class InMemoryBackendRegistry(BackendRegistry):
                 ),
             )
 
-            logging.info("Backend registry refreshed: %d backends", len(self._backends))
+            root_logger.info("Backend registry refreshed: %d backends", len(self._backends))
             return list(self._backends)
 
     def list_backends(self) -> list[BackendDescriptor]:
@@ -100,4 +101,4 @@ class RegistryRefresher:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logging.exception("Backend registry refresh failed")
+                root_logger.exception("Backend registry refresh failed")

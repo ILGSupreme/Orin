@@ -71,11 +71,11 @@ async def lifespan(app: FastAPI):
         primer=app.state.primer, job_manager=app.state.job_manager
     )
 
-    logging.info("Starting LLM app")
+    root_logger.info("Starting LLM app")
     try:
         yield
     finally:
-        logging.info("Stopping LLM app")
+        root_logger.info("Stopping LLM app")
         await app.state.primer.stop()
 
 

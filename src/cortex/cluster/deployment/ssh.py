@@ -2,6 +2,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from sympy import false
+
 from cortex.cluster.deployment.types import Node
 
 
@@ -114,6 +116,7 @@ def run_ssh(
         capture_output=True,
         text=True,
         timeout=timeout_seconds,
+        check=False
     )
 
     if check and result.returncode != 0:
@@ -182,7 +185,8 @@ def scp_from(
     else:
         raise SSHError(f"Unsupported SSH auth method: {ssh.auth_method}")
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=
+                            false)
 
     if result.returncode != 0:
         raise SSHError(
@@ -248,7 +252,7 @@ def scp_to(
     else:
         raise SSHError(f"Unsupported SSH auth method: {ssh.auth_method}")
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=false)
 
     if result.returncode != 0:
         raise SSHError(

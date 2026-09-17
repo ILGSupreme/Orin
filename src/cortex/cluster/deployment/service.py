@@ -7,7 +7,7 @@ import shlex
 from kubernetes import client, config
 from kubernetes.client.exceptions import ApiException
 
-import common.system.configuration as configuration
+from common.system import configuration
 from cortex.cluster.deployment.pod_factory import PodFactoryDefaults, PodImageConfig
 from cortex.cluster.deployment.pod_naming import (
     backend_base_selector,

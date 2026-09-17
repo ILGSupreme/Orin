@@ -7,13 +7,14 @@ from typing import Any
 
 from kubernetes import client, config
 
-import common.system.configuration as configuration
+from common.system import configuration
 from cortex.cluster.discovery.types import (
     BackendDescriptor,
     BackendHealth,
     BackendHealthStatus,
 )
 
+root_logger = logging.getLogger()
 
 class KubernetesDiscoveryProvider:
     BACKEND_LABEL = "orin.ai/backend"
@@ -111,7 +112,7 @@ class KubernetesDiscoveryProvider:
         model = annotations.get(self.MODEL_ANNOTATION)
 
         if not role:
-            logging.warning(
+            root_logger.warning(
                 "Skipping backend service %s: missing required labels role",
                 metadata.name,
             )
@@ -119,7 +120,7 @@ class KubernetesDiscoveryProvider:
 
         port = self._pick_service_port(spec.ports or [])
         if port is None:
-            logging.warning(
+            root_logger.warning(
                 "Skipping backend service %s: no usable port", metadata.name
             )
             return None
@@ -192,7 +193,7 @@ class KubernetesDiscoveryProvider:
             if isinstance(value, list):
                 return [str(x) for x in value]
         except Exception:
-            pass
+            root_logger.exception("Parse Json list failed")
         return []
 
     @staticmethod
@@ -201,7 +202,7 @@ class KubernetesDiscoveryProvider:
             return default
         try:
             return int(raw)
-        except Exception:
+        except (ValueError, TypeError):
             return default
 
     @staticmethod
@@ -210,5 +211,5 @@ class KubernetesDiscoveryProvider:
             return default
         try:
             return float(raw)
-        except Exception:
+        except (ValueError, TypeError):
             return default

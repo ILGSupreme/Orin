@@ -5,6 +5,7 @@ from typing import Any
 from cortex.cluster.discovery.registry import BackendRegistry
 from cortex.cluster.discovery.types import BackendDescriptor
 
+root_logger = logging.getLogger()
 
 @dataclass(slots=True)
 class BackendSelectionRequest:
@@ -22,13 +23,13 @@ class BackendSelector:
     def select(self, req: BackendSelectionRequest) -> list[BackendDescriptor]:
         backends = self.registry.list_backends()
 
-        logging.debug(f"All available backends {backends}")
+        root_logger.debug(f"All available backends {backends}")
 
         if req.healthy_only:
             backends = [b for b in backends if b.is_healthy]
 
         if req.runtime_preference:
-            logging.debug(f"runtime_preference {req.runtime_preference}")
+            root_logger.debug(f"runtime_preference {req.runtime_preference}")
 
             backends = [
                 b
@@ -50,7 +51,7 @@ class BackendSelector:
             needed = set(req.required_modalities)
             backends = [b for b in backends if needed.issubset(set(b.modalities))]
 
-        logging.debug(
+        root_logger.debug(
             f"Selected backends for BackendSelectionRequest: {req}, Backends: {backends}"
         )
 

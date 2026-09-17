@@ -52,7 +52,7 @@ class RuntimeMetaData:
 
     def has_keys(self, preference: list[dict[str, Any]]) -> bool:
         # Check if every key in every dict exists in this object
-        return all(hasattr(self, k) for d in preference for k in d.keys())
+        return all(hasattr(self, k) for d in preference for k in d)
 
 
 @dataclasses.dataclass(slots=True)

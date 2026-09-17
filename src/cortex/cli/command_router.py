@@ -4,9 +4,9 @@ import argparse
 import inspect
 import json
 import shlex
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, Literal
+from typing import Literal
 
 import httpx
 from fastapi.responses import PlainTextResponse, StreamingResponse
@@ -82,13 +82,13 @@ class CommandFolder:
     name: str
     desc: str
     commands: list[Command] = field(default_factory=list)
-    folders: dict[str, "CommandFolder"] = field(default_factory=dict)
+    folders: dict[str, CommandFolder] = field(default_factory=dict)
     dynamic: bool = False
 
     def visible_commands(self, ctx: CommandContext) -> list[Command]:
         return self.commands
 
-    def visible_folders(self, ctx: CommandContext) -> dict[str, "CommandFolder"]:
+    def visible_folders(self, ctx: CommandContext) -> dict[str, CommandFolder]:
         return self.folders
 
 
@@ -956,15 +956,17 @@ class CommandRouter:
             url = f"{url}?{args.strip()}"
 
         try:
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream("GET", url) as response:
+            async with (
+                httpx.AsyncClient(timeout=None) as client,
+                client.stream("GET", url) as response,
+            ):
                     response.raise_for_status()
 
                     async for chunk in response.aiter_text():
                         if chunk:
                             yield chunk
 
-        except Exception as exc:
+        except (httpx.RequestError, httpx.HTTPStatusError) as exc:
             yield f"Failed to attach to backend {backend.name}: {exc}\n"
 
     async def handle_attach(self, ctx: CommandContext, args: str):

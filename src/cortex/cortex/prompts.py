@@ -1720,17 +1720,15 @@ def build_final_response_messages(
         "collated_results": collated_results,
     }
 
-    final_response_policy = "\n".join(
-        [
-            "Final response mode:",
-            "Return only the final user-facing response.",
-            "Use collated_results as the source of truth for completed work.",
-            "Do not invent results that are not present in collated_results.",
-            "If some work failed, mention it briefly and use the successful results where possible.",
-            "If clarification questions are present, ask them clearly.",
-            "Do not expose raw JSON, internal schemas, job metadata, routing details, or backend internals unless the user is developing/debugging the system.",
-        ]
-    )
+    final_response_policy = """
+    Final response mode:
+    Return only the final user-facing response
+    Use collated_results as the source of truth for completed work
+    Do not invent results that are not present in collated_results
+    If some work failed, mention it briefly and use the successful results where possible
+    If clarification questions are present, ask them clearly
+    Do not expose raw JSON, internal schemas, job metadata, routing details, or backend internals unless the user is developing/debugging the system
+    """.strip()
 
     system_parts = [
         ASSISTANT_RESPONSE_PROMPT,

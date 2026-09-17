@@ -9,6 +9,8 @@ from cortex.cluster.discovery.types import (
     BackendHealthStatus,
 )
 
+root_logger = logging.getLogger()
+
 
 class BackendHealthProber:
     def __init__(self, http: httpx.AsyncClient, timeout: float = 2.0) -> None:
@@ -36,7 +38,7 @@ class BackendHealthProber:
             try:
                 r = await client.get(f"{backend.url}{backend.health_path}")
                 http_ok = 200 <= r.status_code < 300
-            except Exception:
+            except (httpx.RequestError, httpx.HTTPStatusError):
                 http_ok = False
 
             if http_ok and backend.model_status_path:
@@ -47,14 +49,14 @@ class BackendHealthProber:
                 
                     if 200 <= r.status_code < 300:
                         payload = r.json()
-                        logging.info(payload)
+                        root_logger.info(payload)
                         if payload.get("ok"):
                             model = payload.get("model")
                             effective_n_ctx = model.get("effective_n_ctx", 0)
                             backend.runtime.effective_n_ctx = effective_n_ctx
                             model_ok = True
                             
-                except Exception:
+                except (httpx.RequestError, httpx.HTTPStatusError):
                     model_ok = False
 
         backend.health = BackendHealth(

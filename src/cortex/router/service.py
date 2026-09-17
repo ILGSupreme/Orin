@@ -14,6 +14,7 @@ from cortex.cluster.discovery.client import BackendClient
 from cortex.cluster.discovery.services import DiscoveryService
 from cortex.router.planner import Planner
 
+root_logger = logging.getLogger()
 
 class RouterService:
     def __init__(
@@ -89,7 +90,7 @@ class RouterService:
                 backend=backend,
                 packet=packet,
             )
-            logging.info(f"response: {rsp}")
+            root_logger.info(f"response: {rsp}")
 
             if rsp.get("status") in ("completed", "failed"):
                 return WorkResult.model_validate(rsp)
@@ -118,7 +119,9 @@ class RouterService:
             raise ValueError("Faulty response")
 
         except Exception as exc:
-            logging.exception("Router execution failed for work_id=%s", packet.work_id)
+
+            root_logger.exception("Router execution failed for work_id=%s", packet.work_id)
+            #logging.exception("Router execution failed for work_id=%s", packet.work_id)
             return WorkResult(
                 status="failed",
                 work_id=packet.work_id,
@@ -149,7 +152,8 @@ class RouterService:
             return WorkResult.model_validate(rsp_result)
 
         except Exception as exc:
-            logging.exception("Router execution failed for work_id=%s", work_id)
+            root_logger.exception("Router execution failed for work_id=%s", work_id)
+            #logging.exception("Router execution failed for work_id=%s", work_id)
             return WorkResult(
                 status="failed",
                 work_id=work_id,
@@ -235,13 +239,13 @@ async def execute_retrieve_completed(job: Job, router: RouterService) -> WorkRes
     work_type = (
         work_detail.get("work_type", "")
         if isinstance(work_detail, dict)
-        else getattr(work_detail, "work_type")
+        else work_detail.work_type
     )
 
     operation = (
         work_detail.get("operation", "")
         if isinstance(work_detail, dict)
-        else getattr(work_detail, "operation")
+        else work_detail.operation
     )
 
     return await router.retrieve_completed_work(

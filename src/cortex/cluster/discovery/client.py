@@ -33,7 +33,7 @@ class BackendClient:
         data = response.json()
 
         if not isinstance(data, dict):
-            raise ValueError(
+            raise TypeError(
                 f"Backend {self._backend_name(backend)} returned non-object response"
             )
 
@@ -47,7 +47,7 @@ class BackendClient:
         data = response.json()
 
         if not isinstance(data, dict):
-            raise ValueError(
+            raise TypeError(
                 f"Backend {self._backend_name(backend)} returned non-object response"
             )
 
@@ -82,7 +82,7 @@ class BackendClient:
         data = response.json()
 
         if not isinstance(data, dict):
-            raise ValueError(f"GET {url} returned non-object response")
+            raise TypeError(f"GET {url} returned non-object response")
 
         return data
 
@@ -98,6 +98,6 @@ class BackendClient:
         data = response.json()
 
         if not isinstance(data, dict):
-            raise ValueError(f"POST {url} returned non-object response")
+            raise TypeError(f"POST {url} returned non-object response")
 
         return data
