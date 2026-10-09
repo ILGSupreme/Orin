@@ -1,6 +1,6 @@
 # Orin (Not Finished)
 
-Orin is a local edge-AI cluster runtime for Kubernetes, developed by Nordavind.
+Orin is a local edge-AI cluster runtime for Kubernetes.
 
 It is designed for running local AI workloads across edge machines, including
 Jetson devices and standard Linux nodes. The current architecture is centered
