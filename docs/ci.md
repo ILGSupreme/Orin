@@ -3,7 +3,8 @@
 `.github/workflows/ci.yml` runs on pull requests, pushes to `main`, and manual
 dispatch. The stable job name is **CPU checks**. It uses a fresh GitHub-hosted
 Ubuntu 24.04 runner for each of Python 3.10 (matching current images) and 3.12,
-with a 15-minute timeout. The **CPU checks** gate requires both versions to pass.
+with a 15-minute timeout. The **CPU checks** gate requires both versions and the
+separate native grammar job to pass.
 A newer run for
 the same PR/ref cancels the older run.
 
@@ -22,6 +23,13 @@ empty slices. Its dependency version is pinned identically in CI and Cortex. No 
 provider credentials, running cluster, or paid API calls are required. Hugging
 Face Hub is configured offline during checks. Live federation smoke scripts are
 not included in unit-test discovery.
+
+The **Native GGUF grammar** job builds CPU-only llama-cpp-python 0.3.19 and runs
+`PYTHONPATH=src python src/test/gguf_grammar_smoke.py`. It invokes the actual native
+parser for TurnPlan and Decision; conversion to a Python grammar object alone
+does not prove native compilation. This job has a 20-minute build timeout and
+requires no GPU, model weights or credentials. It validates the reference CPU
+runtime; the actual Jetson/gateway build and model behavior still need lab checks.
 
 ## Run locally
 

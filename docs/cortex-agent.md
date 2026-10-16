@@ -240,7 +240,7 @@ PYTHONPATH=src python -m unittest discover -s src/test -p 'test_*.py'
 python -m compileall -q src
 ```
 
-The automated suite has 84 passing tests on Python 3.10 and 3.12, including API lifespan startup and chat
+The automated suite has 85 passing tests on Python 3.10 and 3.12, including API lifespan startup and chat
 with provider-only inference, a real SQLite-backed Memory service behind a mock
 HTTP transport, and terminal notice deduplication. Static checks include compilation,
 whitespace validation and Ruff correctness checks on the changed runtime modules.
@@ -257,6 +257,10 @@ provider response bodies or submitted data.
 GGUF interpretation and decision requests compile the validated response schema
 into a llama.cpp grammar before native generation. Runtime validation still checks
 the generated result; grammar constraints do not establish semantic correctness.
+The grammar projection omits string/array repetition bounds to avoid native
+parser rule explosion. Original length/item bounds remain in Pydantic validation;
+output token limits still apply. CI separately compiles both agent grammars with
+the actual CPU native parser without loading model weights.
 Other local engines retain prompt guidance and result validation. Read-only
 inspection actions accept an empty input or an exact redundant echo of their own
 action name; arbitrary arguments remain prohibited.

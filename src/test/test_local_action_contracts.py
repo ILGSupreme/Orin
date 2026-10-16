@@ -11,13 +11,33 @@ from unittest.mock import AsyncMock, patch
 from common.primer import Primer
 from common.protocol.adapter.openai_adapter import OpenAIStyleMessageAdapter
 from common.protocol.agent_types import Decision
+from common.protocol.agent_types import TurnPlan
+from common.protocol.grammar_schema import grammar_schema
 from common.protocol.unified_types import ContentPart, RuntimeMessage
 from common.system.configuration import InferenceConfiguration
 from cortex.cortex.actions import ActionRegistry
 from cortex.cortex.inference import InferenceGateway
+from cortex.cortex.inference import strict_schema
 
 
 class LocalActionContractTests(unittest.IsolatedAsyncioTestCase):
+    def test_grammar_projection_retains_contract_and_runtime_bounds(self):
+        original = strict_schema(TurnPlan)
+        snapshot = json.dumps(original, sort_keys=True)
+        compact = grammar_schema(original)
+        self.assertEqual(json.dumps(original, sort_keys=True), snapshot)
+        self.assertNotIn('maxLength', json.dumps(compact))
+        self.assertNotIn('maxItems', json.dumps(compact))
+        self.assertEqual(compact['required'], original['required'])
+        self.assertFalse(compact['additionalProperties'])
+        self.assertEqual(compact['$defs']['GoalUpdate']['properties']['action']['enum'],
+                         original['$defs']['GoalUpdate']['properties']['action']['enum'])
+        from pydantic import ValidationError
+        with self.assertRaises(ValidationError):
+            TurnPlan(reply='x' * 6001)
+        with self.assertRaises(ValidationError):
+            Decision(kind='finish', text='x' * 3001)
+
     async def test_inspection_accepts_only_empty_input_or_exact_action_echo(self):
         commands = SimpleNamespace(execute_agent_action=AsyncMock(return_value='observed nodes'))
         actions = ActionRegistry(inference=None, commands=commands)

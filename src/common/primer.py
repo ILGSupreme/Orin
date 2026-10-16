@@ -8,6 +8,7 @@ import httpx
 
 from common.jobs import Job
 from common.protocol.adapter.openai_adapter import OpenAIStyleMessageAdapter
+from common.protocol.grammar_schema import grammar_schema
 from common.protocol.routing_types import WorkResult
 from common.protocol.unified_types import RuntimeMessage
 from common.provider.huggingface.hf_downloader import HFDownloader
@@ -320,7 +321,7 @@ class Primer:
             from llama_cpp import LlamaGrammar
 
             grammar = LlamaGrammar.from_json_schema(
-                json.dumps(constraints["json_schema"]), verbose=False
+                json.dumps(grammar_schema(constraints["json_schema"])), verbose=False
             )
         return await self._await_generation(
             self._engine.chat_json, messages=rendered_messages,
