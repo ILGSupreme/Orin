@@ -164,6 +164,10 @@ class AgentRuntime:
             max_output_tokens=512,
         )
         plan = TurnPlan.model_validate_json(result.text)
+        logger.info(
+            "Turn interpreted backend=%s tasks=%d updates=%d has_reply=%s",
+            result.backend, len(plan.tasks), len(plan.updates), bool(plan.reply),
+        )
         replies = [plan.reply] if plan.reply else []
         reply_privacy = privacy
         for update in plan.updates:
