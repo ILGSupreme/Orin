@@ -46,6 +46,7 @@ jobs:
         run: |
           python -m ruff check --select F,E9 \
             src/cortex/cortex \
+            src/cortex/cluster/discovery/discovery_k8s.py \
             src/common/protocol/agent_types.py \
             src/common/primer.py \
             src/common/system/configuration.py \
@@ -54,6 +55,7 @@ jobs:
             src/test/test_harness_agent_integration.py \
             src/test/test_agent_support.py \
             src/test/test_terminal_notices.py terminal-chat.py \
+            src/test/test_kubernetes_discovery.py \
             2>&1 | tee ci-logs/lint.log
       - name: Run deterministic tests
         run: |

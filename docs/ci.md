@@ -12,7 +12,9 @@ the whole repository against all Ruff rules. Bash pipeline failures propagate
 through `tee`, and failed checks upload available logs for seven days.
 
 These tests use real Memory handlers and temporary SQLite databases with model,
-provider HTTP, tool, and Kubernetes discovery doubles. No GPU, model weights,
+provider HTTP and tool doubles. Kubernetes discovery also exercises the installed
+client against a local HTTP server, including EndpointSlice decoding and API
+errors. Its dependency version is pinned identically in CI and Cortex. No GPU, model weights,
 provider credentials, running cluster, or paid API calls are required. Hugging
 Face Hub is configured offline during checks. Live federation smoke scripts are
 not included in unit-test discovery.

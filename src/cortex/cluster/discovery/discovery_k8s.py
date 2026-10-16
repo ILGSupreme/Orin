@@ -67,13 +67,10 @@ class KubernetesDiscoveryProvider:
         return resp.items
 
     def _list_endpoint_slices(self):
-        data = self.discovery.api_client.call_api(
-            f"/apis/discovery.k8s.io/v1/namespaces/{self.namespace}/endpointslices",
-            "GET",
-            auth_settings=["BearerToken"],
-            response_type="object",
-            _return_http_data_only=True,
-        )
+        # Use the generated API: ApiClient.call_api's low-level signature varies
+        # between client releases. Serialization preserves Kubernetes wire keys.
+        response = self.discovery.list_namespaced_endpoint_slice(namespace=self.namespace)
+        data = self.discovery.api_client.sanitize_for_serialization(response)
         return data.get("items", [])
 
     def _build_ready_endpoint_map(self, endpoint_slices: list[dict]) -> dict[str, int]:
