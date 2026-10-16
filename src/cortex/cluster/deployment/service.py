@@ -121,16 +121,23 @@ class DeploymentService:
                 timeout_seconds=15,
             )
         except SSHError as exc:
+            user = node.ssh_config.default_user
+            host = node.machine_settings.ip
+
             raise DeploymentError(
-                "Target node SSH works, but the SSH user cannot run sudo non-interactively.\n"
-                f"node: {node.alias}\n"
-                f"user: {node.ssh_config.default_user}\n\n"
-                "Fix on the target node with something like:\n"
-                f"  sudo tee /etc/sudoers.d/orin-deploy >/dev/null <<'EOF'\n"
-                f"  {node.ssh_config.default_user} ALL=(ALL) NOPASSWD:ALL\n"
-                f"  EOF\n"
-                "  sudo chmod 0440 /etc/sudoers.d/orin-deploy\n"
-                "  sudo visudo -cf /etc/sudoers.d/orin-deploy"
+                f"SSH/sudo check failed for node {node.alias}\n"
+                f"target: {user}@{host}\n\n"
+                f"{exc}\n\n"
+                "If SSH reports 'Permission denied (publickey)', check that "
+                "Cortex's SSH key is authorized for this user on the target node.\n\n"
+                "If sudo reports that a password is required, configure "
+                "passwordless sudo on the target node:\n"
+                "  sudo visudo -f /etc/sudoers.d/orin-deploy\n\n"
+                "Add this rule (grants passwordless sudo for all commands):\n"
+                f"  {user} ALL=(ALL) NOPASSWD:ALL\n\n"
+                "Then verify while logged in as that user:\n"
+                "  sudo -k\n"
+                "  sudo -n true\n"
             ) from exc
 
     def _build_pod_factory_defaults(self) -> PodFactoryDefaults:
