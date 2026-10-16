@@ -151,6 +151,12 @@ supports both chat-style interaction and slash-command operation.
 Command output and assistant chat output are separated by response metadata so
 the terminal can display operational output separately from conversation output.
 
+## Tests and CI
+
+Pull requests run CPU-only tests and focused static checks on GitHub-hosted
+runners. See [CI and local test instructions](docs/ci.md) for commands, the merge
+gate setup, and the plan for ARM64 builds and hardware lab validation.
+
 ## Status
 
 Orin is under active development.
