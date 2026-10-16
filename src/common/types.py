@@ -5,6 +5,11 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 MEMORY_OPERATIONS = Literal[
+    'inventory_list_nodes',
+    'inventory_get_node',
+    'inventory_add_node',
+    'inventory_update_node',
+    'inventory_delete_node',
     'create_summary',
     'list_summaries',
     'create_note',

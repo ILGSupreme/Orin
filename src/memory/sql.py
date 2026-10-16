@@ -324,6 +324,16 @@ class MemoryDB:
                     FOREIGN KEY(source_event_id) REFERENCES memory_events(id),
                     FOREIGN KEY(supersedes_id) REFERENCES memory_claims(id)
                 );
+                CREATE TABLE IF NOT EXISTS node_inventory (
+                    namespace TEXT NOT NULL,
+                    alias TEXT NOT NULL,
+                    node_json TEXT NOT NULL,
+                    revision INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (namespace, alias)
+                );
+
                 CREATE TABLE IF NOT EXISTS federation_records (
                     record_type TEXT NOT NULL,
                     record_id TEXT NOT NULL,
@@ -378,6 +388,91 @@ class MemoryDB:
                 ON federation_records(record_type, slug);
                 """
             )
+
+    # ------------------------- node inventory -------------------------
+
+    @staticmethod
+    def _inventory_record(row: sqlite3.Row) -> dict[str, Any]:
+        record = dict(row)
+        record["node"] = json.loads(record.pop("node_json"))
+        return record
+
+    def list_inventory_nodes(self, namespace: str) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM node_inventory WHERE namespace = ? ORDER BY alias",
+                (namespace,),
+            ).fetchall()
+        return [self._inventory_record(row) for row in rows]
+
+    def get_inventory_node(self, namespace: str, alias: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM node_inventory WHERE namespace = ? AND alias = ?",
+                (namespace, alias),
+            ).fetchone()
+        return self._inventory_record(row) if row is not None else None
+
+    def save_inventory_node(
+        self, namespace: str, node: dict[str, Any], expected_revision: int | None = None
+    ) -> dict[str, Any]:
+        # Validate at the storage boundary too; callers cannot bypass the schema.
+        from common.protocol.inventory_types import InventoryCreate, InventoryUpdate
+
+        payload = {"namespace": namespace, "node": node}
+        if expected_revision is None:
+            request = InventoryCreate.model_validate(payload)
+        else:
+            request = InventoryUpdate.model_validate(
+                {**payload, "expected_revision": expected_revision}
+            )
+        node = request.node.model_dump(mode="json")
+        if node["kubernetes_settings"] is not None:
+            if node["kubernetes_settings"]["namespace"] != namespace:
+                raise ValueError("Node namespace does not match inventory namespace")
+        alias = node["alias"]
+        now = utc_now()
+        with self._connect() as conn:
+            if expected_revision is None:
+                try:
+                    conn.execute(
+                        """INSERT INTO node_inventory
+                        (namespace, alias, node_json, revision, created_at, updated_at)
+                        VALUES (?, ?, ?, 1, ?, ?)""",
+                        (namespace, alias, json.dumps(node), now, now),
+                    )
+                except sqlite3.IntegrityError as exc:
+                    raise ValueError(f"Node alias already exists: {alias}") from exc
+            else:
+                cursor = conn.execute(
+                    """UPDATE node_inventory SET node_json = ?, revision = revision + 1,
+                    updated_at = ? WHERE namespace = ? AND alias = ? AND revision = ?""",
+                    (json.dumps(node), now, namespace, alias, expected_revision),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError("Node missing or revision conflict; reload inventory")
+            row = conn.execute(
+                "SELECT * FROM node_inventory WHERE namespace = ? AND alias = ?",
+                (namespace, alias),
+            ).fetchone()
+        return self._inventory_record(row)
+
+    def delete_inventory_node(
+        self, namespace: str, alias: str, expected_revision: int
+    ) -> bool:
+        from common.protocol.inventory_types import InventoryDelete
+
+        InventoryDelete(
+            namespace=namespace, alias=alias, expected_revision=expected_revision
+        )
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM node_inventory WHERE namespace = ? AND alias = ? AND revision = ?",
+                (namespace, alias, expected_revision),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Node missing or revision conflict; reload inventory")
+        return True
 
     # ------------------------- summaries -------------------------
 

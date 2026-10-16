@@ -3,6 +3,10 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
+from common.protocol.inventory_types import (
+    InventoryCreate, InventoryDelete, InventoryLookup, InventoryScope, InventoryUpdate,
+)
+
 from common.protocol.memory_types import (
     BaseRuntimeMemoryRequest,
     ListMemoryClaim,
@@ -22,6 +26,11 @@ from common.protocol.routing_types import (
 )
 from common.protocol.unified_types import RuntimeMessage
 from memory.sql import DB_PATH, NOTES_DIR, SUMMARIES_DIR, FileMemory, MemoryDB
+
+INVENTORY_OPS = {
+    "inventory_list_nodes", "inventory_get_node", "inventory_add_node",
+    "inventory_update_node", "inventory_delete_node",
+}
 
 FEDERATION_RECORD_OPS = {
     "federation_put_record",
@@ -45,9 +54,11 @@ class MemoryRuntime:
         memory_request = req.task.memory_request
         inputs = req.task.inputs
 
-        root_logger.info(f"Request: {req}")
+        root_logger.info("Memory request work_id=%s operation=%s", req.work_id, op)
 
         try:
+            if op in INVENTORY_OPS:
+                return self._handle_inventory_operation(req, op, inputs)
             if op in FEDERATION_RECORD_OPS:
                 return self._handle_federation_record_operation(
                     req=req,
@@ -368,6 +379,32 @@ class MemoryRuntime:
         except Exception as e:
             root_logger.exception("MemoryRuntime operation failed: %s", op)
             return self._fail(req=req, error=str(e))
+
+    def _handle_inventory_operation(
+        self, req: WorkPacket, op: str, inputs: dict[str, Any]
+    ) -> WorkResult:
+        if op == "inventory_list_nodes":
+            request = InventoryScope.model_validate(inputs)
+            nodes = self._memoryDB.list_inventory_nodes(request.namespace)
+            return self._ok(req, nodes=nodes, count=len(nodes))
+        if op == "inventory_get_node":
+            request = InventoryLookup.model_validate(inputs)
+            record = self._memoryDB.get_inventory_node(request.namespace, request.alias)
+            return self._ok(req, found=record is not None, record=record)
+        if op in {"inventory_add_node", "inventory_update_node"}:
+            model = InventoryCreate if op == "inventory_add_node" else InventoryUpdate
+            request = model.model_validate(inputs)
+            record = self._memoryDB.save_inventory_node(
+                request.namespace,
+                request.node.model_dump(mode="json"),
+                getattr(request, "expected_revision", None),
+            )
+            return self._ok(req, record=record)
+        request = InventoryDelete.model_validate(inputs)
+        deleted = self._memoryDB.delete_inventory_node(
+            request.namespace, request.alias, request.expected_revision
+        )
+        return self._ok(req, deleted=deleted)
 
     async def handle_egress(self, work_id: str):
         return {"status": True}
