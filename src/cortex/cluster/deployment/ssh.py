@@ -2,8 +2,6 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from sympy import false
-
 from cortex.cluster.deployment.types import Node
 
 
@@ -111,17 +109,22 @@ def run_ssh(
         connect_timeout_seconds=connect_timeout_seconds,
     ) + [command]
 
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout_seconds,
-        check=False
-    )
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SSHError(
+            f"SSH command timed out on node {node.alias} after {exc.timeout} seconds."
+        ) from exc
 
     if check and result.returncode != 0:
         raise SSHError(
-            f"SSH command failed on node {node.alias}: {command}\n"
+            f"SSH command failed on node {node.alias} (exit {result.returncode}).\n"
             f"stdout:\n{result.stdout}\n"
             f"stderr:\n{result.stderr}"
         )
@@ -163,6 +166,8 @@ def scp_from(
             "scp",
             "-i",
             key,
+            "-o",
+            "BatchMode=yes",
             *common_options,
             f"{user_at_host}:{remote_path}",
             local_path,
@@ -185,8 +190,7 @@ def scp_from(
     else:
         raise SSHError(f"Unsupported SSH auth method: {ssh.auth_method}")
 
-    result = subprocess.run(cmd, capture_output=True, text=True, check=
-                            false)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
 
     if result.returncode != 0:
         raise SSHError(
@@ -230,6 +234,8 @@ def scp_to(
             "scp",
             "-i",
             key,
+            "-o",
+            "BatchMode=yes",
             *common_options,
             local_path,
             f"{user_at_host}:{remote_path}",
@@ -252,7 +258,7 @@ def scp_to(
     else:
         raise SSHError(f"Unsupported SSH auth method: {ssh.auth_method}")
 
-    result = subprocess.run(cmd, capture_output=True, text=True, check=false)
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
 
     if result.returncode != 0:
         raise SSHError(
