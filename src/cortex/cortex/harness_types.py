@@ -7,8 +7,8 @@ IngressMode = Literal["terminal", "chat"]
 
 class ChatIngressInterpretationModel(BaseModel):
     mode: Literal["chat"]
-    action: Literal["answer_only", "start_pipeline", "report_job_status"]
-    pipeline: Literal["chat"] | None = None
+    action: Literal["answer_only", "start_pipeline", "report_job_status", "get_job_result"]
+    pipeline: Literal["chat", "agent"] | None = None
 
     @model_validator(mode="after")
     def validate_pipeline(self) -> "ChatIngressInterpretationModel":
@@ -34,6 +34,7 @@ class TerminalIngressInterpretationModel(BaseModel):
         "answer_only",
         "terminal_info_action",
         "report_job_status",
+        "get_job_result",
     ]
     terminal_action: str | None = None
 

@@ -139,6 +139,7 @@ async def lifespan(app: FastAPI):
             root_logger.warning("Inventory startup load failed: %s", exc)
         yield
     finally:
+        await app.state.job_manager.shutdown()
         await app.state.discovery_service.refresher.stop()
         await app.state.primer.stop()
 

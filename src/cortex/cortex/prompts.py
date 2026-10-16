@@ -1339,7 +1339,8 @@ Command/action rules:
 Decision rules:
 - If the user asks what commands exist, what commands are available, or what commands do, choose action="terminal_info_action" with terminal_action="list_commands" if available.
 - If the user asks to show the current menu, current folder, or current CLI location, choose action="terminal_info_action" with terminal_action="render_current_folder" if available.
-- If the user asks about jobs, background work, running work, or results, choose action="report_job_status".
+- If the user asks about jobs, background work, running work, choose action="report_job_status".
+- For completed job results choose action="get_job_result".
 - If the user asks for live cluster/system status, choose action="terminal_info_action" and select the best matching available status action.
 - If the user asks for backend health, model status, or backend details, choose the matching backend action only if it is available in system_information.commands.
 - If no available action matches, choose action="answer_only".
@@ -1348,7 +1349,7 @@ Output schema:
 {
   "mode": "terminal",
   "intent": "terminal_help" | "system_status" | "job_status" | "normal_chat" | "unknown",
-  "action": "answer_only" | "terminal_info_action" | "report_job_status",
+  "action": "answer_only" | "terminal_info_action" | "report_job_status" | "get_job_result",
   "terminal_action": string | null
 }
 
@@ -1501,13 +1502,16 @@ Rules:
 - Explicit detailed/researched/verified/current/multi-step requests -> start_pipeline.
 - Questions about background jobs/status -> report_job_status.
 - Questions/Query for results of background jobs -> get_job_result
+- Explicit requests to use agent mode or investigate the local cluster step by step -> start_pipeline with pipeline="agent".
+- Agent mode supports read-only cluster_snapshot/list_nodes/list_pods and LLM analyze/summarize only.
+- Other deeper work keeps pipeline="chat"; do not start an agent for ordinary questions.
 - If unsure -> answer_only.
 
 Output schema:
 {
   "mode": "chat",
-  "action": "answer_only" | "start_pipeline" | "report_job_status" | get_job_result,
-  "pipeline": "chat" | null
+  "action": "answer_only" | "start_pipeline" | "report_job_status" | "get_job_result",
+  "pipeline": "chat" | "agent" | null
 }
 Only choose start_pipeline when the user explicitly asks for detailed, researched, verified, current, comprehensive, multi-step, or background work.
 If unsure, choose answer_only.

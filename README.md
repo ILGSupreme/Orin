@@ -55,6 +55,10 @@ Cortex is responsible for receiving user requests, managing terminal commands,
 coordinating memory/session state, discovering backend services, and routing
 runtime work.
 
+Cortex also supports a bounded local agent pipeline that chooses follow-up
+actions from observed results. See [Cortex agent runs](docs/cortex-agent.md) for
+the permitted actions, execution limits, cancellation, and current limitations.
+
 ### LLM
 
 The LLM service is a Primer-backed runtime that can load model backends such as

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from dataclasses import dataclass
 from typing import Any, Literal, overload
 
@@ -31,6 +32,7 @@ from common.protocol.unified_types import (
 from common.types import MAX_TOKENS_POLICY, TEMPERATURE_POLICY
 from cortex.cli.command_router import CommandRouter
 from cortex.cortex import memory, prompts
+from cortex.cortex.agent import AgentRunner
 from cortex.cortex.harness_types import (
     LIGHTWEIGHT_INGRESS_ADAPTER,
     IngressMode,
@@ -69,6 +71,14 @@ class Harness:
         self.router = router
         self.job_manager = job_manager
         self.command_router = command_router
+        self.agent_runner = AgentRunner(primer, router, command_router)
+        self.job_manager.define_pipeline(
+            "agent",
+            stages=[PipelineStage(
+                name="agent_loop", runner=self.agent_runner.run,
+                timeout_seconds=self.agent_runner.limits.timeout_seconds + 1,
+            )],
+        )
 
         self.job_manager.define_pipeline(
             "chat",
@@ -515,7 +525,7 @@ class Harness:
 
                 background_job = self.job_manager.start_pipeline(
                     spec=JobSpec(
-                        kind="harness.chat",
+                        kind="harness.agent" if pipeline == "agent" else "harness.chat",
                         payload={
                             "user_id": inference_object.user_id,
                             "session_id": inference_object.session_id,
@@ -815,7 +825,7 @@ async def _build_work_packet(
     )
 
     wpacket = packing.create_workpacket(
-        id=f"{user_id}:task",
+        id=f"{user_id}:task:{uuid.uuid4().hex}",
         disposition=disposition,
         metadata={"origin_stage": "main_ingress", "phase": "executing task"},
         task=ctask,
@@ -1224,11 +1234,12 @@ async def execute_read_and_send_packets(
 
     final_batch_results = await job_manager.batch_progress(batch_id=retrieve_batch_id)
 
-    return WorkResult(
+    packet_result = WorkResult(
         status="completed",
         work_id=f"{inference_object.user_id}:read_and_send_packets",
         metadata={"packet_results": final_batch_results},
     )
+    return collate_packet_results(inference_object.user_id, packet_result)
 
 
 async def execute_read_packet_results(
@@ -1238,20 +1249,22 @@ async def execute_read_packet_results(
         job.spec.payload.get("inference_object")
     )
 
-    batch_result_adapter = TypeAdapter(list[WorkResult])
-
     payload_response = WorkResult.model_validate(job.spec.payload.get("response"))
 
-    results = payload_response.metadata.get("packet_results", None)
+    return collate_packet_results(inference_object.user_id, payload_response)
+
+
+def collate_packet_results(user_id: str, response: WorkResult) -> WorkResult:
+    results = response.metadata.get("packet_results")
 
     if results is None:
         return WorkResult(
             status="failed",
-            work_id=f"{inference_object.user_id}:read_results",
+            work_id=f"{user_id}:read_results",
             error="No result found",
         )
 
-    batch_results = batch_result_adapter.validate_python(results)
+    batch_results = TypeAdapter(list[WorkResult]).validate_python(results)
 
     completed: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
@@ -1291,7 +1304,7 @@ async def execute_read_packet_results(
 
     return WorkResult(
         status="completed",
-        work_id=f"{inference_object.user_id}:read_results",
+        work_id=f"{user_id}:read_results",
         metadata={
             "collated_results": collated_results,
         },
