@@ -1,110 +1,250 @@
-# Cortex bounded agent runs
+# Unified Cortex agent runtime
 
-Cortex supports a local `agent` pipeline alongside the existing six-stage `chat`
-workflow. It selects one action, executes it, records the observation, and uses
-those observations to choose the next action or finish. RouterService and
-WorkPacket remain the inference execution path; Planner still selects backends.
+Cortex owns persistent goals and their feedback loops. Both natural `/chat` and
+`/terminal_chat` requests use one turn interpreter and one task execution runtime.
+There is no user-facing chat/agent mode or separate background chat pipeline.
+Explicit terminal slash commands remain direct controls. The implementation plan
+is [unified-agent-action-plan.md](unified-agent-action-plan.md).
 
-## Starting and inspecting a run
+## A natural turn
 
-In `/chat`, explicitly ask to use agent mode, for example:
+> Hello, explain this image, get the latest news about X, and summarize this document.
 
-> Use agent mode to inspect the local cluster step by step and report what you
-> can establish about node and workload readiness.
+The interpreter can return a conversational reply and several task specifications
+in the same result. Each task has an outcome, completion criteria, relevant user
+context, references to supplied input parts, and dependencies. Straightforward
+conversation can finish in this one inference call. Requested work is persisted
+and runs through the same runtime without asking the user to choose a mode.
 
-The lightweight interpreter selects `start_pipeline` with `pipeline="agent"`.
-Ordinary questions retain the immediate response path. Other detailed work can
-still use `pipeline="chat"`. This choice currently depends on the interpreter;
-there is no new direct agent HTTP endpoint.
+Independent tasks receive round-robin execution steps. They are not executed in
+parallel within a goal in this version. A task that needs clarification blocks
+its dependents while independent work continues. Each decision sees only that
+task's context, recent observations, advertised capabilities and explicit
+prerequisite results. Work actions receive only selected original input parts.
+The interpreter sees bounded previews and references, not image bytes.
 
-Harness returns a background job ID. Ask for its status or result in the same
-session, or inspect the existing local `GET /jobs/{job_id}` endpoint. Explicit
-terminal command `/cancel_job <job_id>` cancels the selected local job. Shutdown
-also cancels tracked local jobs. Cancellation is represented as a failed
-WorkResult with `metadata.cancelled=true`, preserving the existing status contract.
-Cancellation does not cancel backend work already accepted, or automatically
-cancel independent child jobs created by older pipelines.
+Tasks that need current information must execute a real retrieval tool. Provider
+access and LLM reasoning are not search capabilities. Missing capabilities produce
+an explicit limitation; the runtime must not fabricate current news or tool effects.
 
-## Decisions and permitted actions
+## Execution and responsibility feedback
 
-`agent_types.py` defines JSON-serializable state, limits, observations, and a
-discriminated decision union. Unknown decisions, unknown actions, and extra
-fields fail validation. Invalid decisions end the run; there are no automatic
-model-output repair retries in this version.
+For each ready task, Cortex chooses an action, checkpoints it before execution,
+collects an observation, then decides whether to continue, finish, or ask a
+question. Failed actions are observations. Completion must cite successful
+observation IDs from the current cycle or completed dependencies. These checks
+validate evidence references; semantic completion remains model-assessed.
 
-| Decision | Behaviour |
-| --- | --- |
-| `execute_action` | Execute one permitted action and record success or failure. |
-| `finish` | Return a complete or explicitly partial answer. A successful finish must reference successful observation step IDs. |
-| `ask_user` | Return a clarification question and end this run with outcome `awaiting_user`. |
+The responsibility loop periodically queries Memory for due goals. It does not
+keep an LLM generating continuously. Supported wake-ups are:
 
-| Action | Input | Execution |
-| --- | --- | --- |
-| `cluster_snapshot` | No arguments | Read discovered backend state and active jobs. |
-| `list_nodes` | No arguments | Read configured node inventory and its cluster status. |
-| `list_pods` | No arguments | Read workloads in the configured namespace. |
-| `analyze`, `summarize` | `text`, at most 2,000 characters | Route LLM work with recent observations. These actions do not retrieve live facts. |
+- A new natural turn that supplies clarification or corrective feedback.
+- An explicit future UTC epoch start time.
+- An interval of at least 60 seconds for recurring work.
+- A matching event delivered through the local goal control interface.
+- Restart recovery of persisted ready work after any prior lease expires.
 
-Inspection actions use an explicit backend-free CommandContext and recheck
-command permissions. They do not inherit the terminal's selected backend or
-folder. No deployment, mutation, shell execution, network search, arbitrary
-slash commands, or backend administration is exposed to the agent.
+Schedules/events must be explicitly requested by the user, as interpreted by the
+model. Triggered tasks must be independent of task dependency graphs. Calendar
+rules, delayed event subscriptions and arbitrary event-source connectors are not
+implemented. Interval/event monitoring returns to waiting after each assessed
+cycle, including a cycle that reports an explicit limitation. Limits or invalid
+execution instead pause work for user/operator input.
 
-The direct `/work` ingress continues to accept only LLM work. Federation does
-not gain an agent entry point or any new permissions. Observation content is
-presented as untrusted data, and code controls the available actions.
+## Durable state and recovery
 
-## State and limits
+Memory owns a new `agent_goals` SQLite table. It stores user/session ownership,
+tasks and dependencies, source input, privacy, observations, pending work IDs,
+results, bounded notices, budgets, revisions and scheduling state. The operations
+`agent_goals_query`, `agent_goal_write` and `agent_goal_claim` use the existing
+WorkPacket boundary. Cortex pins these requests to its authoritative Memory URL,
+using `inventory_memory_base_url` or the namespace's Memory service address.
 
-State records the goal, completion criteria (initially the original goal), run
-outcome, step count, token allocation, pending action/work ID, and observations.
-Every action receives a unique work ID. Progress snapshots live in the job's
-`agent_state` payload; completed results also contain the final state.
+Writes use compare-and-swap revisions. Atomic execution claims use expiring leases,
+so two controllers cannot execute the same live claim. Leases last one execution
+slice plus 30 seconds; stale owners cannot save over a newer claim. Source input
+and state are currently stored together, so large attachments increase checkpoint
+size. Artifact-backed inputs are a future optimization.
 
-Defaults are six decision steps, 180 seconds of cooperative execution time,
-16,384 estimated tokens allocated across model calls, and one execution of an
-identical action/input pair. Finish and clarification decisions also consume a
-step. The token allocation includes prompt estimates, operation-specific output
-allowances, and Primer's safety allowance; it is not measured usage accounting.
-Limits are configured through `AgentLimits` in code, not through user/model fields.
+After a crash, work interrupted during an action is paused for reconciliation,
+not replayed automatically. The recorded pending work ID helps inspect an accepted
+backend job. A clarification survives restarts and can resume the same task with
+user feedback. Corrective feedback can also reopen completed work and invalidate
+its dependent outcomes, requiring fresh evidence. Cancellation marks the durable goal cancelled so the watcher will
+not restart it. Native inference or backend work already accepted may continue;
+cancellation does not undo effects. Non-streaming Primer generation keeps its
+serialization lock until underlying native inference really finishes, even if its
+caller has been cancelled.
 
-Each observation retains at most 2,000 characters. Prompts use the latest three
-observations, at most 600 characters each. Decision prompts are checked against
-the local model context; routed LLM work selects a backend with the required
-context capacity. Full run snapshots retain all bounded observations.
-Successful evidence references are validated, but semantic goal satisfaction is
-still a model assessment, not an independent proof or domain-specific verifier.
+Client `metadata.turn_id` is an optional idempotency key for delegated turns. Retry
+with the same user, session and turn ID to reuse the accepted goal; use a new ID
+for new work. Ordinary conversational replies without delegated goals are not
+stored as goal idempotency records.
 
-Step and runtime exhaustion return a failed WorkResult with outcome `exhausted`
-and the observations available so far. A model-declared partial result is a
-completed WorkResult with outcome `partial`, distinct from a completed goal.
-Failed actions become observations so a subsequent decision can choose another
-action or explain the limitation. Identical action repetition ends the run.
+The latest results and up to 100 changed-result notices are durable and exposed to
+the local client. Repeated identical results do not produce another notice. Delivery
+is by polling or conversational status/result requests. The terminal client polls
+in the background and displays results/questions automatically, deduplicating
+notice IDs and showing the latest result per goal on reconnect. Set
+`ORIN_SESSION_ID` to resume a known session and `ORIN_PRIVACY` to override the
+server's default inference privacy for terminal turns. External push, email and
+other notification connectors are separate capabilities. JobManager holds bounded
+transient execution records, not the source of truth for responsibilities.
 
-JobManager now applies each stage timeout to both its runner and polling,
-including a single stalled await. Synchronous code and underlying inference
-threads must still cooperate with cancellation; Python task cancellation cannot
-preempt them or roll back completed effects.
+## Replaceable inference
 
-## Existing workflow fixes
+`InferenceGateway` is the shared interface for turn interpretation, task decisions
+and work inference. Configured bindings select local Primer, discovered cluster
+LLMs, or an OpenAI Responses provider. Immediate replies come from turn
+interpretation and task answers come from completion decisions.
 
-The chat execution stage now collates batch results before final synthesis.
-Both ingress interpretation models accept `get_job_result`, and their prompts
-advertise it. Shaped task packets use unique IDs. Completed-job prompt summaries
-include compact result text instead of the full payload/run state.
+Local engine imports, hardware profiling and initialization are lazy. Provider-only
+Cortex does not need a loaded local model or import torch, llama.cpp or vLLM to
+serve natural conversation. Cortex readiness reports configured inference route
+availability rather than requiring the local Primer model. Routing, Kubernetes
+and Memory remain normal Cortex infrastructure dependencies.
 
-## Remaining work
+Example configuration fragment for provider-only reasoning:
 
-Run snapshots are in memory. Durable Memory checkpoints, restart recovery,
-resuming a clarification in the same run, a broader typed Tool backend, and
-explicit targets for generic backend actions remain future work. A clarification
-currently ends execution; further work requires a new request/run. Validate small
-model decision quality and live cluster operation before deploying this change.
+```json
+{
+  "inference": {
+    "allow_external": true,
+    "default_privacy": "external_allowed",
+    "backends": {
+      "provider": {
+        "kind": "openai",
+        "model": "<model-supported-by-your-account>",
+        "api_key_env": "OPENAI_API_KEY",
+        "context_tokens": 32768,
+        "modalities": ["text", "image"]
+      }
+    },
+    "bindings": {
+      "interpret": ["provider"],
+      "decide": ["provider"],
+      "work": ["provider"]
+    }
+  }
+}
+```
 
-## Validation
+Choose the model, context allowance and modalities for the actual backend. The
+model name is intentionally not hardcoded. Set the key through the configured
+environment variable, e.g. a Kubernetes Secret reference in the Cortex deployment;
+do not put the key in the configuration file or task data. The adapter uses the
+Responses endpoint, strict JSON-schema output for structured contracts, bounded
+output, `store: false`, no followed redirects and sanitized provider failures.
+Refusals, incomplete responses and invalid structured output are not successes.
+See the [official structured output documentation](https://developers.openai.com/api/docs/guides/structured-outputs).
 
-Run `PYTHONPATH=src python -m unittest discover -s src/test -p 'test_*.py'` and
-`python -m compileall -q src`. Agent tests use deterministic model/transport
-doubles; Harness tests replace heavyweight inference/hardware imports while
-exercising real Harness, command-router, JobManager, and protocol code. No live
-GPU model or Kubernetes cluster is required for these checks.
+For a hybrid setup, keep a `primer` backend for interpretation/decisions and a
+`routed` or provider backend for work. Binding lists are explicit ordered fallback
+choices. Fallback never bypasses privacy policy. Routed work remains a canonical
+LLM WorkPacket; Planner remains responsible for backend selection.
+
+External inference is disabled by default. Both `inference.allow_external` and
+per-turn/goal `privacy="external_allowed"` are required. Otherwise a provider is
+skipped before any transport call. The trusted caller can set `metadata.privacy`;
+model outputs cannot grant external access. Goals retain their original policy.
+Later provider-enabled turns exclude local-only goal summaries and private or
+unlabelled conversation history. A reply containing a private goal result remains
+labelled private so a subsequent turn cannot silently export it.
+
+## Actions and extensibility
+
+Built-in actions are read-only local cluster snapshot/node/workload inspection,
+LLM analysis, summarization and input description. Inspection uses an explicit
+backend-free command context, permission checks and no arbitrary slash arguments.
+Image work additionally requires a configured image-capable inference route. The
+provider adapter supports text and image input; arbitrary binary/document file
+uploads, audio and video are not implemented. Documents supplied as text parts can
+be referenced by tasks.
+
+Register actual read-only Tool backends through Cortex configuration:
+
+```json
+{
+  "agent_tools": [
+    {
+      "name": "news_search",
+      "operation": "search",
+      "description": "Retrieve current news with source URLs and dates",
+      "capability": "search",
+      "input_key": "query",
+      "read_only": true
+    }
+  ]
+}
+```
+
+This does not create a search service. A healthy discovered `tool` backend must
+advertise the required capability, accept that WorkPacket operation/input contract,
+and return usable RuntimeMessage content. Otherwise it is not advertised to the
+model. No deployment, arbitrary shell, model administration or write tools are
+granted to this runtime. Adding an action requires a trusted implementation and
+configuration; model output cannot register one.
+
+## Local interfaces
+
+`/chat` and `/terminal_chat` preserve the existing request shape. Replies contain
+any immediate answer plus an acknowledgement of pending work, with `goal_id` and
+transient `job_id` in metadata. Stream responses return the assembled reply and
+correlation headers; incremental provider token streaming is not implemented.
+
+`GET /goals?user_id=...&session_id=...` returns durable scoped status, task results
+and notices. It excludes stored source messages and execution lease identity.
+`POST /goals/{goal_id}/control` accepts:
+
+```json
+{
+  "user_id": "user-id",
+  "session_id": "session-id",
+  "action": "resume",
+  "task_id": "t1",
+  "feedback": "Use node-a",
+  "event_key": null
+}
+```
+
+Actions are `resume`, `cancel` and `event`. For an event, supply its registered
+`event_key` and relevant data as `feedback`. Controls verify user/session scope;
+resuming an actively executing goal is rejected. `/cancel_job <job_id>` delegates
+to durable cancellation for goal jobs. These are local Cortex interfaces;
+Federation's direct `/work` ingress remains LLM-only and gains no goal controls,
+Memory operations or agent permissions. Existing local identity/trust assumptions
+remain unchanged; caller-provided user IDs are not a new authentication mechanism.
+
+## Limits and validation
+
+Defaults: six decision steps per task/cycle, 180-second execution slices,
+32,768 allocated tokens per goal, four active goal runs and five-second wake-up
+polling. All actions and decisions pass bounded structured contracts. Repeating
+an identical action/input in a cycle pauses that task. The allocation budget is
+persistent across resumes and monitoring cycles; changing it requires operator
+configuration. No automatic model-output repair retries are added.
+
+Estimates include prompt, schema where applicable, configured output and safety
+allowances. Provider usage can increase the recorded allocation after a call.
+These estimates are not an exact billing cap; image token estimates are approximate.
+Context limits are enforced against configured capabilities, with local token
+counting when available. Small model decision quality and decomposition completeness
+still require lab evaluation. Timeouts are cooperative for synchronous/native code.
+
+Automated validation uses the real Memory handlers/SQLite and actual gateway,
+Harness, protocol, action permission and JobManager code, with model/tool/HTTP
+boundaries doubled. Run:
+
+```bash
+PYTHONPATH=src python -m unittest discover -s src/test -p 'test_*.py'
+python -m compileall -q src
+```
+
+The automated suite has 76 passing tests, including API lifespan startup and chat
+with provider-only inference, a real SQLite-backed Memory service behind a mock
+HTTP transport, and terminal notice deduplication. Static checks include compilation,
+whitespace validation and Ruff correctness checks on the changed runtime modules.
+Live provider credentials, real model decisions, Kubernetes workload execution,
+interactive terminal redraw behaviour and end-to-end external notification delivery
+have not been tested. Keep the PR draft
+until lab validation is complete.

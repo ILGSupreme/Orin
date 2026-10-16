@@ -1,88 +1,275 @@
-"""Harness regressions without loading GPU engines or contacting a cluster."""
-import asyncio
-import importlib
 import json
-import sys
+import os
 import unittest
-from types import ModuleType, SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import patch, AsyncMock
 
-from common.jobs import JobManager, JobSpec, PipelineStage
-from common.protocol.routing_types import WorkResult
+import httpx
+
+from common.jobs import JobSpec
+from common.primer import Primer
+from common.protocol.ingress_types import InferenceSession
+from common.protocol.routing_types import CanonicalTask, WorkPacket, WorkResult
 from common.protocol.unified_types import ContentPart, RuntimeMessage
+from cortex.cortex.harness import Harness
+from cortex.cortex.runtime import CortexRuntime
+from cortex.cortex.inference import InferenceGateway
+from cortex.cli.command_router import CommandRouter, CommandFolder, Command, ShellState
+from test_agent_support import RuntimeFixture, memory_router
+from test_inference_gateway import config, response
 
 
-def engine_double(name, **attributes):
-    module = ModuleType(name)
-    module.__dict__.update(attributes)
-    return module
+class HarnessIntegrationTests(RuntimeFixture, unittest.IsolatedAsyncioTestCase):
+    def test_provider_only_api_lifespan_and_chat_without_gpu_initialization(self):
+        from fastapi.testclient import TestClient
+        from common.system.configuration import CortexConfiguration
+        from cortex import app as application
 
+        runtime = self.make_runtime()
+        real_client = httpx.AsyncClient
 
-class HarnessIntegrationTests(unittest.IsolatedAsyncioTestCase):
-    @classmethod
-    def setUpClass(cls):
-        # Replace only heavyweight inference/hardware boundaries. Harness,
-        # command router, Primer facade, protocols, and JobManager are real.
-        doubles = {
-            "common.engine.gguf": engine_double("common.engine.gguf", GGUFPrimerEngine=object),
-            "common.engine.vllm": engine_double("common.engine.vllm", VLLMPrimerEngine=object),
-            "common.system.profiler": engine_double("common.system.profiler"),
-        }
-        with patch.dict(sys.modules, doubles):
-            cls.harness_module = importlib.import_module("cortex.cortex.harness")
-            cls.commands_module = importlib.import_module("cortex.cli.command_router")
+        async def transport(request):
+            if request.url.host == "api.openai.com":
+                return httpx.Response(
+                    200,
+                    json=response(
+                        json.dumps(
+                            {
+                                "reply": "API provider reply",
+                                "tasks": [],
+                                "updates": [],
+                            }
+                        )
+                    ),
+                )
+            packet = WorkPacket.model_validate_json(request.content)
+            result = await runtime.store.http.runtime.handle_ingress(packet)
+            return httpx.Response(200, json=result.model_dump(mode="json"))
 
-    def request(self):
-        return {"user_id": "u", "session_id": "s", "metadata": {}, "content": [
-            RuntimeMessage(role="user", parts=[ContentPart(type="text", data="Investigate readiness")]).model_dump(),
-        ]}
+        cfg = CortexConfiguration(
+            inference=config(), inventory_memory_base_url="http://memory"
+        )
+        deployment = SimpleNamespace(
+            initialize_inventory=AsyncMock(), inventory_status=lambda: {"ok": True}
+        )
+        discovery = SimpleNamespace(
+            selector=SimpleNamespace(
+                pick_one=lambda request: SimpleNamespace(
+                    name="memory", url="http://memory", work_path="/work"
+                )
+            ),
+            refresher=SimpleNamespace(start=AsyncMock(), stop=AsyncMock()),
+        )
+        with (
+            patch.dict(os.environ, {"TEST_PROVIDER_KEY": "fake-key"}),
+            patch.object(
+                application.configuration, "load_configuration_file", return_value=cfg
+            ),
+            patch.object(
+                application.configuration, "get_configuration", return_value=cfg
+            ),
+            patch.object(application, "DeploymentService", return_value=deployment),
+            patch.object(application, "DiscoveryService", return_value=discovery),
+            patch.object(
+                application.httpx,
+                "AsyncClient",
+                side_effect=lambda **kw: real_client(
+                    transport=httpx.MockTransport(transport), **kw
+                ),
+            ),
+            TestClient(application.app) as client,
+        ):
+            ready = client.get("/ready")
+            self.assertTrue(ready.json()["accepting_requests"])
+            self.assertFalse(application.app.state.primer.is_ready())
+            reply = client.post(
+                "/chat",
+                json={
+                    "user_id": "u",
+                    "content": [
+                        RuntimeMessage(
+                            role="user", parts=[ContentPart(type="text", data="Hello")]
+                        ).model_dump(),
+                    ],
+                },
+            )
+            self.assertEqual(reply.status_code, 200)
+            self.assertEqual(
+                reply.json()["content"][0]["parts"][0]["data"], "API provider reply"
+            )
+            scoped = client.get(
+                "/goals",
+                params={"user_id": "u", "session_id": reply.json()["session_id"]},
+            )
+            self.assertEqual(scoped.json(), {"goals": []})
 
-    def primer(self):
-        return SimpleNamespace(_get_total_token_estimation=lambda **kw: 100)
+    async def test_private_conversation_is_not_exported_on_later_external_turn(self):
+        from common.protocol.internal_types import InferenceObject
+        from cortex.cortex import memory
 
-    async def test_executed_batch_reaches_final_synthesis(self):
-        module = self.harness_module
-        observed = RuntimeMessage(role="assistant", parts=[ContentPart(type="text", data="UNIQUE_OBSERVED_RESULT")])
-        result = WorkResult(work_id="task-a", status="completed", content=[observed])
-        captured = []
-        async def send(packet):
-            captured.append(packet)
-            return WorkResult(work_id=packet.work_id, status="completed", content=[observed])
-        router = SimpleNamespace(retrieve_many=AsyncMock(return_value="retrieve-batch"), send=send)
-        manager = JobManager()
-        manager.batch_progress = AsyncMock(return_value=[result.model_dump(mode="json")])
-        manager.define_pipeline("regression", stages=[
-            PipelineStage(name="read_and_send_packets", runner=lambda job: module.execute_read_and_send_packets(job, router, manager)),
-            PipelineStage(name="final", runner=lambda job: module.execute_final_response(job, router, self.primer())),
-        ])
-        with patch.object(module.memory, "get_prompts_context", AsyncMock(return_value=None)):
-            job = manager.start_pipeline(spec=JobSpec(kind="test", payload={
-                "inference_object": self.request(),
-                "response": WorkResult(work_id="batch", status="completed", metadata={"batch_id": "send-batch"}).model_dump(),
-            }), pipeline="regression")
-            await asyncio.wait_for(manager.tasks[job.job_id], 1)
-        self.assertEqual(job.status, "completed")
-        self.assertEqual(job.spec.payload["collated_results"]["summary"]["completed"], 1)
-        self.assertIn("UNIQUE_OBSERVED_RESULT", json.dumps([m.model_dump() for m in captured[0].task.messages]))
+        runtime = self.make_runtime()
+        db = runtime.store.http.runtime._memoryDB
+        db.create_chat_message(
+            user_id="u",
+            session_id="s",
+            role="user",
+            content="PRIVATE_TEXT",
+            content_type="text",
+            metadata={"inference_privacy": "local_only"},
+        )
+        db.create_chat_message(
+            user_id="u",
+            session_id="s",
+            role="assistant",
+            content="PUBLIC_TEXT",
+            content_type="text",
+            metadata={"inference_privacy": "external_allowed"},
+        )
+        req = InferenceObject(
+            user_id="u",
+            session_id="s",
+            content=[],
+            metadata={"privacy": "external_allowed"},
+        )
+        context = await memory.conversation_context(
+            memory_router(runtime.store.http), req, "local_only"
+        )
+        self.assertIn("PUBLIC_TEXT", str(context))
+        self.assertNotIn("PRIVATE_TEXT", str(context))
 
-    async def test_task_packet_ids_are_unique(self):
-        shaped = {"task_type": "llm", "task_role": "llm", "task_operation": "analyze", "task_message": "inspect"}
-        first = await self.harness_module._build_work_packet("u", shaped, self.primer())
-        second = await self.harness_module._build_work_packet("u", shaped, self.primer())
-        self.assertNotEqual(first.work_id, second.work_id)
+    async def test_same_unified_flow_for_chat_and_terminal_natural_input(self):
+        runtime = self.make_runtime({"reply": "Hello", "tasks": []})
+        transport = runtime.store.http
+        router = memory_router(transport)
+        harness = Harness(
+            router=router, job_manager=runtime.jobs, agent_runtime=runtime
+        )
+        cortex = CortexRuntime(
+            harness=harness, discovery_service=None, primer=None, command_router=None
+        )
+        req = InferenceSession(
+            user_id="u",
+            content=[
+                RuntimeMessage(
+                    role="user", parts=[ContentPart(type="text", data="Hello")]
+                )
+            ],
+        )
+        chat = await cortex.chat_non_stream(req)
+        terminal = await cortex.handle_session_non_stream(req)
+        for result in [chat, terminal]:
+            self.assertEqual(result.metadata["mode"], "unified")
+            self.assertEqual(result.content[0].parts[0].data, "Hello")
+            self.assertTrue(result.session_id)
 
-    async def test_agent_actions_are_explicit_and_ignore_selected_backend(self):
-        module = self.commands_module
+    async def test_provider_only_cortex_without_loaded_local_model(self):
+        runtime = self.make_runtime()
+        http = httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda req: httpx.Response(
+                    200,
+                    json=response(
+                        json.dumps(
+                            {"reply": "Provider reply", "tasks": [], "updates": []}
+                        )
+                    ),
+                )
+            )
+        )
+        self.addAsyncCleanup(http.aclose)
+        primer = Primer(external_http=http, cfg="cortex")
+        runtime.inference = InferenceGateway(
+            config(), primer=primer, router=None, http=http
+        )
+        harness = Harness(
+            router=memory_router(runtime.store.http),
+            job_manager=runtime.jobs,
+            agent_runtime=runtime,
+        )
+        cortex = CortexRuntime(
+            harness=harness, discovery_service=None, primer=primer, command_router=None
+        )
+        req = InferenceSession(
+            user_id="u",
+            metadata={"privacy": "external_allowed"},
+            content=[
+                RuntimeMessage(
+                    role="user", parts=[ContentPart(type="text", data="Hello")]
+                )
+            ],
+        )
+        with patch.dict(os.environ, {"TEST_PROVIDER_KEY": "fake-key"}):
+            result = await cortex.chat_non_stream(req)
+        self.assertFalse(primer.is_ready())
+        self.assertEqual(result.content[0].parts[0].data, "Provider reply")
+
+    async def test_direct_work_ingress_rejects_agent_tool_and_memory_requests(self):
+        runtime = self.make_runtime()
+        router = SimpleNamespace(send=AsyncMock())
+        harness = Harness(
+            router=router, job_manager=runtime.jobs, agent_runtime=runtime
+        )
+        for work_type in ["tool", "memory", "cortex"]:
+            result = await harness.handle_work_packet(
+                WorkPacket(
+                    work_id="external",
+                    metadata={"pipeline": "agent"},
+                    task=CanonicalTask(work_type=work_type, operation="list_nodes"),
+                )
+            )
+            self.assertEqual(result.status, "failed")
+        router.send.assert_not_awaited()
+
+    async def test_direct_llm_result_is_sanitized_and_correlated(self):
+        runtime = self.make_runtime()
+        router = SimpleNamespace(
+            send=AsyncMock(
+                return_value=WorkResult(
+                    work_id="backend-work",
+                    status="completed",
+                    backend_name="internal-pod",
+                    metadata={"backend_ref": {"url": "http://private"}},
+                )
+            )
+        )
+        harness = Harness(
+            router=router, job_manager=runtime.jobs, agent_runtime=runtime
+        )
+        accepted = await harness.handle_work_packet(
+            WorkPacket(
+                work_id="origin", task=CanonicalTask(work_type="llm", operation="chat")
+            )
+        )
+        await self.drain(runtime)
+        result = await harness.retrieve_work_packet(accepted.work_id)
+        self.assertEqual(result.work_id, accepted.work_id)
+        self.assertIsNone(result.backend_name)
+        self.assertEqual(result.metadata, {})
+
+    async def test_explicit_agent_actions_ignore_selected_backend(self):
         calls = []
+
         async def inspect(ctx, args):
             calls.append((ctx.backend, args))
             return "ready"
-        router = module.CommandRouter.__new__(module.CommandRouter)
-        router.root_folder = module.CommandFolder(name="Root", desc="test", commands=[module.Command(
-            command="/list_nodes", desc="inspect", kind="text", handler=inspect,
-            modes={"terminal"}, harness_action="list_nodes", safe_info_action=True,
-        )])
-        router.shell_state = module.ShellState(selected_backend_name="unrelated-backend")
+
+        router = CommandRouter.__new__(CommandRouter)
+        router.root_folder = CommandFolder(
+            name="Root",
+            desc="test",
+            commands=[
+                Command(
+                    command="/list_nodes",
+                    desc="inspect",
+                    kind="text",
+                    handler=inspect,
+                    modes={"terminal"},
+                    harness_action="list_nodes",
+                    safe_info_action=True,
+                )
+            ],
+        )
+        router.shell_state = ShellState(selected_backend_name="unrelated")
         self.assertEqual(await router.execute_agent_action("list_nodes"), "ready")
         self.assertEqual(calls, [(None, "")])
         with self.assertRaises(ValueError):
@@ -91,75 +278,21 @@ class HarnessIntegrationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await router.execute_agent_action("list_nodes")
 
-    async def test_normal_chat_does_not_start_pipeline(self):
-        from cortex.cortex.harness_types import ChatIngressInterpretationModel
-        from common.protocol.internal_types import InferenceObject
-        manager = JobManager()
-        harness = self.harness_module.Harness(self.primer(), SimpleNamespace(), manager, SimpleNamespace())
-        harness.collate_system_information = AsyncMock(return_value="")
-        harness._lightweight_interpret = AsyncMock(return_value=ChatIngressInterpretationModel(mode="chat", action="answer_only"))
-        plan = await harness._response_chat(InferenceObject.model_validate(self.request()), "chat")
-        self.assertIsNone(plan.background_job)
-        self.assertEqual(manager.list_jobs(), [])
-
-    async def test_direct_work_ingress_cannot_start_agent_actions(self):
-        from common.protocol.routing_types import CanonicalTask, WorkPacket, WorkType
-        manager = JobManager()
-        harness = self.harness_module.Harness(self.primer(), SimpleNamespace(), manager, SimpleNamespace())
-        result = await harness.handle_work_packet(WorkPacket(
-            work_id="external", task=CanonicalTask(work_type=WorkType.TOOL, operation="list_nodes"),
-            metadata={"pipeline": "agent", "admin": True},
-        ))
-        self.assertEqual(result.status, "failed")
-        self.assertEqual(manager.list_jobs(), [])
-
-    async def test_agent_pipeline_runs_through_harness(self):
-        from cortex.cortex.harness_types import ChatIngressInterpretationModel
-        from common.protocol.internal_types import InferenceObject
-        from test_cortex_agent import FakePrimer, FakeCommands
-        manager = JobManager()
-        primer = FakePrimer([
-            {"decision": "execute_action", "action": "list_nodes"},
-            {"decision": "finish", "satisfied": True, "answer": "node-a ready", "evidence": [1]},
-        ])
-        harness = self.harness_module.Harness(primer, SimpleNamespace(), manager, FakeCommands())
-        harness.collate_system_information = AsyncMock(return_value="")
-        harness._lightweight_interpret = AsyncMock(return_value=ChatIngressInterpretationModel(
-            mode="chat", action="start_pipeline", pipeline="agent",
-        ))
-        plan = await harness._response_chat(InferenceObject.model_validate(self.request()), "chat")
-        job = plan.background_job
-        self.assertIsNotNone(job)
-        await asyncio.wait_for(manager.tasks[job.job_id], 1)
-        self.assertEqual(job.spec.kind, "harness.agent")
-        self.assertEqual(job.status, "completed")
-        self.assertEqual(job.get_result()["metadata"]["agent_state"]["outcome"], "completed")
-
-    async def test_completed_job_summary_does_not_dump_payload(self):
-        manager = JobManager()
-        job = manager._create_job(JobSpec(kind="harness.agent", payload={
-            "session_id": "s", "agent_state": {"observations": ["INTERNAL_PAYLOAD_MARKER"]},
-        }))
-        job.status = "completed"
-        job.latest_result = WorkResult(work_id=job.job_id, status="completed", content=[
-            RuntimeMessage(role="assistant", parts=[ContentPart(type="text", data="visible result")]),
-        ]).model_dump()
-        summary = manager.summarize_jobs_for_prompt("s")
-        self.assertIn("visible result", summary)
-        self.assertNotIn("INTERNAL_PAYLOAD_MARKER", summary)
-
-    async def test_job_result_is_retrievable_through_harness(self):
-        from cortex.cortex.harness_types import ChatIngressInterpretationModel
-        from common.protocol.internal_types import InferenceObject
-        manager = JobManager()
-        harness = self.harness_module.Harness(self.primer(), SimpleNamespace(), manager, SimpleNamespace())
-        previous = manager._create_job(JobSpec(kind="harness.chat", payload={"session_id": "s"}))
-        previous.status = "completed"
-        previous.latest_result = WorkResult(status="completed", work_id=previous.job_id, content=[
-            RuntimeMessage(role="assistant", parts=[ContentPart(type="text", data="Completed finding")]),
-        ]).model_dump()
-        harness.collate_system_information = AsyncMock(return_value="")
-        harness._lightweight_interpret = AsyncMock(return_value=ChatIngressInterpretationModel(mode="chat", action="get_job_result"))
-        plan = await harness._response_chat(InferenceObject.model_validate(self.request()), "chat")
-        self.assertTrue(plan.respond_directly)
-        self.assertIn("Completed finding", plan.direct_text)
+    async def test_job_cancel_command_cancels_durable_goal(self):
+        runtime = self.make_runtime()
+        router = CommandRouter.__new__(CommandRouter)
+        router.job_manager = runtime.jobs
+        router.agent_runtime = SimpleNamespace(
+            control=AsyncMock(return_value="Cancelled durable goal")
+        )
+        job = runtime.jobs._create_job(
+            JobSpec(
+                kind="cortex.turn",
+                payload={"goal_id": "goal:one", "user_id": "u", "session_id": "s"},
+            )
+        )
+        result = await router.handle_cancel_job(None, job.job_id)
+        self.assertIn("Cancelled", result)
+        router.agent_runtime.control.assert_awaited_once_with(
+            "goal:one", "u", "s", "cancel"
+        )

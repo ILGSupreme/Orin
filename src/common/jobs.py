@@ -325,6 +325,12 @@ class JobManager:
 
     def _create_job(self, spec: JobSpec) -> Job:
         if len(self.jobs) >= self.max_jobs:
+            for key, old in list(self.jobs.items()):
+                if old.status in {"completed", "failed"} and key not in self.tasks:
+                    del self.jobs[key]
+                    if len(self.jobs) < self.max_jobs:
+                        break
+        if len(self.jobs) >= self.max_jobs:
             raise RuntimeError(f"Job limit reached: {self.max_jobs}")
 
         job_id = spec.job_id or f"{spec.kind}:{uuid.uuid4().hex[:8]}"

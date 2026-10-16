@@ -1,6 +1,8 @@
 # terminal_chat.py
 
 import os
+import threading
+from uuid import uuid4
 
 import requests
 
@@ -12,11 +14,14 @@ CHAT_ONLY = os.getenv("ORIN_CHAT_ONLY", "false").lower() in {"1", "true", "yes"}
 
 URL = f"{BASE_URL.rstrip('/')}/{ENDPOINT.lstrip('/')}"
 
-session_id = None
+session_id = os.getenv("ORIN_SESSION_ID")
 history = []
 
 command_buffer = ""
 chat_buffer: list[tuple[str, str]] = []
+terminal_lock = threading.RLock()
+sending = threading.Event()
+stop_notices = threading.Event()
 
 
 def text_msg(role: str, text: str) -> dict:
@@ -70,7 +75,7 @@ def clear_screen():
     os.system("clear")
 
 
-def render_terminal():
+def _render_terminal():
     clear_screen()
 
     if not CHAT_ONLY:
@@ -87,6 +92,62 @@ def render_terminal():
             print(f"Ai> {text}")
 
     print()
+
+
+def render_terminal():
+    with terminal_lock:
+        _render_terminal()
+
+
+def collect_goal_notices(current_session, seen):
+    response = requests.get(
+        f"{BASE_URL.rstrip('/')}/goals",
+        params={
+            "user_id": USER_ID,
+            "session_id": current_session,
+        },
+        timeout=10,
+    )
+    response.raise_for_status()
+    notices = []
+    for goal in response.json().get("goals", []):
+        values = goal.get("notices", [])
+        previous = seen.get(goal["id"])
+        if previous is None:
+            values = values[-1:]  # On reconnect, show the latest result per goal.
+        else:
+            ids = [notice["id"] for notice in values]
+            values = (
+                values[ids.index(previous) + 1 :] if previous in ids else values[-1:]
+            )
+        for notice in values:
+            notices.append((goal["id"], notice["id"], notice["text"]))
+    return notices
+
+
+def watch_goal_notices():
+    seen = {}
+    while not stop_notices.wait(2):
+        current = session_id
+        if not current or sending.is_set():
+            continue
+        try:
+            notices = collect_goal_notices(current, seen)
+        except (requests.RequestException, ValueError, KeyError, TypeError):
+            continue
+        with terminal_lock:
+            if current != session_id or sending.is_set() or not notices:
+                continue
+            for goal_id, notice_id, text in notices:
+                chat_buffer.append(("assistant", text))
+                seen[goal_id] = notice_id
+            _render_terminal()
+            try:
+                import readline
+
+                print("User> " + readline.get_line_buffer(), end="", flush=True)
+            except ImportError:
+                print("User> ", end="", flush=True)
 
 
 def send_streaming(payload: dict) -> tuple[str | None, list[dict], str, str | None]:
@@ -131,8 +192,10 @@ def send_text(text: str):
         "channel": "terminal",
         "stream": USE_STREAMING,
         "content": [text_msg("user", text)],
-        "metadata": {},
+        "metadata": {"turn_id": uuid4().hex},
     }
+    if os.getenv("ORIN_PRIVACY"):
+        payload["metadata"]["privacy"] = os.environ["ORIN_PRIVACY"]
 
     if session_id:
         payload["session_id"] = session_id
@@ -153,50 +216,51 @@ def send_text(text: str):
     render_terminal()
 
 
-print("AI terminal chat. Type /exit to quit.\n")
-
-if not CHAT_ONLY:
-    send_text("/render")
-else:
-    render_terminal()
-
-while True:
-    try:
-        user_input = input("User> ").strip()
-
-        if user_input in {"/exit", "/quit"}:
-            break
-
-        if not user_input:
-            continue
-
-        is_command = user_input.startswith("/")
-
-        try:
-            send_text(user_input)
-
-        except requests.HTTPError as e:
-            response = e.response
-            error_text = f"error> {response.status_code}: {response.text}"
-
-            if is_command:
-                command_buffer = error_text
-            else:
-                chat_buffer.append(("assistant", error_text))
-
-            render_terminal()
-
-        except Exception as e:
-            error_text = f"error> {e}"
-
-            if is_command:
-                command_buffer = error_text
-            else:
-                chat_buffer.append(("assistant", error_text))
-
-            render_terminal()
-
-    except KeyboardInterrupt:
-        print()
+def main():
+    global command_buffer
+    print("AI terminal chat. Type /exit to quit.\n")
+    if not CHAT_ONLY:
+        send_text("/render")
+    else:
         render_terminal()
-        continue
+    watcher = threading.Thread(target=watch_goal_notices, daemon=True)
+    watcher.start()
+    try:
+        while True:
+            try:
+                user_input = input("User> ").strip()
+                if user_input in {"/exit", "/quit"}:
+                    break
+                if not user_input:
+                    continue
+                is_command = user_input.startswith("/")
+                sending.set()
+                try:
+                    send_text(user_input)
+                except requests.HTTPError as exc:
+                    response = exc.response
+                    error_text = f"error> {response.status_code}: {response.text}"
+                    if is_command:
+                        command_buffer = error_text
+                    else:
+                        chat_buffer.append(("assistant", error_text))
+                    render_terminal()
+                except Exception as exc:
+                    error_text = f"error> {exc}"
+                    if is_command:
+                        command_buffer = error_text
+                    else:
+                        chat_buffer.append(("assistant", error_text))
+                    render_terminal()
+                finally:
+                    sending.clear()
+            except KeyboardInterrupt:
+                print()
+                render_terminal()
+    finally:
+        stop_notices.set()
+        watcher.join(timeout=1)
+
+
+if __name__ == "__main__":
+    main()

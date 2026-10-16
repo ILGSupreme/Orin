@@ -57,6 +57,12 @@ class MemoryRuntime:
         root_logger.info("Memory request work_id=%s operation=%s", req.work_id, op)
 
         try:
+            if op == "agent_goals_query":
+                return self._ok(req=req, goals=self._memoryDB.query_goals(inputs))
+            if op == "agent_goal_write":
+                return self._ok(req=req, goal=self._memoryDB.write_goal(inputs))
+            if op == "agent_goal_claim":
+                return self._ok(req=req, goal=self._memoryDB.claim_goal(inputs))
             if op in INVENTORY_OPS:
                 return self._handle_inventory_operation(req, op, inputs)
             if op in FEDERATION_RECORD_OPS:

@@ -5,14 +5,12 @@ from typing import Any
 
 import httpx
 
-from common.engine.gguf import GGUFPrimerEngine
-from common.engine.vllm import VLLMPrimerEngine
 from common.jobs import Job
 from common.protocol.adapter.openai_adapter import OpenAIStyleMessageAdapter
 from common.protocol.routing_types import WorkResult
 from common.protocol.unified_types import RuntimeMessage
 from common.provider.huggingface.hf_downloader import HFDownloader
-from common.system import configuration, profiler
+from common.system import configuration
 from common.types import MAX_TOKENS_POLICY, SAFETY_TOKEN_SIZE, Profile
 
 
@@ -29,15 +27,16 @@ class Primer:
         self._external_http_client = external_http
         self._profile = Profile()
         self._generation_lock = asyncio.Lock()
+        self._generation_tasks: set[asyncio.Task] = set()
         self.cfg: configuration.ServiceFileType = cfg
 
-        self.load_profile()
 
     # ---------------------------------------------------------------------------
     # Public Methods
     # ---------------------------------------------------------------------------
 
     def load_profile(self):
+        from common.system import profiler
         self._profile.set_machine_info(info=profiler.get_linux_info())
 
     def primer_config(self):
@@ -68,9 +67,12 @@ class Primer:
 
         await self.stop()
 
+        self.load_profile()
         if engine_type == "gguf":
+            from common.engine.gguf import GGUFPrimerEngine
             self._engine = GGUFPrimerEngine(cfg=self.primer_config())
         elif engine_type == "vllm":
+            from common.engine.vllm import VLLMPrimerEngine
             self._engine = VLLMPrimerEngine(cfg=self.primer_config())
         else:
             raise ValueError(f"Unsupported engine={engine_type}")
@@ -131,7 +133,8 @@ class Primer:
     async def stop(self) -> None:
         if self._engine is None:
             return
-        await self._engine.stop()
+        async with self._generation_lock:
+            await self._engine.stop()
 
     async def load_model(self, *args: Any, **kwargs: Any) -> None:
         if self._engine is None:
@@ -159,6 +162,7 @@ class Primer:
             kwargs["path"] = str(path)
 
         if kwargs["path"]:
+            from common.system import profiler
             profiles = profiler.get_model_profile(
                 path=kwargs["path"],
                 reserve_size=self._profile.reserve_size,
@@ -192,6 +196,24 @@ class Primer:
         total_estimated_nr_ctx = prompt_tokens + reserved_output_tokens + SAFETY_TOKEN_SIZE
         return total_estimated_nr_ctx <= effective_n_ctx
 
+    async def _await_generation(self, method, **kwargs):
+        # Native inference may continue in a thread after its caller is cancelled.
+        # Retain the lock until the underlying generation actually finishes.
+        await self._generation_lock.acquire()
+        try:
+            task = asyncio.create_task(method(**kwargs))
+        except BaseException:
+            self._generation_lock.release()
+            raise
+        self._generation_tasks.add(task)
+        def completed(done):
+            self._generation_tasks.discard(done)
+            if not done.cancelled():
+                done.exception()  # Observe failures even when the caller has left.
+            self._generation_lock.release()
+        task.add_done_callback(completed)
+        return await asyncio.shield(task)
+
     # ---------------------------------------------------------------------------
     # Chat/Stream Methods
     # ---------------------------------------------------------------------------
@@ -205,6 +227,11 @@ class Primer:
         constraints = kwargs.get("constraints", {})
         operation = kwargs.get("operation", "chat")
         max_new_tokens = MAX_TOKENS_POLICY.get(operation, 128) + SAFETY_TOKEN_SIZE
+        if "max_output_tokens" in constraints:
+            requested = constraints["max_output_tokens"]
+            if type(requested) is not int or requested < 1:
+                raise ValueError("max_output_tokens must be a positive integer")
+            max_new_tokens = min(requested, self.primer_config().max_new_tokens)
         temperature = 0.9
         grammar = None
         if constraints:
@@ -219,13 +246,10 @@ class Primer:
             messages=messages, operation=operation, constraints=constraints
         )
 
-        async with self._generation_lock:
-            content = await self._engine.chat_text(
-                messages=rendered_messages,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                grammar=grammar,
-            )
+        content = await self._await_generation(
+            self._engine.chat_text, messages=rendered_messages,
+            max_new_tokens=max_new_tokens, temperature=temperature, grammar=grammar,
+        )
 
         return content
 
@@ -238,6 +262,11 @@ class Primer:
         constraints = kwargs.get("constraints", {})
         operation = kwargs.get("operation", "chat")
         max_new_tokens = MAX_TOKENS_POLICY.get(operation, 128) + SAFETY_TOKEN_SIZE
+        if "max_output_tokens" in constraints:
+            requested = constraints["max_output_tokens"]
+            if type(requested) is not int or requested < 1:
+                raise ValueError("max_output_tokens must be a positive integer")
+            max_new_tokens = min(requested, self.primer_config().max_new_tokens)
         temperature = 0.9
         grammar = None
         if constraints:
@@ -252,13 +281,10 @@ class Primer:
             messages=messages, operation=operation, constraints=constraints
         )
 
-        async with self._generation_lock:
-            content = await self._engine.chat_text(
-                messages=rendered_messages,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                grammar=grammar,
-            )
+        content = await self._await_generation(
+            self._engine.chat_text, messages=rendered_messages,
+            max_new_tokens=max_new_tokens, temperature=temperature, grammar=grammar,
+        )
 
         return self._message_adapter.parse_response(content=content, role="assistant")
 
@@ -271,6 +297,11 @@ class Primer:
         constraints = kwargs.get("constraints", {})
         operation = kwargs.get("operation", "chat")
         max_new_tokens = MAX_TOKENS_POLICY.get(operation, 128) + SAFETY_TOKEN_SIZE
+        if "max_output_tokens" in constraints:
+            requested = constraints["max_output_tokens"]
+            if type(requested) is not int or requested < 1:
+                raise ValueError("max_output_tokens must be a positive integer")
+            max_new_tokens = min(requested, self.primer_config().max_new_tokens)
         temperature = 0.9
         grammar = None
         if constraints:
@@ -284,13 +315,10 @@ class Primer:
         rendered_messages = self._message_adapter.render_messages(
             messages=messages, operation=operation, constraints=constraints
         )
-        async with self._generation_lock:
-            return await self._engine.chat_json(
-                messages=rendered_messages,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                grammar=grammar,
-            )
+        return await self._await_generation(
+            self._engine.chat_json, messages=rendered_messages,
+            max_new_tokens=max_new_tokens, temperature=temperature, grammar=grammar,
+        )
 
     async def chat_json_message(self, **kwargs: Any) -> list[RuntimeMessage]:
         if self._engine is None:
@@ -301,6 +329,11 @@ class Primer:
         constraints = kwargs.get("constraints", {})
         operation = kwargs.get("operation", "chat")
         max_new_tokens = MAX_TOKENS_POLICY.get(operation, 128) + SAFETY_TOKEN_SIZE
+        if "max_output_tokens" in constraints:
+            requested = constraints["max_output_tokens"]
+            if type(requested) is not int or requested < 1:
+                raise ValueError("max_output_tokens must be a positive integer")
+            max_new_tokens = min(requested, self.primer_config().max_new_tokens)
         temperature = 0.9
         grammar = None
         if constraints:
@@ -314,13 +347,10 @@ class Primer:
         rendered_messages = self._message_adapter.render_messages(
             messages=messages, operation=operation, constraints=constraints
         )
-        async with self._generation_lock:
-            content = await self._engine.chat_json(
-                messages=rendered_messages,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                grammar=grammar,
-            )
+        content = await self._await_generation(
+            self._engine.chat_json, messages=rendered_messages,
+            max_new_tokens=max_new_tokens, temperature=temperature, grammar=grammar,
+        )
 
         return self._message_adapter.parse_response(content=content, role="assistant")
 
@@ -333,6 +363,11 @@ class Primer:
         constraints = kwargs.get("constraints", {})
         operation = kwargs.get("operation", "chat")
         max_new_tokens = MAX_TOKENS_POLICY.get(operation, 128) + SAFETY_TOKEN_SIZE
+        if "max_output_tokens" in constraints:
+            requested = constraints["max_output_tokens"]
+            if type(requested) is not int or requested < 1:
+                raise ValueError("max_output_tokens must be a positive integer")
+            max_new_tokens = min(requested, self.primer_config().max_new_tokens)
         temperature = 0.9
         grammar = None
         if constraints:

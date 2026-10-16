@@ -2545,10 +2545,15 @@ class CommandRouter:
     # Execute Functions
     # ---------------------------------------------------------------------------
 
-    def handle_cancel_job(self, ctx: CommandContext, args: str = "") -> str:
+    async def handle_cancel_job(self, ctx: CommandContext, args: str = "") -> str:
         job_id = args.strip()
         if not job_id or len(job_id.split()) != 1:
             return "Usage: /cancel_job <job_id>"
+        job = self.job_manager.get(job_id)
+        runtime = getattr(self, "agent_runtime", None)
+        if runtime is not None and job is not None and job.spec.kind == "cortex.turn":
+            return await runtime.control(job.spec.payload["goal_id"],
+                job.spec.payload["user_id"], job.spec.payload["session_id"], "cancel")
         if self.job_manager.cancel(job_id):
             return f"Cancelled {job_id}. Already submitted backend work may continue."
         return f"No active local job found: {job_id}"

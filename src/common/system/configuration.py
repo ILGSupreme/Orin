@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Literal, cast, overload
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 ServiceFileType = Literal["cortex", "llm", "federation"]
 
@@ -61,7 +61,59 @@ class PrimerConfiguration(BaseModel):
     gpu_memory_util: float = 0.50
     tensor_parallel_size: int = 1
 
+class InferenceBackendConfiguration(BaseModel):
+    kind: Literal["primer", "routed", "openai"]
+    model: str = ""
+    api_key_env: str = "OPENAI_API_KEY"
+    url: str = "https://api.openai.com/v1/responses"
+    context_tokens: int = Field(default=4096, ge=512)
+    modalities: list[str] = Field(default_factory=lambda: ["text"])
+    timeout_seconds: float = Field(default=60, gt=0, le=300)
+
+    @model_validator(mode="after")
+    def validate_provider(self):
+        from urllib.parse import urlparse
+        if self.kind == "openai":
+            url = urlparse(self.url)
+            if not self.model or url.scheme != "https" or not url.netloc or url.username or url.password or url.query:
+                raise ValueError("Provider requires a model and a credential-free HTTPS URL")
+        return self
+
+
+class InferenceConfiguration(BaseModel):
+    backends: dict[str, InferenceBackendConfiguration] = Field(default_factory=lambda: {
+        "local": InferenceBackendConfiguration(kind="primer"),
+        "cluster": InferenceBackendConfiguration(kind="routed"),
+    })
+    bindings: dict[str, list[str]] = Field(default_factory=lambda: {
+        "interpret": ["local"], "decide": ["local"],
+        "work": ["cluster"],
+    })
+    allow_external: bool = False
+    default_privacy: Literal["local_only", "external_allowed"] = "local_only"
+
+    @model_validator(mode="after")
+    def validate_bindings(self):
+        for role in ("interpret", "decide", "work"):
+            if not self.bindings.get(role) or not set(self.bindings[role]) <= self.backends.keys():
+                raise ValueError(f"Invalid inference binding: {role}")
+        return self
+
+
+class ToolConfiguration(BaseModel):
+    name: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9_]*$")
+    operation: str = Field(min_length=1)
+    description: str = Field(min_length=1, max_length=500)
+    capability: str = Field(min_length=1)
+    input_key: str = Field(default="query", min_length=1)
+    # Only read-only tool adapters are enabled in this implementation.
+    read_only: Literal[True] = True
+
+
 class CortexConfiguration(BaseModel):
+    inference: InferenceConfiguration = Field(default_factory=InferenceConfiguration)
+    agent_tools: list[ToolConfiguration] = Field(default_factory=list)
+    agent_limits: dict[str, Any] = Field(default_factory=dict)
     # Pin inventory to one authoritative Memory service, not a discovered replica.
     inventory_memory_base_url: str | None = None
 

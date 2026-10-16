@@ -55,9 +55,12 @@ Cortex is responsible for receiving user requests, managing terminal commands,
 coordinating memory/session state, discovering backend services, and routing
 runtime work.
 
-Cortex also supports a bounded local agent pipeline that chooses follow-up
-actions from observed results. See [Cortex agent runs](docs/cortex-agent.md) for
-the permitted actions, execution limits, cancellation, and current limitations.
+Natural requests use one persistent agent runtime that can combine conversation,
+information requests and delegated work. Cortex maintains goals and feedback while
+local, clustered and provider inference remain replaceable. See
+[the unified runtime](docs/cortex-agent.md) and
+[its action plan](docs/unified-agent-action-plan.md) for configuration, execution
+limits, recovery and current limitations.
 
 ### LLM
 

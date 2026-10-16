@@ -78,6 +78,16 @@
 \date{June 4, 2026}
 
 \begin{document}
+
+\section*{Implementation update: unified agent runtime}
+Natural chat and terminal conversation now share a persistent goal/task runtime.
+Cortex owns execution and responsibility feedback loops; local Primer, discovered
+cluster LLMs and configured provider inference are interchangeable. Goals, task
+observations, clarification, notices and schedule/event wake-ups are persisted
+through Memory with revisions and execution leases. The older chat/agent mode
+and fixed-pipeline descriptions in this document are superseded by the repository
+file \texttt{docs/cortex-agent.md}. Live model and lab validation remains pending.
+
 \maketitle
 
 {
