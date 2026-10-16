@@ -911,6 +911,9 @@ ${runtime_class_line}
         - name: memory
           image: ${memory_image}
           imagePullPolicy: Always
+          env:
+            - name: MEMORY_BASE_DIR
+              value: /data/memory
           ports:
             - containerPort: 8080
               name: http

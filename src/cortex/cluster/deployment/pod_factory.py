@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import Literal
 
 from cortex.cluster.deployment.types import (
@@ -156,6 +157,22 @@ def create_pod_app_specs(
         else runtime_class_name
     )
 
+    selected_mount_path = pvc_mount_path or (
+        "/data/memory" if role == "memory" else defaults.pvc_mount_path
+    )
+    selected_env = dict(env or {})
+    if role == "memory" and pvc_enabled:
+        base_dir = selected_env.setdefault("MEMORY_BASE_DIR", selected_mount_path)
+        base_path = PurePosixPath(base_dir)
+        mount_path = PurePosixPath(selected_mount_path)
+        if (
+            not base_path.is_absolute()
+            or ".." in base_path.parts
+            or ".." in mount_path.parts
+            or not base_path.is_relative_to(mount_path)
+        ):
+            raise ValueError("MEMORY_BASE_DIR must be inside the Memory PVC mount")
+
     deployment = PodDeploymentSpec(
         name=app_name,
         image=selected_image,
@@ -168,12 +185,12 @@ def create_pod_app_specs(
         service_account_name=service_account_for(role, defaults),
         node_selector=node_selector or {},
         affinity=affinity,
-        env=env or {},
+        env=selected_env,
         env_from_config_maps=[config_map] if config_map else [],
         pvc=(
             PodPvcSpec(
                 name=pvc_name_for(app_name),
-                mount_path=pvc_mount_path or defaults.pvc_mount_path,
+                mount_path=selected_mount_path,
                 size=pvc_size or defaults.pvc_size,
                 storage_class_name=defaults.pvc_storage_class_name,
             )
