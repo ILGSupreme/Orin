@@ -20,6 +20,7 @@ from common.protocol.routing_types import WorkPacket
 from common.system import configuration
 from cortex.cli.command_router import CommandRouter
 from cortex.cluster.deployment.service import DeploymentService
+from cortex.cluster.deployment.inventory import InventoryUnavailable
 from cortex.cluster.discovery.client import BackendClient
 from cortex.cluster.discovery.policy import BackendRoutingPolicy
 from cortex.cluster.discovery.services import DiscoveryService
@@ -132,6 +133,10 @@ async def lifespan(app: FastAPI):
     await app.state.discovery_service.refresher.start()
 
     try:
+        try:
+            await app.state.deployment_service.initialize_inventory(app.state.internal_http)
+        except InventoryUnavailable as exc:
+            root_logger.warning("Inventory startup load failed: %s", exc)
         yield
     finally:
         await app.state.discovery_service.refresher.stop()
@@ -193,6 +198,7 @@ async def ready(request: Request):
         "ok": True,
         "accepting_requests": True,
         "primer": _primer.status(),
+        "inventory": deployment(request).inventory_status(),
     }
 
 

@@ -8,6 +8,7 @@ from kubernetes import client, config
 from kubernetes.client.exceptions import ApiException
 
 from common.system import configuration
+from cortex.cluster.deployment.inventory import PersistentInventory, InventoryUnavailable
 from cortex.cluster.deployment.pod_factory import PodFactoryDefaults, PodImageConfig
 from cortex.cluster.deployment.pod_naming import (
     backend_base_selector,
@@ -48,7 +49,7 @@ class DeploymentService:
     def __init__(
         self,
     ) -> None:
-        self.inventory = Inventory()
+        self._inventory_store: PersistentInventory | None = None
 
         ##load configuration file
         cfg = configuration.get_configuration("cortex")
@@ -65,7 +66,7 @@ class DeploymentService:
         self.core = client.CoreV1Api()
         self.apps = client.AppsV1Api()
 
-        self.add_node(
+        self._control_node = self._make_node(
             alias=cfg.alias,
             host=cfg.host,
             ip=cfg.ip,
@@ -161,7 +162,7 @@ class DeploymentService:
             cortex_service_account_name=deployment_cfg.cortex_service_account_name
         )
 
-    def add_node(
+    def _make_node(
         self,
         *,
         alias: str,
@@ -194,11 +195,64 @@ class DeploymentService:
             ),
         )
 
-        self.inventory.addNode(node)
         return node
 
-    def remove_node(self, alias: str) -> bool:
-        return self.inventory.removeNode(alias)
+    @property
+    def inventory(self) -> Inventory:
+        if self._inventory_store is None:
+            raise InventoryUnavailable("Node inventory is not initialized")
+        return self._inventory_store.snapshot
+
+    def inventory_status(self) -> dict:
+        error = (
+            self._inventory_store.error
+            if self._inventory_store is not None
+            else "Node inventory is not initialized"
+        )
+        return {"ready": error is None, "error": error}
+
+    async def initialize_inventory(self, http) -> None:
+        cfg = configuration.get_configuration("cortex")
+        base_url = cfg.inventory_memory_base_url or (
+            f"http://memory-service.{self.namespace}.svc.cluster.local:8080"
+        )
+        self._inventory_store = PersistentInventory(
+            http=http, base_url=base_url, namespace=self.namespace,
+            control_node=self._control_node,
+        )
+        await self.refresh_inventory()
+
+    async def refresh_inventory(self) -> None:
+        if self._inventory_store is None:
+            raise InventoryUnavailable("Node inventory is not initialized")
+        await self._inventory_store.refresh()
+
+    async def add_node(
+        self,
+        *,
+        alias: str,
+        host: str,
+        ip: str,
+        platform: MachinePlatform,
+        ssh_user: str = "ubuntu",
+        ssh_key: str | None = "~/.ssh/id_ed25519",
+        ssh_port: int = 22,
+        nvidia_gpu: bool = False,
+        k3s_node_name: str | None = None,
+    ) -> Node:
+        if self._inventory_store is None:
+            raise InventoryUnavailable("Node inventory is not initialized")
+        node = self._make_node(
+            alias=alias, host=host, ip=ip, platform=platform,
+            ssh_user=ssh_user, ssh_key=ssh_key, ssh_port=ssh_port,
+            nvidia_gpu=nvidia_gpu, k3s_node_name=k3s_node_name,
+        )
+        return await self._inventory_store.add(node)
+
+    async def remove_node(self, alias: str) -> bool:
+        if self._inventory_store is None:
+            raise InventoryUnavailable("Node inventory is not initialized")
+        return await self._inventory_store.remove(alias)
 
     def get_node(self, alias: str) -> Node | None:
         return self.inventory.getNode(alias)

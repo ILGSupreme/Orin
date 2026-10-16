@@ -1614,6 +1614,7 @@ class CommandRouter:
                     size=storage_profile,
                 )
 
+            await self.deployment_service.refresh_inventory()
             placement = self.deployment_service.resolve_pod_placement(
                 role=role,
                 platform=parsed.platform,
@@ -1784,6 +1785,7 @@ class CommandRouter:
             )
 
         try:
+            await self.deployment_service.refresh_inventory()
             result = self.deployment_service.install_kubernetes(
                 parsed.alias,
                 mode=parsed.mode,
@@ -1873,7 +1875,7 @@ class CommandRouter:
             if parsed.platform == "jetson" and not parsed.no_gpu:
                 nvidia_gpu = True
 
-            node = self.deployment_service.add_node(
+            node = await self.deployment_service.add_node(
                 alias=alias,
                 host=parsed.host,
                 ip=parsed.ip,
@@ -1922,12 +1924,13 @@ class CommandRouter:
         try:
             alias = pod_naming.normalize_name_part(parsed.alias)
 
+            await self.deployment_service.refresh_inventory()
             existing = self.deployment_service.get_node(alias)
 
             if existing is None:
                 return f"Node not found in inventory: {alias}\n"
 
-            removed = self.deployment_service.remove_node(alias)
+            removed = await self.deployment_service.remove_node(alias)
 
             if not removed:
                 return f"Node not removed: {alias}\n"
@@ -1973,6 +1976,7 @@ class CommandRouter:
             )
 
         try:
+            await self.deployment_service.refresh_inventory()
             labels = self.deployment_service.label_node(
                 alias=parsed.alias,
                 priority_roles=parsed.roles,
@@ -2165,6 +2169,7 @@ class CommandRouter:
             )
 
         try:
+            await self.deployment_service.refresh_inventory()
             nodes = self.deployment_service.list_inventory_nodes(
                 verbose=parsed.verbose,
             )

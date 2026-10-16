@@ -62,6 +62,9 @@ class PrimerConfiguration(BaseModel):
     tensor_parallel_size: int = 1
 
 class CortexConfiguration(BaseModel):
+    # Pin inventory to one authoritative Memory service, not a discovered replica.
+    inventory_memory_base_url: str | None = None
+
     namespace: str = "orin"
 
     alias: str = "orin"
