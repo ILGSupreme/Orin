@@ -16,6 +16,7 @@ class KubernetesDiscoveryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.paths = []
         self.endpoint_status = 200
+        self.endpoint_items = None
         test = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -47,6 +48,8 @@ class KubernetesDiscoveryTests(unittest.IsolatedAsyncioTestCase):
                             ],
                         }],
                     } if status == 200 else {'message': 'discovery unavailable'}
+                    if status == 200 and test.endpoint_items is not None:
+                        payload['items'] = test.endpoint_items
                 body = json.dumps(payload).encode()
                 self.send_response(status)
                 self.send_header('Content-Type', 'application/json')
@@ -87,3 +90,26 @@ class KubernetesDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ApiException) as raised:
             await self.provider.discover()
         self.assertEqual(raised.exception.status, 500)
+
+    async def test_empty_endpoint_slices_do_not_prevent_discovery(self):
+        for endpoints in ({}, {'endpoints': None}, {'endpoints': []}):
+            with self.subTest(endpoints=endpoints):
+                self.endpoint_items = [{
+                    'metadata': {'labels': {'kubernetes.io/service-name': 'memory-service'}},
+                    'addressType': 'IPv4',
+                    **endpoints,
+                }]
+                backends = await self.provider.discover()
+                self.assertEqual(len(backends), 1)
+                self.assertEqual(backends[0].health.ready_endpoints, 0)
+
+    async def test_empty_slices_can_coexist_with_ready_slices(self):
+        metadata = {'labels': {'kubernetes.io/service-name': 'memory-service'}}
+        self.endpoint_items = [
+            {'metadata': metadata, 'addressType': 'IPv4'},
+            {'metadata': metadata, 'addressType': 'IPv4', 'endpoints': [
+                {'addresses': ['10.0.0.1'], 'conditions': {'ready': True}},
+            ]},
+        ]
+        backends = await self.provider.discover()
+        self.assertEqual(backends[0].health.ready_endpoints, 1)

@@ -41,7 +41,7 @@ are separate capabilities.
 
 ## Implementation status
 
-Steps 1-8 are implemented in the reworked PR. Step 9 has 78 passing automated
+Steps 1-8 are implemented in the reworked PR. Step 9 has 80 passing automated
 tests, including provider-only API startup, real SQLite persistence/leases,
 restart and clarification recovery, feedback invalidation, privacy boundaries,
 scoped inputs, mixed requests and terminal notices. Step 10 updates the same
