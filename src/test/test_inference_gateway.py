@@ -26,6 +26,32 @@ class Output(BaseModel):
     reply: str
 
 
+class LocalGatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_local_generation_and_timeout_on_supported_python_versions(self):
+        cfg = InferenceConfiguration(
+            backends={"local": {"kind": "primer", "timeout_seconds": 0.02}},
+            bindings={role: ["local"] for role in ("interpret", "decide", "work")},
+        )
+        primer = SimpleNamespace(
+            is_ready=lambda: True,
+            _get_total_token_estimation=lambda **kw: 100,
+            status=lambda: {"effective_n_ctx": 4096},
+            chat_json=AsyncMock(return_value={"reply": "Hello"}),
+        )
+        gateway = InferenceGateway(cfg, primer=primer, router=None, http=None)
+        result = await gateway.generate("interpret", [], privacy="local_only", model=Output)
+        self.assertEqual(Output.model_validate_json(result.text).reply, "Hello")
+
+        async def stalled(**kwargs):
+            await asyncio.Event().wait()
+
+        primer.chat_json = stalled
+        with self.assertLogs("cortex.cortex.inference", level="WARNING") as logs:
+            with self.assertRaises(InferenceUnavailable):
+                await gateway.generate("interpret", [], privacy="local_only", model=Output)
+        self.assertIn("error_type=TimeoutError", logs.output[0])
+
+
 def config(**extra):
     return InferenceConfiguration(
         **{

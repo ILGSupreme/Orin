@@ -13,13 +13,33 @@ from common.protocol.routing_types import CanonicalTask, WorkPacket, WorkResult
 from common.protocol.unified_types import ContentPart, RuntimeMessage
 from cortex.cortex.harness import Harness
 from cortex.cortex.runtime import CortexRuntime
-from cortex.cortex.inference import InferenceGateway
+from cortex.cortex.inference import InferenceGateway, InferenceUnavailable
 from cortex.cli.command_router import CommandRouter, CommandFolder, Command, ShellState
 from test_agent_support import RuntimeFixture, memory_router
 from test_inference_gateway import config, response
 
 
 class HarnessIntegrationTests(RuntimeFixture, unittest.IsolatedAsyncioTestCase):
+    def test_inference_failure_returns_safe_503_for_terminal_client(self):
+        from fastapi.testclient import TestClient
+        from cortex import app as application
+
+        runtime = SimpleNamespace(handle_session_stream=AsyncMock(
+            side_effect=InferenceUnavailable("private backend response or credentials")
+        ))
+        client = TestClient(application.app)
+        self.addCleanup(client.close)
+        with patch.object(application.app.state, "cortex_runtime", runtime, create=True):
+            response = client.post('/terminal_chat', json={
+                'user_id': 'u', 'stream': True,
+                'content': [RuntimeMessage(role='user', parts=[
+                    ContentPart(type='text', data='Hello'),
+                ]).model_dump()],
+            })
+        self.assertEqual(response.status_code, 503)
+        self.assertIn('Configured inference', response.json()['detail'])
+        self.assertNotIn('private backend', response.text)
+
     def test_provider_only_api_lifespan_and_chat_without_gpu_initialization(self):
         from fastapi.testclient import TestClient
         from common.system.configuration import CortexConfiguration

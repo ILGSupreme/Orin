@@ -27,7 +27,7 @@ from cortex.cluster.discovery.services import DiscoveryService
 from cortex.cortex.harness import Harness
 from cortex.cortex.agent import AgentRuntime
 from cortex.cortex.actions import ActionRegistry
-from cortex.cortex.inference import InferenceGateway
+from cortex.cortex.inference import InferenceGateway, InferenceUnavailable
 from cortex.cortex.goal_store import GoalStore
 from common.protocol.agent_types import AgentLimits, GoalControl
 from cortex.cortex import memory as cortex_memory
@@ -166,6 +166,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="cortex", lifespan=lifespan)
+
+
+@app.exception_handler(InferenceUnavailable)
+async def inference_unavailable(request: Request, exc: InferenceUnavailable):
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Configured inference could not complete the request. Check backend availability and operator logs."},
+    )
 
 
 @app.get("/goals")

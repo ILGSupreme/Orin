@@ -1,6 +1,7 @@
 # CPU-only dependencies for deterministic tests; no inference engines or models.
 # Keep shared package pins aligned with src/cortex/requirements.txt.
 fastapi==0.115.8
+async-timeout==5.0.1
 httpx==0.27.2
 pydantic==2.10.6
 requests==2.32.5

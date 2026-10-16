@@ -240,7 +240,7 @@ PYTHONPATH=src python -m unittest discover -s src/test -p 'test_*.py'
 python -m compileall -q src
 ```
 
-The automated suite has 80 passing tests, including API lifespan startup and chat
+The automated suite has 82 passing tests on Python 3.10 and 3.12, including API lifespan startup and chat
 with provider-only inference, a real SQLite-backed Memory service behind a mock
 HTTP transport, and terminal notice deduplication. Static checks include compilation,
 whitespace validation and Ruff correctness checks on the changed runtime modules.
@@ -248,3 +248,8 @@ Live provider credentials, real model decisions, Kubernetes workload execution,
 interactive terminal redraw behaviour and end-to-end external notification delivery
 have not been tested. Keep the PR draft
 until lab validation is complete.
+
+Inference, goal slices and pipeline stages use the `async-timeout` compatibility
+library because current images run Python 3.10. Inference failures return a
+sanitized HTTP 503; operator logs include backend, role and exception type without
+provider response bodies or submitted data.

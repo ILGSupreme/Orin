@@ -2,7 +2,9 @@
 
 `.github/workflows/ci.yml` runs on pull requests, pushes to `main`, and manual
 dispatch. The stable job name is **CPU checks**. It uses a fresh GitHub-hosted
-Ubuntu 24.04 runner and Python 3.12, with a 15-minute timeout. A newer run for
+Ubuntu 24.04 runner for each of Python 3.10 (matching current images) and 3.12,
+with a 15-minute timeout. The **CPU checks** gate requires both versions to pass.
+A newer run for
 the same PR/ref cancels the older run.
 
 The workflow compiles Python sources, checks selected runtime modules for Ruff
@@ -23,7 +25,7 @@ not included in unit-test discovery.
 
 ## Run locally
 
-From the repository root, using Python 3.12:
+From the repository root, using Python 3.10 or 3.12:
 
 ```bash
 python -m venv .venv

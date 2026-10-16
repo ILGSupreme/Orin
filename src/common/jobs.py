@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from async_timeout import timeout
 import inspect
 import logging
 import time as monotonic_time
@@ -523,7 +524,7 @@ class JobManager:
                         message=f"Running stage {index}/{len(definition.stages)}: {stage.name}",
                     )
 
-                    async with asyncio.timeout(stage.timeout_seconds):
+                    async with timeout(stage.timeout_seconds):
                         result: WorkResult = await stage.runner(job)
                         result = await self._wait_for_stage_result(
                             job=job, stage=stage, index=index,

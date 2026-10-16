@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import os
-import asyncio
+import logging
 from dataclasses import dataclass
 from uuid import uuid4
+
+from async_timeout import timeout
 
 from common.protocol.routing_types import (
     CanonicalTask,
@@ -16,6 +18,8 @@ from common.protocol.routing_types import (
 )
 from common.protocol.unified_types import extract_last_assistant_text
 from common.system.configuration import InferenceConfiguration
+
+logger = logging.getLogger(__name__)
 
 
 class InferenceUnavailable(RuntimeError):
@@ -137,7 +141,7 @@ class InferenceGateway:
             if charge:
                 await charge(estimate)
             try:
-                async with asyncio.timeout(backend.timeout_seconds):
+                async with timeout(backend.timeout_seconds):
                     if backend.kind == "openai":
                         text, actual = await self._provider(
                             backend, messages, model, max_output_tokens
@@ -167,8 +171,12 @@ class InferenceGateway:
                 if model:
                     # Enforce the same contract for every inference backend.
                     model.model_validate_json(text)
-            except Exception:
+            except Exception as exc:
                 # Never echo provider error bodies, credentials, or submitted data.
+                logger.warning(
+                    "Inference failed backend=%s role=%s error_type=%s",
+                    name, role, type(exc).__name__,
+                )
                 errors.append(f"{name}: inference failed")
                 continue
             if charge and actual > estimate:

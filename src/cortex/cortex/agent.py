@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from async_timeout import timeout
 import json
 import logging
 import hashlib
@@ -315,7 +316,7 @@ class AgentRuntime:
                     task.status = "ready"
             self._settle(goal)
             await self._save(goal)
-            async with asyncio.timeout(self.limits.slice_seconds):
+            async with timeout(self.limits.slice_seconds):
                 while True:
                     ready = [
                         task
@@ -346,7 +347,7 @@ class AgentRuntime:
                         "Interrupted goal will recover after its lease expires"
                     )
             raise
-        except TimeoutError:
+        except asyncio.TimeoutError:
             if goal:
                 for task in goal.tasks:
                     if task.status == "running":
@@ -501,7 +502,7 @@ class AgentRuntime:
                         observed.text,
                         observed.work_id,
                     )
-                except (TimeoutError, asyncio.CancelledError):
+                except (asyncio.TimeoutError, asyncio.CancelledError):
                     raise
                 except Exception as exc:
                     self._observe(
@@ -509,7 +510,7 @@ class AgentRuntime:
                     )
                 task.pending_action, task.pending_work_id = None, None
                 task.status = "ready"
-        except (TimeoutError, asyncio.CancelledError):
+        except (asyncio.TimeoutError, asyncio.CancelledError):
             raise
         except Exception as exc:
             task.status, task.answer = "blocked", str(exc)[:1000]

@@ -15,7 +15,11 @@ concurrency:
 
 jobs:
   cpu-checks:
-    name: CPU checks
+    name: Python ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.12']
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     defaults:
@@ -33,7 +37,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: requirements-test.txt
       - name: Install test dependencies
@@ -48,6 +52,7 @@ jobs:
         run: |
           python -m ruff check --select F,E9 \
             src/cortex/cortex \
+            src/cortex/app.py src/common/jobs.py \
             src/cortex/cluster/discovery/discovery_k8s.py \
             src/common/protocol/agent_types.py \
             src/common/primer.py \
@@ -67,7 +72,19 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: cpu-check-failure-logs
+          name: cpu-check-failure-logs-python-${{ matrix.python }}
           path: ci-logs/
           if-no-files-found: ignore
           retention-days: 7
+
+  required-check:
+    name: CPU checks
+    needs: cpu-checks
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require all Python versions to pass
+        env:
+          CHECK_RESULT: ${{ needs.cpu-checks.result }}
+        run: test "$CHECK_RESULT" = success
