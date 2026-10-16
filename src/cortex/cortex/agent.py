@@ -367,6 +367,7 @@ class AgentRuntime:
             )
             return
         task.status = "running"
+        goal.status = "running"
         task.steps += 1
         job.progress_message = (
             f"{task.spec.id}: step {task.steps}, {task.spec.goal[:120]}"
@@ -551,7 +552,7 @@ class AgentRuntime:
         ]
         goal.next_wake_at = None
         if statuses & {"ready", "running"}:
-            goal.status = "ready"
+            goal.status = "running" if "running" in statuses else "ready"
         elif "waiting" in statuses:
             goal.status, goal.next_wake_at = "waiting", min(wake) if wake else None
         elif "blocked" in statuses:
