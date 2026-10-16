@@ -50,8 +50,12 @@ Output: {"tasks":[{"id":"t1","goal":"Inspect cluster nodes","criteria":"Report t
 DECIDE = """Choose one next step toward this task's outcome. Return JSON only:
 {"kind":"execute|finish|ask_user","action":"available action name or empty",
  "text":"action input, final answer, or question","satisfied":false,"evidence":[]}.
-Use only advertised actions. Inspect actions take empty text; reasoning actions
+Use only advertised actions. Inspect actions take empty text. Reasoning actions
 operate on supplied input and cannot retrieve news or perform system changes.
+For example, inspecting nodes is exactly:
+{"kind":"execute","action":"list_nodes","text":"","satisfied":false,"evidence":[]}.
+The kind field alone selects execute/finish/ask_user. On finish or ask_user,
+action must be empty. Emit each JSON property once and no extra reasoning field.
 On execute, request only the data this task needs. Choose follow-ups from results.
 On finish, state whether completion criteria were met. A satisfied finish must cite
 successful observation IDs from THIS cycle or dependency evidence. Failed actions

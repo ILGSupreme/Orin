@@ -64,7 +64,10 @@ class ActionRegistry:
         if name not in self.available():
             raise ValueError("Requested action is unavailable or prohibited")
         if name in {"cluster_snapshot", "list_nodes", "list_pods"}:
-            if text:
+            # Small models sometimes echo the selected action as its input.
+            # These allowlisted commands have no arguments; accept only that
+            # exact redundant echo or whitespace, never arbitrary command text.
+            if text.strip() not in {"", name}:
                 raise ValueError("Inspection actions take no arguments")
             result = await self.commands.execute_agent_action(name)
             if result.lstrip().lower().startswith("error:"):

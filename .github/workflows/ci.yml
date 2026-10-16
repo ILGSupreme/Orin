@@ -56,6 +56,7 @@ jobs:
             src/cortex/cluster/discovery/discovery_k8s.py \
             src/common/protocol/agent_types.py \
             src/common/primer.py \
+            src/common/engine/gguf.py \
             src/common/system/configuration.py \
             src/test/test_cortex_agent.py \
             src/test/test_inference_gateway.py \
@@ -63,6 +64,7 @@ jobs:
             src/test/test_agent_support.py \
             src/test/test_terminal_notices.py terminal-chat.py \
             src/test/test_kubernetes_discovery.py \
+            src/test/test_local_action_contracts.py \
             2>&1 | tee ci-logs/lint.log
       - name: Run deterministic tests
         run: |

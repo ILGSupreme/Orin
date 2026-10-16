@@ -157,6 +157,7 @@ class InferenceGateway:
                             },
                         }
                         if model:
+                            kwargs["constraints"]["json_schema"] = strict_schema(model)
                             text = json.dumps(await self.primer.chat_json(**kwargs))
                         else:
                             text = await self.primer.chat_text(**kwargs)

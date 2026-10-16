@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import httpx
@@ -315,6 +316,12 @@ class Primer:
         rendered_messages = self._message_adapter.render_messages(
             messages=messages, operation=operation, constraints=constraints
         )
+        if self.engine_type == "gguf" and constraints.get("json_schema") is not None:
+            from llama_cpp import LlamaGrammar
+
+            grammar = LlamaGrammar.from_json_schema(
+                json.dumps(constraints["json_schema"]), verbose=False
+            )
         return await self._await_generation(
             self._engine.chat_json, messages=rendered_messages,
             max_new_tokens=max_new_tokens, temperature=temperature, grammar=grammar,

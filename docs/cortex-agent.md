@@ -240,7 +240,7 @@ PYTHONPATH=src python -m unittest discover -s src/test -p 'test_*.py'
 python -m compileall -q src
 ```
 
-The automated suite has 82 passing tests on Python 3.10 and 3.12, including API lifespan startup and chat
+The automated suite has 84 passing tests on Python 3.10 and 3.12, including API lifespan startup and chat
 with provider-only inference, a real SQLite-backed Memory service behind a mock
 HTTP transport, and terminal notice deduplication. Static checks include compilation,
 whitespace validation and Ruff correctness checks on the changed runtime modules.
@@ -253,3 +253,10 @@ Inference, goal slices and pipeline stages use the `async-timeout` compatibility
 library because current images run Python 3.10. Inference failures return a
 sanitized HTTP 503; operator logs include backend, role and exception type without
 provider response bodies or submitted data.
+
+GGUF interpretation and decision requests compile the validated response schema
+into a llama.cpp grammar before native generation. Runtime validation still checks
+the generated result; grammar constraints do not establish semantic correctness.
+Other local engines retain prompt guidance and result validation. Read-only
+inspection actions accept an empty input or an exact redundant echo of their own
+action name; arbitrary arguments remain prohibited.
