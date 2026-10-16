@@ -267,10 +267,12 @@ detect_host_ip() {
             for (i = 1; i <= NF; i++) {
               if ($i == "src") {
                 print $(i + 1)
+                found = 1
                 exit
               }
             }
           }
+          END { if (!found) exit 1 }
         ' && return
   fi
 
@@ -355,8 +357,15 @@ EOF
 
 require_root_tools() {
   if ! command -v curl >/dev/null 2>&1; then
-    apt-get update
-    apt-get install -y curl ca-certificates
+    if command -v apt-get >/dev/null 2>&1; then
+      apt-get update
+      apt-get install -y curl ca-certificates
+    elif command -v pacman >/dev/null 2>&1; then
+      pacman -S --needed --noconfirm curl ca-certificates
+    else
+      echo "Missing curl. Install curl and ca-certificates with your package manager." >&2
+      return 1
+    fi
   fi
 }
 
