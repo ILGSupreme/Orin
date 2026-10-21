@@ -1,0 +1,29 @@
+name: Local agent controller
+
+on:
+  pull_request:
+    paths: ['tools/local-agent/**', '.codex/**', '.github/workflows/local-agent.yml']
+  push:
+    branches: [main]
+    paths: ['tools/local-agent/**', '.codex/**', '.github/workflows/local-agent.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  controller-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        python: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m compileall -q tools/local-agent
+      - run: python -m unittest discover -v -s tools/local-agent/tests
