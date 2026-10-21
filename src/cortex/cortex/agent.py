@@ -14,7 +14,7 @@ from uuid import uuid4
 from common.jobs import JobSpec
 from common.protocol.agent_types import (
     AgentLimits,
-    Decision,
+    decision_for_evidence,
     Goal,
     GoalNotice,
     Observation,
@@ -383,6 +383,13 @@ class AgentRuntime:
             for t in goal.tasks
             if t.spec.id in task.spec.depends_on and t.status == "completed"
         ]
+        evidence_ids = {
+            o.id
+            for o in task.observations
+            if o.status == "completed" and o.cycle == task.cycles
+        }
+        evidence_ids.update(item["id"] for item in dependencies)
+        decision_model = decision_for_evidence(sorted(evidence_ids))
 
         async def charge(tokens):
             goal.allocated_tokens += tokens
@@ -400,6 +407,7 @@ class AgentRuntime:
                         "context": task.spec.context,
                         "input_refs": task.spec.input_refs,
                         "dependencies": dependencies,
+                        "eligible_evidence_ids": sorted(evidence_ids),
                         "actions": self.actions.available(),
                         "cycle": task.cycles,
                         "remaining_steps": self.limits.max_steps_per_task
@@ -412,12 +420,12 @@ class AgentRuntime:
                     }
                 ),
                 privacy=goal.privacy,
-                model=Decision,
+                model=decision_model,
                 max_output_tokens=512,
                 budget=self.limits.token_budget - goal.allocated_tokens,
                 charge=charge,
             )
-            decision = Decision.model_validate_json(result.text)
+            decision = decision_model.model_validate_json(result.text)
             if decision.kind == "ask_user":
                 if not decision.text:
                     raise ValueError("Clarification requires a question")
