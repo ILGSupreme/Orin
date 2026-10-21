@@ -9,13 +9,18 @@ import json
 import llama_cpp
 from llama_cpp import LlamaGrammar
 
-from common.protocol.agent_types import Decision, TurnPlan
+from common.protocol.agent_types import Decision, TurnPlan, decision_for_evidence
 from common.protocol.grammar_schema import grammar_schema
 from cortex.cortex.inference import strict_schema
 
 
 def main():
-    for model in (TurnPlan, Decision):
+    for model in (
+        TurnPlan, Decision,
+        decision_for_evidence([]),
+        decision_for_evidence(["eb9647aad2be46168a3d8575ce3daa60"]),
+        decision_for_evidence(["eb9647aad2be46168a3d8575ce3daa60", "dependency:t1"]),
+    ):
         grammar = LlamaGrammar.from_json_schema(
             json.dumps(grammar_schema(strict_schema(model))), verbose=False
         )
