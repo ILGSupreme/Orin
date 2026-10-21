@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
 from common.protocol.unified_types import RuntimeMessage
 
@@ -84,6 +84,25 @@ class Decision(AgentModel):
     text: str = Field(default="", max_length=3000)
     satisfied: bool = False
     evidence: list[str] = Field(default_factory=list, max_length=32)
+
+
+def decision_for_evidence(evidence_ids: list[str]) -> type[Decision]:
+    """Constrain generation and validation to this decision's eligible evidence."""
+    ids = tuple(sorted(set(evidence_ids)))
+    if ids:
+        evidence_type = list[Literal[ids]]
+        evidence_field = Field(default_factory=list, max_length=32)
+    else:
+        evidence_type = list[str]
+        # const survives the GGUF projection that strips array length bounds.
+        evidence_field = Field(
+            default_factory=list, max_length=0, json_schema_extra={"const": []}
+        )
+    return create_model(
+        "EvidenceDecision",
+        __base__=Decision,
+        evidence=(evidence_type, evidence_field),
+    )
 
 
 class Observation(AgentModel):
