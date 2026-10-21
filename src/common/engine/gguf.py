@@ -229,7 +229,7 @@ class GGUFPrimerEngine:
         grammar: str | LlamaGrammar |  None = None,
     ) -> str:
 
-        grammar_llama = None
+        grammar_llama = grammar if isinstance(grammar, LlamaGrammar) else None
         if grammar and isinstance(grammar,str):
             grammar_llama = LlamaGrammar.from_string(grammar=grammar)
 

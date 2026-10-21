@@ -25,6 +25,12 @@ from cortex.cluster.discovery.client import BackendClient
 from cortex.cluster.discovery.policy import BackendRoutingPolicy
 from cortex.cluster.discovery.services import DiscoveryService
 from cortex.cortex.harness import Harness
+from cortex.cortex.agent import AgentRuntime
+from cortex.cortex.actions import ActionRegistry
+from cortex.cortex.inference import InferenceGateway, InferenceUnavailable
+from cortex.cortex.goal_store import GoalStore
+from common.protocol.agent_types import AgentLimits, GoalControl
+from cortex.cortex import memory as cortex_memory
 from cortex.cortex.runtime import CortexRuntime
 from cortex.router.planner import Planner
 from cortex.router.service import RouterService
@@ -116,12 +122,22 @@ async def lifespan(app: FastAPI):
         planner=app.state.planner,
     )
 
-    app.state.harness = Harness(
-        primer=app.state.primer,
-        router=app.state.router,
-        job_manager=app.state.job_manager,
-        command_router=app.state.command_router,
-    )
+    cfg = configuration.get_configuration("cortex")
+    app.state.inference = InferenceGateway(cfg.inference, primer=app.state.primer,
+        router=app.state.router, http=app.state.external_http)
+    store = GoalStore(http=app.state.internal_http,
+        base_url=cfg.inventory_memory_base_url or f"http://memory-service.{cfg.namespace}.svc.cluster.local:8080",
+        namespace=cfg.namespace)
+    actions = ActionRegistry(inference=app.state.inference, router=app.state.router,
+        commands=app.state.command_router, tools=cfg.agent_tools)
+    async def conversation_context(request):
+        return await cortex_memory.conversation_context(app.state.router, request, cfg.inference.default_privacy)
+    app.state.agent = AgentRuntime(inference=app.state.inference, actions=actions,
+        store=store, jobs=app.state.job_manager, limits=AgentLimits(**cfg.agent_limits),
+        default_privacy=cfg.inference.default_privacy, context_loader=conversation_context)
+    app.state.command_router.agent_runtime = app.state.agent
+    app.state.harness = Harness(router=app.state.router,
+        job_manager=app.state.job_manager, agent_runtime=app.state.agent)
 
     app.state.cortex_runtime = CortexRuntime(
         harness=app.state.harness,
@@ -137,8 +153,11 @@ async def lifespan(app: FastAPI):
             await app.state.deployment_service.initialize_inventory(app.state.internal_http)
         except InventoryUnavailable as exc:
             root_logger.warning("Inventory startup load failed: %s", exc)
+        app.state.agent.start()
         yield
     finally:
+        await app.state.agent.close()
+        await app.state.job_manager.shutdown()
         await app.state.discovery_service.refresher.stop()
         await app.state.primer.stop()
 
@@ -147,6 +166,32 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="cortex", lifespan=lifespan)
+
+
+@app.exception_handler(InferenceUnavailable)
+async def inference_unavailable(request: Request, exc: InferenceUnavailable):
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Configured inference could not complete the request. Check backend availability and operator logs."},
+    )
+
+
+@app.get("/goals")
+async def goals(request: Request, user_id: str, session_id: str):
+    values = await request.app.state.agent.store.list(user_id=user_id, session_id=session_id)
+    return {"goals": [goal.model_dump(mode="json", exclude={"lease_owner", "lease_until", "messages"}) for goal in values]}
+
+
+@app.post("/goals/{goal_id}/control")
+async def control_goal(goal_id: str, body: GoalControl, request: Request):
+    try:
+        text = await request.app.state.agent.control(goal_id, body.user_id, body.session_id,
+            body.action, task_id=body.task_id, feedback=body.feedback, event_key=body.event_key)
+        return {"message": text}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail="Goal storage is unavailable or changed; reload before retrying") from exc
 
 # ---------------------------------------------------------------------------
 # Dependency helpers
@@ -196,7 +241,9 @@ async def ready(request: Request):
     _primer = primer(request=request)
     return {
         "ok": True,
-        "accepting_requests": True,
+        "accepting_requests": request.app.state.inference.status()["ready"] and request.app.state.agent.storage_error is None,
+        "inference": request.app.state.inference.status(),
+        "goal_storage_error": request.app.state.agent.storage_error,
         "primer": _primer.status(),
         "inventory": deployment(request).inventory_status(),
     }

@@ -30,7 +30,7 @@ class ShellState:
     selected_backend_name: str | None = None
 
 
-GLOBAL_COMMANDS = {"/help", "/commands", "/cd", "/render", "/attach"}
+GLOBAL_COMMANDS = {"/help", "/commands", "/cd", "/render", "/attach", "/cancel_job"}
 
 CommandMode = Literal["terminal", "chat"]
 HandlerKind = Literal["text", "stream"]
@@ -313,6 +313,10 @@ class CommandRouter:
             name="Root",
             desc="Root commands",
             commands=[
+                self._cmd(
+                    "/cancel_job", "Cancel a local job: /cancel_job <job_id>",
+                    self.handle_cancel_job, modes={"terminal"}, suggest_only=True,
+                ),
                 self._cmd(
                     "/help",
                     "Show help information",
@@ -2540,6 +2544,29 @@ class CommandRouter:
     # ---------------------------------------------------------------------------
     # Execute Functions
     # ---------------------------------------------------------------------------
+
+    async def handle_cancel_job(self, ctx: CommandContext, args: str = "") -> str:
+        job_id = args.strip()
+        if not job_id or len(job_id.split()) != 1:
+            return "Usage: /cancel_job <job_id>"
+        job = self.job_manager.get(job_id)
+        runtime = getattr(self, "agent_runtime", None)
+        if runtime is not None and job is not None and job.spec.kind == "cortex.turn":
+            return await runtime.control(job.spec.payload["goal_id"],
+                job.spec.payload["user_id"], job.spec.payload["session_id"], "cancel")
+        if self.job_manager.cancel(job_id):
+            return f"Cancelled {job_id}. Already submitted backend work may continue."
+        return f"No active local job found: {job_id}"
+
+    async def execute_agent_action(self, action: str) -> str:
+        """Explicit, backend-independent inspection surface for local agent runs."""
+        if action not in {"cluster_snapshot", "list_nodes", "list_pods"}:
+            raise ValueError(f"Action is not permitted for agent runs: {action}")
+        command = self._find_harness_action(action=action, mode="terminal")
+        if command is None or not command.safe_info_action or command.suggest_only:
+            raise ValueError(f"Agent action is unavailable: {action}")
+        # Never inherit a user's mutable folder or backend selection.
+        return await command.run_text(CommandContext(router=self, backend=None), "")
 
     async def execute_harness_action(
         self,

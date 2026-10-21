@@ -67,13 +67,16 @@ class KubernetesDiscoveryProvider:
         return resp.items
 
     def _list_endpoint_slices(self):
-        data = self.discovery.api_client.call_api(
-            f"/apis/discovery.k8s.io/v1/namespaces/{self.namespace}/endpointslices",
-            "GET",
-            auth_settings=["BearerToken"],
-            response_type="object",
-            _return_http_data_only=True,
+        # Keep generated routing/auth/error handling, but decode the wire JSON.
+        # Typed clients reject empty slices when Kubernetes omits `endpoints`.
+        response = self.discovery.list_namespaced_endpoint_slice(
+            namespace=self.namespace, _preload_content=False
         )
+        try:
+            data = json.loads(response.read())
+        finally:
+            response.close()
+            response.release_conn()
         return data.get("items", [])
 
     def _build_ready_endpoint_map(self, endpoint_slices: list[dict]) -> dict[str, int]:

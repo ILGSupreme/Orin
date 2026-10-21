@@ -324,6 +324,25 @@ class MemoryDB:
                     FOREIGN KEY(source_event_id) REFERENCES memory_events(id),
                     FOREIGN KEY(supersedes_id) REFERENCES memory_claims(id)
                 );
+                CREATE TABLE IF NOT EXISTS agent_goals (
+                    namespace TEXT NOT NULL,
+                    goal_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    next_wake_at REAL,
+                    value_json TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    lease_owner TEXT,
+                    lease_until REAL NOT NULL DEFAULT 0,
+                    updated_at REAL NOT NULL,
+                    PRIMARY KEY (namespace, goal_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_agent_goals_scope
+                ON agent_goals(namespace, user_id, session_id, updated_at);
+                CREATE INDEX IF NOT EXISTS idx_agent_goals_due
+                ON agent_goals(namespace, status, next_wake_at);
+
                 CREATE TABLE IF NOT EXISTS node_inventory (
                     namespace TEXT NOT NULL,
                     alias TEXT NOT NULL,
@@ -388,6 +407,98 @@ class MemoryDB:
                 ON federation_records(record_type, slug);
                 """
             )
+
+    # ------------------------- durable agent goals -------------------------
+
+    @staticmethod
+    def _decode_goal(row):
+        from common.protocol.agent_types import Goal
+        value = json.loads(row["value_json"])
+        value.update(revision=row["revision"], lease_owner=row["lease_owner"],
+                     lease_until=row["lease_until"], updated_at=row["updated_at"])
+        return Goal.model_validate(value).model_dump(mode="json")
+
+    def query_goals(self, query):
+        import time
+        from common.protocol.agent_types import GoalQuery
+        query = GoalQuery.model_validate(query)
+        sql = "SELECT * FROM agent_goals WHERE namespace = ?"
+        args = [query.namespace]
+        for key in ("goal_id", "user_id", "session_id"):
+            value = getattr(query, key)
+            if value is not None:
+                sql += f" AND {key} = ?"
+                args.append(value)
+        if query.due_only:
+            sql += " AND ((status IN ('ready','running') AND (next_wake_at IS NULL OR next_wake_at <= ?)) OR (status='waiting' AND next_wake_at IS NOT NULL AND next_wake_at <= ?)) AND lease_until <= ?"
+            args.extend([time.time(), time.time(), time.time()])
+            sql += " ORDER BY COALESCE(next_wake_at, 0), updated_at LIMIT 128"
+        else:
+            sql += " ORDER BY updated_at DESC LIMIT 128"
+        with self._connect() as conn:
+            return [self._decode_goal(row) for row in conn.execute(sql, args)]
+
+    def write_goal(self, request):
+        import time
+        from common.protocol.agent_types import GoalWrite
+        request = GoalWrite.model_validate(request)
+        goal = request.goal
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM agent_goals WHERE namespace=? AND goal_id=?",
+                               (request.namespace, goal.id)).fetchone()
+            if row is None:
+                if request.expected_revision != 0 or request.owner is not None:
+                    raise ValueError("Goal missing or revision conflict")
+                revision, owner, until = 1, None, 0
+            else:
+                if row["revision"] != request.expected_revision:
+                    raise ValueError("Goal revision conflict")
+                if row["user_id"] != goal.user_id or row["session_id"] != goal.session_id:
+                    raise ValueError("Goal ownership cannot change")
+                if request.owner is not None:
+                    if row["lease_owner"] != request.owner or row["lease_until"] <= now:
+                        raise ValueError("Goal execution lease lost")
+                elif row["lease_until"] > now:
+                    raise ValueError("Goal has an active execution lease")
+                revision = row["revision"] + 1
+                owner = None if request.release else row["lease_owner"]
+                until = 0 if request.release else row["lease_until"]
+            value = goal.model_dump(mode="json")
+            value.update(revision=revision, lease_owner=owner, lease_until=until, updated_at=now)
+            conn.execute("""INSERT INTO agent_goals
+                (namespace,goal_id,user_id,session_id,status,next_wake_at,value_json,revision,lease_owner,lease_until,updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(namespace,goal_id) DO UPDATE SET status=excluded.status,
+                next_wake_at=excluded.next_wake_at,value_json=excluded.value_json,
+                revision=excluded.revision,lease_owner=excluded.lease_owner,
+                lease_until=excluded.lease_until,updated_at=excluded.updated_at""",
+                (request.namespace,goal.id,goal.user_id,goal.session_id,goal.status,goal.next_wake_at,
+                 json.dumps(value),revision,owner,until,now))
+            return value
+
+    def claim_goal(self, request):
+        import time
+        from common.protocol.agent_types import GoalClaim
+        request = GoalClaim.model_validate(request)
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM agent_goals WHERE namespace=? AND goal_id=?",
+                               (request.namespace, request.goal_id)).fetchone()
+            if (row is None or row["revision"] != request.expected_revision
+                    or row["lease_until"] > now or row["status"] not in {"ready", "running", "waiting"}
+                    or (row["status"] == "waiting" and row["next_wake_at"] is None)
+                    or (row["next_wake_at"] is not None and row["next_wake_at"] > now)):
+                return None
+            value = self._decode_goal(row)
+            value.update(status="running", revision=row["revision"] + 1,
+                         lease_owner=request.owner, lease_until=now + request.lease_seconds, updated_at=now)
+            conn.execute("""UPDATE agent_goals SET status='running',revision=?,lease_owner=?,
+                lease_until=?,updated_at=?,value_json=? WHERE namespace=? AND goal_id=?""",
+                (value["revision"],request.owner,value["lease_until"],now,json.dumps(value),request.namespace,request.goal_id))
+            return value
 
     # ------------------------- node inventory -------------------------
 

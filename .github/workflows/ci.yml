@@ -1,0 +1,135 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cpu-checks:
+    name: Python ${{ matrix.python }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.12']
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONPATH: src
+      HF_HUB_OFFLINE: '1'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements-test.txt
+      - name: Install test dependencies
+        run: |
+          mkdir -p ci-logs
+          python -m pip install -r requirements-test.txt 2>&1 | tee ci-logs/install.log
+      - name: Check syntax
+        run: |
+          mkdir -p ci-logs
+          python -m compileall -q src terminal-chat.py 2>&1 | tee ci-logs/compile.log
+      - name: Check runtime correctness
+        run: |
+          python -m ruff check --select F,E9 \
+            src/cortex/cortex \
+            src/cortex/app.py src/common/jobs.py \
+            src/cortex/cluster/discovery/discovery_k8s.py \
+            src/common/protocol/agent_types.py \
+            src/common/protocol/grammar_schema.py \
+            src/common/primer.py \
+            src/common/engine/gguf.py \
+            src/common/system/configuration.py \
+            src/test/test_cortex_agent.py \
+            src/test/test_inference_gateway.py \
+            src/test/test_harness_agent_integration.py \
+            src/test/test_agent_support.py \
+            src/test/test_terminal_notices.py terminal-chat.py \
+            src/test/test_kubernetes_discovery.py \
+            src/test/test_local_action_contracts.py \
+            src/test/gguf_grammar_smoke.py \
+            2>&1 | tee ci-logs/lint.log
+      - name: Run deterministic tests
+        run: |
+          python -m unittest discover -v -s src/test -p 'test_*.py' \
+            2>&1 | tee ci-logs/tests.log
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: cpu-check-failure-logs-python-${{ matrix.python }}
+          path: ci-logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  native-grammar:
+    name: Native GGUF grammar
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONPATH: src
+      CC: gcc
+      CXX: g++
+      CMAKE_BUILD_PARALLEL_LEVEL: '4'
+      CMAKE_ARGS: -DGGML_NATIVE=OFF -DGGML_CUDA=OFF -DGGML_OPENMP=OFF -DLLAMA_BUILD_TESTS=OFF
+    steps:
+      - uses: actions/checkout@9f698171ed81b15d1823a05fc7211befd50c8ae0 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements-test.txt
+            src/test/gguf_grammar_smoke.py
+      - name: Install CPU grammar runtime
+        run: |
+          mkdir -p ci-logs
+          python -m pip install -r requirements-test.txt 2>&1 | tee ci-logs/install.log
+          python -m pip install --no-binary llama-cpp-python llama-cpp-python==0.3.19 \
+            2>&1 | tee ci-logs/native-install.log
+      - name: Compile native agent grammars without a model
+        run: python src/test/gguf_grammar_smoke.py 2>&1 | tee ci-logs/grammar.log
+      - name: Upload grammar failure logs
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: native-grammar-failure-logs
+          path: ci-logs/
+          retention-days: 7
+
+  required-check:
+    name: CPU checks
+    needs: [cpu-checks, native-grammar]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require all Python versions to pass
+        env:
+          CHECK_RESULT: ${{ needs.cpu-checks.result }}
+          GRAMMAR_RESULT: ${{ needs.native-grammar.result }}
+        run: test "$CHECK_RESULT" = success && test "$GRAMMAR_RESULT" = success

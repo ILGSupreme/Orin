@@ -1,5 +1,10 @@
 # Orin Cluster - Current Architecture and Operations
 
+> Implementation update: natural chat and terminal conversation now use one
+> persistent goal/task runtime, with provider-neutral inference, Memory-backed
+> recovery and event/interval wake-ups. The earlier chat/agent mode and pipeline
+> descriptions below are superseded by [the unified runtime documentation](docs/cortex-agent.md).
+
 Author: Samuel Padilla  
 Scope: Current-state architecture and day-to-day operations for the Orin AI cluster  
 Status: Cleaned current-state draft based on the current installer, Cortex/Harness, command router, JobManager, RouterService, discovery, Memory, LLM, Federation, and terminal client code

@@ -55,6 +55,13 @@ Cortex is responsible for receiving user requests, managing terminal commands,
 coordinating memory/session state, discovering backend services, and routing
 runtime work.
 
+Natural requests use one persistent agent runtime that can combine conversation,
+information requests and delegated work. Cortex maintains goals and feedback while
+local, clustered and provider inference remain replaceable. See
+[the unified runtime](docs/cortex-agent.md) and
+[its action plan](docs/unified-agent-action-plan.md) for configuration, execution
+limits, recovery and current limitations.
+
 ### LLM
 
 The LLM service is a Primer-backed runtime that can load model backends such as
@@ -143,6 +150,12 @@ supports both chat-style interaction and slash-command operation.
 
 Command output and assistant chat output are separated by response metadata so
 the terminal can display operational output separately from conversation output.
+
+## Tests and CI
+
+Pull requests run CPU-only tests and focused static checks on GitHub-hosted
+runners. See [CI and local test instructions](docs/ci.md) for commands, the merge
+gate setup, and the plan for ARM64 builds and hardware lab validation.
 
 ## Status
 

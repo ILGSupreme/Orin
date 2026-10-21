@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from async_timeout import timeout
 import inspect
 import logging
 import time as monotonic_time
@@ -134,6 +135,7 @@ class JobManager:
         max_concurrent_jobs: int = 4,
     ) -> None:
         self.jobs: dict[str, Job] = {}
+        self.tasks: dict[str, asyncio.Task] = {}
         self.pipelines: dict[str, PipelineDefinition] = {}
         self.max_jobs = max_jobs
         self.batch : dict[str, BatchWork] = {}
@@ -224,7 +226,7 @@ class JobManager:
                     lines.append(
                         f"- {job.job_id}: status=completed, "
                         f"kind={job.spec.kind}, "
-                        f"result={job.spec.payload}"
+                        f"result={formatting.extract_job_result_text(job)[:240]}"
                     )
 
         if not lines:
@@ -324,6 +326,12 @@ class JobManager:
 
     def _create_job(self, spec: JobSpec) -> Job:
         if len(self.jobs) >= self.max_jobs:
+            for key, old in list(self.jobs.items()):
+                if old.status in {"completed", "failed"} and key not in self.tasks:
+                    del self.jobs[key]
+                    if len(self.jobs) < self.max_jobs:
+                        break
+        if len(self.jobs) >= self.max_jobs:
             raise RuntimeError(f"Job limit reached: {self.max_jobs}")
 
         job_id = spec.job_id or f"{spec.kind}:{uuid.uuid4().hex[:8]}"
@@ -348,7 +356,7 @@ class JobManager:
     ) -> Job:
         job = self._create_job(spec)
 
-        asyncio.create_task(
+        task = asyncio.create_task(
             self._run_job(
                 job_id=job.job_id,
                 runner=runner,
@@ -356,6 +364,7 @@ class JobManager:
             )
         )
 
+        self._track_task(job.job_id, task)
         return job
 
     def start_pipeline(
@@ -371,7 +380,7 @@ class JobManager:
         job.pipeline_name = pipeline
         job.stage_count = len(definition.stages)
 
-        asyncio.create_task(
+        task = asyncio.create_task(
             self._run_pipeline(
                 job_id=job.job_id,
                 definition=definition,
@@ -379,7 +388,33 @@ class JobManager:
             )
         )
 
+        self._track_task(job.job_id, task)
         return job
+
+    def _track_task(self, job_id: str, task: asyncio.Task) -> None:
+        self.tasks[job_id] = task
+        task.add_done_callback(lambda _: self.tasks.pop(job_id, None))
+
+    def cancel(self, job_id: str) -> bool:
+        job = self.get(job_id)
+        task = self.tasks.get(job_id)
+        if job is None or task is None or task.done():
+            return False
+        job.error = "Job cancelled"
+        job.update_status("failed")
+        job.stage_status = "failed"
+        job.latest_result = WorkResult(
+            status="failed", work_id=job_id, error=job.error,
+            metadata={"cancelled": True},
+        ).model_dump(mode="json")
+        task.cancel()
+        return True
+
+    async def shutdown(self) -> None:
+        tasks = list(self.tasks.values())
+        for job_id in list(self.tasks):
+            self.cancel(job_id)
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     # -------------------------------------------------------------------------
     # Single job runner
@@ -445,10 +480,15 @@ class JobManager:
                     job.spec.kind,
                 )
 
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
                 job.update_status("failed")
                 job.stage_status = "failed"
-                job.error = str(exc)
+                job.error = str(exc) or type(exc).__name__
+                job.latest_result = WorkResult(
+                    status="failed", work_id=job.job_id, error=job.error,
+                ).model_dump(mode="json")
 
                 logging.error(
                     "Job failed: job_id=%s kind=%s error=%s\n%s",
@@ -484,15 +524,12 @@ class JobManager:
                         message=f"Running stage {index}/{len(definition.stages)}: {stage.name}",
                     )
 
-                    result : WorkResult = await stage.runner(job)
-
-                    result = await self._wait_for_stage_result(
-                        job=job,
-                        stage=stage,
-                        index=index,
-                        count=len(definition.stages),
-                        result=result,
-                    )
+                    async with timeout(stage.timeout_seconds):
+                        result: WorkResult = await stage.runner(job)
+                        result = await self._wait_for_stage_result(
+                            job=job, stage=stage, index=index,
+                            count=len(definition.stages), result=result,
+                        )
 
                     normalized = formatting.as_dict(result)
 
@@ -540,10 +577,15 @@ class JobManager:
                     definition.name,
                 )
 
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
                 job.update_status("failed")
                 job.stage_status = "failed"
-                job.error = str(exc)
+                job.error = str(exc) or type(exc).__name__
+                job.latest_result = WorkResult(
+                    status="failed", work_id=job.job_id, error=job.error,
+                ).model_dump(mode="json")
 
                 logging.error(
                     "Pipeline failed: job_id=%s kind=%s pipeline=%s stage=%s error=%s\n%s",
