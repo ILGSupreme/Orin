@@ -1,10 +1,52 @@
 # Orin Federation Network Plan
 
+Documentation review: October 22, 2026. This is a design plan with a partial
+HTTP implementation. The implementation status below takes precedence over
+proposed endpoints, commands, transport protocols and phase descriptions.
+
+## Implementation status
+
+| Area | Current source status |
+| --- | --- |
+| Local network registry and public listing | Implemented; lists networks hosted by a known Federation service |
+| Token-gated membership | Implemented with member public keys |
+| Identity and signed requests | Ed25519, signed work/heartbeats/capability publication, nonce and expiry checks |
+| Persistence | Network, membership, token and work records through Memory; local identity and nonce/cache files |
+| Work exchange | Explicit HTTP submission through CortexBridge and result polling |
+| Execution boundary | Current Cortex direct WorkPacket ingress accepts LLM work only |
+| Result sanitization | Implemented for backend identity, exact models and runtime metadata according to policy |
+| Global/decentralized discovery | Proposed; local listing is not peer-to-peer network discovery |
+| Automatic federated routing | Proposed; remote descriptors are not normal Planner candidates yet |
+| Independent remote-agent delegation | Future work; an inference call is not agent delegation |
+| Administrative authorization | Incomplete for network/token creation and capability refresh |
+| Polling authorization | Policy checks exist; the current GET route does not authenticate signed members |
+| Quotas/concurrency | Policy fields are not proof of enforced limits; hardening remains |
+
+The supplied June 5, 2026 checkpoint records a completed signed submit/poll test
+with sanitized inference output. It is dated historical evidence, not a current
+regression result. Re-run against the selected commit, image digests,
+configuration and models before claiming current end-to-end success.
+
+Implemented command handlers include `/network_list`, `/network_show`,
+`/network_create`, `/network_token_create` and
+`/network_capabilities_refresh`. Join/member/leave commands shown later are
+proposals. Inspect `/commands` for the deployed command inventory.
+
+The current path is FederationClient -> HTTP Federation -> membership/signature/
+nonce/policy checks -> packet sanitization -> CortexBridge -> Cortex LLM work
+ingress -> RouterService/backend -> polling and sanitized result.
+It does not expose Cortex goals, Memory, arbitrary slash commands or host control.
+
+See [current architecture](../orin-cluster-current-architecture-and-operations.md)
+and [security boundaries](../SECURITY.md).
+
 ## Purpose
 
 The goal is to build a public Orin overlay network where anyone who installs Orin can discover available FederationNetworks, join them with the correct access token, and exchange work with other members through the Federation boundary.
 
-Federation is the only external communication layer. Cortex, LLM, memory, tool services, Kubernetes resources, deployment settings, slash commands, node details, and internal service metadata remain private.
+Federation is the cross-environment capability exchange boundary. Explicitly
+configured external inference providers are a separate outbound path governed by
+Cortex privacy policy. Cortex, LLM, memory, tool services, Kubernetes resources, deployment settings, slash commands, node details, and internal service metadata remain private.
 
 The network should be free as in no mandatory paid hosting. The cost of discovery, relay, metadata replication, and work execution is distributed across participating Orin nodes.
 
@@ -130,7 +172,7 @@ class NetworkMember(BaseModel):
     last_seen_at: datetime | None = None
 ```
 
-## Join Flow
+## Intended Join Flow
 
 ```text
 1. User installs Orin.
@@ -143,7 +185,8 @@ class NetworkMember(BaseModel):
 8. Local Federation contacts an admission peer.
 9. Admission peer validates the token.
 10. The new cluster public key is registered as a member.
-11. Future communication uses signed requests, not the access token.
+11. Future member mutations and work submissions use signed requests.
+    Result polling still needs member authentication in the current HTTP MVP.
 ```
 
 The access token is only a bootstrap credential. The long-term credential is the cluster keypair.
@@ -181,7 +224,7 @@ On receive, Federation must:
 7. enforce quotas and payload limits
 8. strip forbidden fields
 9. add federation origin metadata
-10. submit allowed work into Cortex RouterService
+10. submit allowed work through CortexBridge to Cortex's LLM-only WorkPacket ingress
 ```
 
 ## Network Policy
@@ -240,7 +283,8 @@ class NetworkPolicy(BaseModel):
 
 ## Routing Integration
 
-Joined remote members can appear to Cortex as federated backend candidates.
+Proposed routing integration: joined remote members would appear to Cortex as
+federated backend candidates. This is not implemented in normal Cortex routing.
 
 ```python
 BackendDescriptor(
@@ -331,7 +375,7 @@ relay fallback for difficult NAT/firewall cases
 large transfers should avoid relays where possible
 ```
 
-## Suggested Source Layout
+## Proposed source additions (not a current file inventory)
 
 ```text
 src/federation/
@@ -346,7 +390,7 @@ src/federation/
   federation_client.py
 ```
 
-## Initial Local Endpoints
+## Proposed endpoint contract (see implementation status)
 
 ```text
 GET  /federation/networks
@@ -357,7 +401,7 @@ POST /federation/networks/{network_id}/work
 GET  /federation/networks/{network_id}/work/{work_id}
 ```
 
-## Initial External Protocol Operations
+## Proposed peer protocol operations (not implemented)
 
 ```text
 /orin/federation/hello/1.0.0
@@ -368,7 +412,7 @@ GET  /federation/networks/{network_id}/work/{work_id}
 /orin/federation/result/1.0.0
 ```
 
-## CLI Commands
+## CLI design examples (includes unimplemented commands)
 
 ```text
 /cd Federation
@@ -380,9 +424,9 @@ GET  /federation/networks/{network_id}/work/{work_id}
 /network_leave public-text-inference
 ```
 
-## Implementation Phases
+## Design phases and remaining work
 
-### Phase 1: Local Federation skeleton
+### Phase 1: Local Federation skeleton (implemented foundation)
 
 ```text
 Create federation app
@@ -391,10 +435,10 @@ Create local registry
 Create signed envelope model
 Create policy checker
 Expose local endpoints
-Do not route real remote work yet
+Historical skeleton milestone; explicit HTTP LLM work now exists
 ```
 
-### Phase 2: Discovery and joining
+### Phase 2: Discovery and joining (local HTTP implemented; global discovery pending)
 
 ```text
 Start Federation node identity
@@ -405,27 +449,28 @@ Persist memberships
 Publish sanitized capabilities
 ```
 
-### Phase 3: Federated WorkPacket exchange
+### Phase 3: Federated WorkPacket exchange (HTTP LLM path implemented)
 
 ```text
 Add FederationClient
 Send signed FederatedWorkEnvelope
 Verify remote envelope
 Apply policy
-Submit allowed packet to Cortex RouterService
+Submit allowed packet through CortexBridge to Cortex LLM work ingress
 Return WorkResult
 ```
 
-### Phase 4: Routing integration
+### Phase 4: Routing integration (pending)
 
 ```text
 Represent joined remote members as federated backend descriptors
 Let Cortex route to local or federated backends
-Add result polling/streaming
+Existing: explicit HTTP result polling
+Pending: routed result integration and streaming
 Add quota and timeout enforcement
 ```
 
-### Phase 5: Volunteer bootstrap/relay hardening
+### Phase 5: Volunteer bootstrap/relay hardening (pending)
 
 ```text
 Default bootstrap peer list

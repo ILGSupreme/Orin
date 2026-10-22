@@ -51,21 +51,40 @@ Cortex runtime requirements. Test dependencies exclude native inference engines.
 Actions are pinned to commit SHAs; update those pins with their version comments
 when adopting upstream action releases.
 
-## Merge gate and later stages
+## Merge gate and live acceptance
 
-After the first successful run, a repository administrator should add **CPU
-checks** as a required status check in the `main` branch ruleset. The workflow
-alone does not enable branch protection. Keep the PR draft until the separate
-live model/provider/cluster validation described in `cortex-agent.md` is complete.
+The aggregate **CPU checks** job requires both Python matrix jobs and the native
+grammar job to succeed. A repository administrator must configure it as a required
+check in the branch ruleset; the workflow itself does not enable protection.
+This documentation review did not verify the repository's active ruleset.
+
+Use workflow results for the exact reviewed commit as evidence. Passing these
+checks does not establish that the corresponding images have been deployed or
+that a real model completes tasks reliably. Track live acceptance separately
+from whether implementation has merged; see [the runtime](cortex-agent.md).
 
 Next, add hosted ARM64 tests and AMD64/ARM64 container build checks. These verify
 portability and packaging, but do not substitute for Jetson/CUDA testing.
 
-When the lab exists, use a separate controlled workflow for reviewed revisions
-and dedicated hardware runners. Do not execute public PR code on persistent
+Use a separate controlled workflow for reviewed revisions and dedicated hardware
+runners when hardware/cluster access is available. Do not execute public PR code on persistent
 Jetson/GPU runners with cluster access. Ordinary PR checks use a read-only token,
 do not retain checkout credentials, and receive no lab or provider secrets.
 
 For future projects, extract shared jobs into reusable `workflow_call` workflows
 once their common requirements are established. Each repository should retain
 ownership of its test commands; hardware runner access stays separately scoped.
+
+## Evidence for a lab run
+
+Record the source commit, image digests, architecture, Python/native dependency
+versions, model and inference settings, configuration changes and test inputs.
+Correlate turns, goals, transient jobs, actions, observations and persisted
+outcomes. Check both accepted work and its actual completion; a conversational
+acknowledgement is not execution evidence.
+
+Repeat representative requests to assess model behavior. Re-run the Federation
+submit/poll smoke flow against the selected deployment, including result
+sanitization. Keep historical observations dated rather than treating them as
+a current regression result. Test recovery with preserved Memory data and
+explicitly reconcile uncertain in-flight work.

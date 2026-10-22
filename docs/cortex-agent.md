@@ -1,5 +1,8 @@
 # Unified Cortex agent runtime
 
+Documentation review: October 22, 2026. This describes code on `main`, not a
+certificate of the deployed lab revision or live model reliability.
+
 Cortex owns persistent goals and their feedback loops. Both natural `/chat` and
 `/terminal_chat` requests use one turn interpreter and one task execution runtime.
 There is no user-facing chat/agent mode or separate background chat pipeline.
@@ -240,14 +243,21 @@ PYTHONPATH=src python -m unittest discover -s src/test -p 'test_*.py'
 python -m compileall -q src
 ```
 
-The automated suite has 85 passing tests on Python 3.10 and 3.12, including API lifespan startup and chat
-with provider-only inference, a real SQLite-backed Memory service behind a mock
-HTTP transport, and terminal notice deduplication. Static checks include compilation,
-whitespace validation and Ruff correctness checks on the changed runtime modules.
-Live provider credentials, real model decisions, Kubernetes workload execution,
-interactive terminal redraw behaviour and end-to-end external notification delivery
-have not been tested. Keep the PR draft
-until lab validation is complete.
+Automated coverage includes API lifespan startup and provider-only chat,
+real SQLite-backed Memory behind a mock HTTP transport, goal leases/revisions,
+feedback and restart handling, evidence validation, and terminal notice
+deduplication. CI also tests Kubernetes discovery against a local HTTP server.
+See [CI](ci.md) for the Python matrix, native grammar check and current commands.
+Use the run associated with the reviewed commit for counts and results; this
+document does not assert that a particular current run passed.
+
+Live provider calls, repeated real-model decisions, deployed Kubernetes actions,
+interactive terminal behavior and external notification delivery require separate
+acceptance evidence. An earlier lab observation does not validate a newer image.
+For each acceptance run record the commit, image digests, Python/native dependency
+versions, inference bindings, model settings and correlated turn/goal/job/action
+IDs. Retain observations and the persisted final outcome. Schema compliance and
+evidence-ID validity do not establish semantic completion.
 
 Inference, goal slices and pipeline stages use the `async-timeout` compatibility
 library because current images run Python 3.10. Inference failures return a

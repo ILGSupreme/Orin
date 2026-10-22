@@ -92,7 +92,9 @@ snapshot. Reloading reconciles a write whose reply was lost.
 
 If startup loading fails, Cortex stays available for terminal diagnostics.
 Its /ready response includes inventory.ready and inventory.error alongside
-the existing readiness fields; general readiness remains independent of Memory.
+the existing readiness fields. Inventory readiness is reported separately from
+accepting_requests. The latter also depends on inference readiness and the
+agent's goal-storage error state; Cortex readiness is not independent of Memory.
 Inventory-dependent commands fail explicitly and retry loading when invoked
 again. No background retry is required to recover. The status describes the
 last attempted inventory operation, not a continuous health probe.

@@ -1,53 +1,65 @@
 # Unified Cortex agent action plan
 
-Goal: one natural conversational interface to a persistent servitor. Cortex owns
-goals, permissions, execution and feedback; inference and action providers are
-replaceable. A greeting, explanation, current-information request and delegated
-work can coexist in one turn without selecting a mode.
+Goal: one natural interaction flow for conversation, information queries and
+delegated work. Cortex owns goals, execution and feedback; inference and action
+implementations remain replaceable.
 
-Implementation order:
+Documentation review: October 22, 2026. The implementation is present on
+`main`. Merge status and live acceptance are separate facts.
 
-1. Define shared turn/task/goal contracts, dependencies, observations, privacy,
-   budgets, clarification, recurrence and event wake-ups.
-2. Introduce an inference gateway with operation-role bindings to local Primer,
-   routed cluster LLMs and an OpenAI Responses adapter. Keep model/credentials
-   configured externally; permit external context only through explicit policy.
-3. Make local engines/profiling lazy so provider-only Cortex does not import or
-   initialize GPU libraries. Readiness must depend on selected inference routes.
-4. Store versioned goals in Memory using dedicated operations and SQLite records,
-   compare-and-swap updates and expiring execution leases.
-5. Replace chat/agent mode selection with a unified turn interpreter. Separate
-   immediate replies from requested outcomes, validate task dependencies, and
-   scope each task's context and attachment references.
-6. Execute independent ready tasks with a bounded observe/decide/act/verify loop;
-   preserve partial results and block only dependent work when input is missing.
-7. Add persistent clarification, feedback, cancellation, due-time/event wake-up
-   and restart recovery. Never replay an uncertain in-flight action automatically.
-8. Integrate both natural chat ingress surfaces, progress/results and lifecycle
-   shutdown with the shared runtime. Keep explicit terminal commands and
-   Federation's LLM-only ingress boundary.
-9. Test mixed requests, dependency validation, unavailable capabilities, scoped
-   inputs, real SQLite recovery/leases, clarification, recurrence/events, privacy,
-   provider-only operation and provider API edge cases using transport doubles.
-10. Rewrite PR #1 and its documentation around this architecture; retain useful
-    cancellation, timeout, result-retrieval and correlation fixes. Leave it draft
-    pending live model and lab validation.
+## Implemented foundation
 
-Current-information retrieval requires a registered real tool. Model reasoning
-alone must never be advertised as current news retrieval. Event/schedule handling
-wakes bounded runs; it does not keep an LLM generating continuously. Notifications
-are durable results available to the local client; external delivery connectors
-are separate capabilities.
+1. Shared turn/task/goal contracts, dependencies, observations, privacy,
+   budgets, clarification and schedule/event wake-ups.
+2. An inference gateway with explicit interpretation, decision and work bindings
+   to local Primer, routed LLMs and an OpenAI Responses adapter.
+3. Lazy local engine initialization for provider-only reasoning.
+4. Memory-backed goals with revisions, expiring claims and recovery state.
+5. A unified natural-turn interpreter for chat and terminal ingress.
+6. Bounded task execution with observations, evidence references and dependency
+   results. Ready tasks advance round-robin within a goal.
+7. Persisted clarification, corrective feedback, cancellation and wake-ups.
+   Uncertain in-flight actions require reconciliation rather than blind replay.
+8. Goal polling and terminal notices, with explicit slash commands kept separate
+   and Federation's direct Cortex WorkPacket ingress restricted to LLM work.
 
-## Implementation status
+See [the runtime](cortex-agent.md) for exact configuration and limitations.
+Source implementation does not prove availability of the required services,
+permissions or inference routes in a deployment.
 
-Steps 1-8 are implemented in the reworked PR. Step 9 has 85 passing automated
-tests, including provider-only API startup, real SQLite persistence/leases,
-restart and clarification recovery, feedback invalidation, privacy boundaries,
-scoped inputs, mixed requests and terminal notices. Step 10 updates the same
-existing draft PR and the architecture documentation.
+## Automated coverage
 
-Lab acceptance remains: real small-model decomposition and decisions, live
-provider configuration, real retrieval/tools, Kubernetes operation and terminal
-redraw under interactive input. These checks require the future lab environment;
-none of them is claimed by the transport/model-double tests.
+The suite covers mixed turns, dependency validation, unavailable capabilities,
+scoped inputs, SQLite recovery and leases, clarification, feedback invalidation,
+recurrence/events, privacy, provider transport behavior, evidence references and
+terminal notices. Model/tool/provider boundaries use doubles. Kubernetes discovery
+also uses a local HTTP server; native grammar compilation is a separate CPU job.
+
+Use [CI](ci.md) and the exact commit's run for commands and results. Fixed test
+counts and historical draft-PR instructions are not current acceptance evidence.
+
+## Acceptance order
+
+1. Record the deployed revision, image digests, dependencies, model settings and
+   enabled inference bindings. Confirm actual connections and permissions.
+2. Prove a read-only node/workload request through a real action, stored
+   observation and persisted outcome. Exercise unavailable and denied actions.
+3. Repeat representative conversation, inspection, mixed and dependent requests
+   with the actual small model. Evaluate correct decisions and truthful limits.
+4. Verify clarification, feedback, cancellation, restart/lease recovery and
+   inventory persistence against real Memory without replaying uncertain work.
+5. Validate provider routes and privacy policy when credentials are available.
+   Test real retrieval only with an implemented, authorized service.
+6. Verify terminal results/questions during interactive input and reconnect.
+7. Revalidate Federation submission, polling and sanitization against current
+   Cortex. Harden administrative and polling authorization before public use.
+8. Add further tools and then automatic federated routing or independent remote
+   delegation when the local execution/feedback loop is reliable.
+
+For every run, retain request and turn/goal/job/action identifiers, observations,
+completion evidence and failures. Schema compliance proves output structure;
+evidence references prove linkage; neither proves a sound completion decision.
+
+Current-information requests require actual retrieval. Schedules/events wake
+bounded runs rather than keeping inference continuously active. External
+notifications need a separate delivery capability.
