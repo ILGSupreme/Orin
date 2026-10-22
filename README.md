@@ -1,185 +1,203 @@
-# Orin (Not Finished)
+# Orin
 
-Orin is a local edge-AI cluster runtime for Kubernetes.
+Orin is a distributed assistance platform for connecting users with agents,
+generative models and executable capabilities across local, edge and federated
+environments. Its purpose is to make useful capabilities accessible even when
+the user's device lacks the necessary hardware, models, software or data access.
 
-It is designed for running local AI workloads across edge machines, including
-Jetson devices and standard Linux nodes. The current architecture is centered
-around Cortex, a local ingress, routing, command, discovery, and orchestration
-process.
+The current implementation targets Kubernetes, with k3s as the practical lab
+environment and Jetson and standard Linux machines as deployment targets.
+**Orin is experimental:** the platform vision is broader than the capabilities
+currently implemented or validated.
 
-Orin uses a canonical WorkPacket protocol for routing executable work between
-runtime services such as LLM, memory, tool, and future federation backends.
+## Architecture and responsibilities
 
-## Current architecture
+| Component | Responsibility |
+| --- | --- |
+| Cortex | User-facing assistant and controller: conversation, goals, execution, observations, feedback, discovery and routing. It also provides explicit local administration commands. |
+| Inference services | Execute generative models through replaceable backends. Primer supports Cortex-local inference and separate LLM services; the inference gateway also supports configured cluster and external-provider routes. |
+| Tool capabilities | Perform defined operations against systems, data or hardware. Built-in read-only inspection lives inside Cortex; additional tools require real implementations and configuration. |
+| Memory | Persist conversation, operational state, goals, observations, recovery information, node inventory and Federation records. |
+| Federation | Connect independently administered environments through network discovery, membership, signatures, policy checks and work/result exchange. |
+| Common | Shared protocols, runtime messages, WorkPackets, model adapters, Primer and job infrastructure. |
 
-The current runtime roles are:
+A node is a deployment host and may provide several services. Ordinary inference
+and tool execution do not require another agent. Remote agents that independently
+plan and coordinate delegated outcomes remain a later step.
 
-- Cortex: ingress, command interface, deployment operations, memory/session
-  integration, local fast responses, discovery, routing, and future complex-task
-  handling.
-- LLM: Primer-backed WorkPacket executor for model inference.
-- Memory: WorkPacket backend for users, sessions, chat history, claims, notes,
-  summaries, and prompt context.
-- Tool: planned backend role for non-LLM tool execution.
-- Federation: planned inter-cluster role for trusted remote cluster delegation.
-- Common: shared protocol, runtime, model-loading, adapter, and Hugging Face
-  helper code.
+Capability discovery, authorization and execution are separate concerns.
+Discovering a service does not authorize its use, and local agent permissions do
+not transfer across a Federation boundary.
 
-The design direction is that executable runtime work should be represented as
-WorkPackets and routed through a shared discovery/routing path.
+## Cortex and persistent work
+
+Natural requests through `/chat` and `/terminal_chat` share one agent runtime.
+A turn can produce an immediate conversational reply and persistent tasks without
+requiring the user to select a separate agent mode.
+
+The implemented runtime includes task dependencies, bounded execution,
+observations, clarification, corrective feedback, cancellation and restart
+recovery. Memory stores goals with revision checks and expiring execution leases.
+Completion requires references to successful observations; the model still
+assesses whether those observations satisfy the requested outcome.
+
+Explicitly requested schedules and local events can wake bounded runs. Results
+and notices are persisted and available through goal polling and the terminal
+client. External notification delivery requires separate capabilities.
+
+Inference bindings select interpretation, decision and work routes independently.
+External inference is disabled by default and requires both operator configuration
+and permission to send the turn or goal's context externally.
+
+See [the Cortex runtime](docs/cortex-agent.md) for configuration, permissions,
+budgets, supported inputs and recovery semantics.
+
+## Inference and tools
+
+Primer is the shared local model runtime facade used by Cortex and LLM services.
+It handles model loading, adapters, token counting and generation through engines
+such as GGUF and vLLM. Separate LLM services are discovered through Kubernetes
+service metadata and selected according to health, capabilities, modalities and
+routing policy. Cortex can also use its local model; a separate LLM pod is not
+required for every deployment.
+
+Built-in agent actions include local status, node and workload inspection,
+analysis, summarization and input description. Their usefulness depends on actual
+permissions, inventory and configured inference routes. Search and other
+retrieval operations require a healthy tool backend implementing the advertised
+contract; model reasoning alone does not retrieve current information.
+
+There is no complete general-purpose Tool service bundled with the current
+runtime. A capability may be implemented within Cortex or as a separate service;
+it does not have to be a separate application or agent.
+
+## Federation
+
+Federation has an implemented HTTP MVP, including:
+
+- Public network listing and manifests, with token-gated joining.
+- Ed25519 identities, signed work envelopes, nonce and expiry checks.
+- Signed member heartbeats and capability publication.
+- Network and member policy checks, incoming packet sanitization and result
+  sanitization.
+- Explicit work submission through CortexBridge and result polling, with
+  persistent records stored through Memory.
+
+The supplied June 5, 2026 lab checkpoint records a completed signed
+submit/poll flow with sanitized inference output. This is historical evidence;
+it does not establish that the current revision or deployment passes that flow.
+
+Cortex's direct `/work` ingress currently accepts LLM work only. Federation
+membership grants no Cortex goal controls, Memory access, arbitrary terminal
+commands or local administration permissions.
+
+Automatic selection of federated backends through normal Cortex routing,
+decentralized public discovery and independent remote-agent delegation remain
+future work. Local network listing is not global peer discovery. Public exposure
+also requires review of administrative endpoint protection, polling authorization
+and quota/concurrency enforcement.
+
+See the [Federation network plan](docs/orin-federation-network-plan.md) for
+design direction; its proposed phases and transports are not all implemented.
+
+## Runtime protocol and persistence
+
+Orin uses canonical RuntimeMessages, WorkPackets and WorkResults internally.
+WorkPackets describe executable backend work with typed tasks, routing hints and
+metadata. RouterService provides shared submission and retrieval for discovered
+backends; JobManager tracks transient execution jobs. Durable goals and
+responsibilities belong to Memory.
+
+Runtime message types can represent text, images, audio, video, JSON and binary
+data. Representation does not imply that every backend or ingress supports every
+modality. Current provider and agent input limitations are documented in
+[the Cortex runtime](docs/cortex-agent.md).
+
+Memory also persists worker node configuration separately from conversation data.
+See [node inventory](docs/node-inventory-api.md) and
+[storage upgrades](docs/memory-storage-upgrade.md) before upgrading an existing
+installation.
+
+## Deployment and terminal client
+
+`install_orin.sh` bootstraps the initial k3s host, namespace, RBAC, configuration,
+secrets, storage and Memory, Cortex and Federation services. Cortex deployment
+commands support adding worker inventory, installing k3s agents, labeling nodes
+and deploying runtime services.
+
+These operations affect hosts and running services. Review the installer and
+configuration for the target environment, registry, storage and GPU runtime.
+Jetson-specific images and native dependencies require hardware validation.
+
+`terminal-chat.py` defaults to `/terminal_chat` and supports natural requests,
+explicit slash commands and polling for goal results and questions.
+`ORIN_SESSION_ID` resumes a known session; `ORIN_PRIVACY` selects the turn's
+inference privacy policy. Endpoint and connection settings are configurable.
+
+Cortex and Memory interfaces are local administrative/internal interfaces.
+Federation is the intended cross-environment boundary; internal service URLs,
+credentials and cluster details must remain private.
 
 ## Repository structure
 
 ```text
 orin/
-  documentation/
+  canonical-unified-image/
+  docs/
   src/
     common/
     cortex/
     federation/
     llm/
     memory/
-    tool/
-  install-orin.sh
+    test/
+  tools/
+    lab-mcp/
+    local-agent/
+  install_orin.sh
   terminal-chat.py
 ```
 
-## Main components
+The Tool role exists in routing and configuration; a standalone `src/tool/`
+implementation is not currently present.
 
-### Cortex
+## Validation and current priorities
 
-Cortex is the main local runtime. It owns public ingress, slash-command handling,
-deployment operations, backend discovery, routing, and memory/session integration.
+Pull requests run CPU tests and focused static checks on hosted runners for
+Python 3.10 and 3.12. A separate native GGUF grammar check compiles the agent
+schemas with a CPU llama.cpp parser without loading model weights.
 
-Cortex is responsible for receiving user requests, managing terminal commands,
-coordinating memory/session state, discovering backend services, and routing
-runtime work.
+Tests exercise real Memory/SQLite and runtime logic with model, provider HTTP
+and tool doubles. Kubernetes discovery tests also use a local HTTP server.
+These checks do not establish successful deployment, sound model decisions,
+Jetson/CUDA compatibility or end-to-end task completion. Live Federation smoke
+tests are separate from unit-test discovery.
 
-Natural requests use one persistent agent runtime that can combine conversation,
-information requests and delegated work. Cortex maintains goals and feedback while
-local, clustered and provider inference remain replaceable. See
-[the unified runtime](docs/cortex-agent.md) and
-[its action plan](docs/unified-agent-action-plan.md) for configuration, execution
-limits, recovery and current limitations.
+See [CI and local test instructions](docs/ci.md) for commands and check scope,
+[lab access](tools/lab-mcp/README.md) for the lab bridge, and
+[local validation tooling](tools/local-agent/README.md) for development workflows.
 
-### LLM
+Current priorities are:
 
-The LLM service is a Primer-backed runtime that can load model backends such as
-GGUF or vLLM and execute WorkPackets for model inference.
+- Prove a reliable Cortex execution and feedback loop with real services,
+  persisted observations and completion evidence.
+- Evaluate representative requests repeatedly with the actual small models and
+  deployed inference configuration.
+- Validate current images, dependencies, inventory recovery and Kubernetes
+  operations on the gateway and Jetson.
+- Add useful real tools and harden Federation's trust boundary before broader
+  public use.
+- Introduce automatic federated routing and agent delegation incrementally.
 
-LLM services are discovered through Kubernetes service metadata and selected by
-Cortex based on health, role, capabilities, modalities, and runtime preferences.
-
-### Memory
-
-The memory service stores users, sessions, chat messages, claims, notes,
-summaries, and prompt context.
-
-Cortex uses memory to resolve sessions, persist chat history, retrieve recent
-context, and support future long-running task workflows.
-
-### Primer
-
-Primer is the shared model runtime facade used by Cortex and LLM services.
-
-It handles backend loading, model loading, message adapters, token counting, and
-text, JSON, and streaming generation.
-
-### Tool
-
-The tool runtime role is planned for non-LLM executable tools.
-
-This may include search, inspection, retrieval, system operations, or other
-specialized backend capabilities.
-
-### Federation
-
-The federation runtime role is planned for trusted inter-cluster communication.
-
-Federation is not currently treated as a working runtime path. It is a future
-boundary for remote cluster discovery, delegation, and policy-controlled task
-exchange.
-
-## Runtime protocol
-
-Orin uses canonical runtime messages internally instead of treating provider-
-specific APIs as the internal contract.
-
-Runtime messages are composed of typed content parts such as text, image, audio,
-video, JSON, and binary data.
-
-Executable work is represented as WorkPackets. A WorkPacket contains a canonical
-task, routing hints, execution disposition, and metadata.
-
-The long-term goal is that LLM work, memory work, tool work, and deferred Cortex
-work all use the same WorkPacket-based execution model.
-
-## Kubernetes model
-
-Orin is designed to run on Kubernetes, with k3s as the current practical target.
-
-The bootstrap process deploys the minimum working runtime:
-
-- memory
-- cortex
-
-Additional runtime services, such as LLM pods, are deployed later through Cortex
-deployment operations.
-
-Cortex discovers backend services through Kubernetes service labels and
-annotations. Runtime metadata such as loaded model, capabilities, modalities, and
-context window can be patched onto services and used for routing.
-
-## Deployment model
-
-The current deployment model separates initial host bootstrap from ongoing pod
-deployment.
-
-`install-orin.sh` is responsible for setting up the initial cluster host,
-namespace, RBAC, configuration, secrets, memory service, and Cortex service.
-
-Cortex deployment operations are responsible for adding nodes, installing k3s
-agents, labeling nodes, deploying runtime pods, and patching discovery metadata.
-
-## Terminal client
-
-`terminal-chat.py` is a lightweight terminal client for interacting with Cortex.
-
-It sends canonical runtime messages to Cortex through the `/work` endpoint and
-supports both chat-style interaction and slash-command operation.
-
-Command output and assistant chat output are separated by response metadata so
-the terminal can display operational output separately from conversation output.
-
-## Tests and CI
-
-Pull requests run CPU-only tests and focused static checks on GitHub-hosted
-runners. See [CI and local test instructions](docs/ci.md) for commands, the merge
-gate setup, and the plan for ARM64 builds and hardware lab validation.
-
-## Status
-
-Orin is under active development.
-
-The current codebase is experimental and focused on local Kubernetes edge-AI
-runtime development.
-
-Current near-term goals include:
-
-- making WorkPacket the single execution unit across Cortex, LLM, memory, tool,
-  and deferred work
-- unifying deferred task execution
-- finishing the standard-vs-Jetson image split
-- improving service discovery metadata patching
-- adding the first real tool backend
-- persisting deployment inventory
-- cleaning up old gateway/orchestrator terminology
+The [agent action plan](docs/unified-agent-action-plan.md) and
+[architecture and operations reference](orin-cluster-current-architecture-and-operations.md)
+provide additional context. Older architecture notes may describe superseded
+flows; use current code and focused runtime documentation to resolve differences.
 
 ## License
 
 Orin source code is licensed under the Apache License, Version 2.0.
+See [LICENSE](LICENSE).
 
-See `LICENSE` for the full license text.
-
-Model weights, third-party containers, runtime libraries, and external services
-may be governed by their own licenses. See `THIRD_PARTY_LICENSES.md`.
+Model weights, third-party containers, runtime libraries and external services
+may have separate licenses. See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
