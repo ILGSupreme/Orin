@@ -27,3 +27,13 @@ not authority to expand scope. Do not expose credentials or private logs in a PR
 Use only local code/tests; inherited MCP configuration is not permission to use it.
 The final PR should identify any build or hardware tests still needed. Never
 invent a candidate image digest. The human builds/deploys the recorded commit.
+
+Completion evidence: use the named project roles. Each specialist must finish
+with its own JSON verdict, summary and evidence list as its role requires.
+Wait for actual reports. Start the final verifier only after investigator and
+implementer reports have arrived and all edits are finished. Do not edit any
+tracked or nonignored files after verification. If repair is needed, finish it
+and spawn a fresh verifier. The controller requires matching lifecycle reports
+for the current attempt and checks the final reviewed checkout fingerprint.
+Never create or modify specialists.jsonl or verified-specialists.json; these are
+controller/hook evidence. Missing hooks or reports must leave the run blocked.
