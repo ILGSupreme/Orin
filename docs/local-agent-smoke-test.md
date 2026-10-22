@@ -149,6 +149,17 @@ python -m unittest discover -v -s tools/local-agent/tests
 python -c "from pathlib import Path; p = Path('docs/local-agent-smoke-test.md'); assert p.is_file() and p.read_text().strip(), 'Missing or empty document'"
 ```
 
+These are automated local checks, not a human-run CLI smoke test.
+[`test_runner.py`](../tools/local-agent/tests/test_runner.py) mocks Codex,
+GitHub/git commands and lifecycle validation in its workflow scenarios, including
+publication and feedback. [`test_evidence.py`](../tools/local-agent/tests/test_evidence.py)
+validates synthetic lifecycle records and calls the capture function directly
+against a temporary git checkout. Those tests exercise controller decisions and
+evidence validation; they do not establish that the installed CLI emits real
+hooks, that a PR was published, or that authenticated feedback continuation
+worked. The document-presence check establishes only that this file is nonempty.
+Record actual check results separately from any HUMAN CLI smoke-test results.
+
 After a `ready` result, the controller independently validates lifecycle evidence,
 reruns frozen checks and runs `git diff --check`. It stages changes and creates a
 local candidate commit even when `--publish` is omitted. Agents must not commit.
@@ -191,13 +202,32 @@ or merged PR requires a new run. CI does not trigger automatic repairs.
 For this documentation-only candidate, a human should:
 
 1. Review the recorded candidate commit and confirm only this document changed.
-2. Read the draft PR and wait for applicable CI on that exact commit.
+2. Review local `attempt-N/pr-body.md`; if publication was separately authorized,
+   read the draft PR and wait for applicable CI on that exact commit.
 3. In an isolated development environment, perform prepare/trust and a local run
    against a remote base containing the tooling. Confirm actual lifecycle hooks,
    frozen checks, candidate commit, `pr-body.md` and `local_ready` state. An
    operator may separately authorize a draft publication and feedback smoke run.
 4. Record the tested commit, CLI/environment versions, commands, observations and
    pass/fail. Report failures through an explicit feedback file.
+
+For a separately authorized publication smoke test, use a disposable branch/run
+and an approved repository. Amend the operator's task instructions to explicitly
+authorize controller publication before invoking it with `--publish`; the
+documentation-only task above forbids publication. Confirm `state.json` records
+`awaiting_human`, its candidate commit matches the remote branch/PR head, and the
+recorded PR URL opens a draft targeting the intended base. Retain the command,
+candidate SHA, PR URL and observed draft/base/head as evidence.
+
+For separately authorized feedback continuation, record that PR URL and head,
+write a concrete document-only correction to the feedback file, and run the
+continuation command with `--publish` under the same publication authorization.
+Confirm a new attempt directory, fresh specialist reports and passing check logs,
+the requested correction in the candidate, and the same open PR updated to the
+new candidate head in draft state. Record before/after SHAs, attempt numbers,
+check results and PR observations. A local continuation without `--publish` can
+validate local artifacts only. Mark either smoke test as unrun unless these
+observations were actually collected; unit-test success is not that evidence.
 
 This documentation change requires no image build or live hardware deployment;
 none is established by the local smoke checks. For future runtime candidates,
