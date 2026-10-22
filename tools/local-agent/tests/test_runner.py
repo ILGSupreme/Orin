@@ -33,7 +33,7 @@ class RunnerTests(unittest.TestCase):
                 runner.execute([sys.executable, "-c", "import time; time.sleep(60)"],
                                tmp, Path(tmp) / "log", 0.05)
 
-    def scenario(self, result_status="ready", fail_check=False, publish=True, existing=False):
+    def scenario(self, result_status="ready", fail_check=False, publish=True, existing=False, missing_evidence=False, prepare=False, changed=False):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
@@ -46,7 +46,7 @@ class RunnerTests(unittest.TestCase):
         feedback = root / "feedback.txt"
         feedback.write_text("continue")
         args = argparse.Namespace(run=root, repo="owner/repo", feedback=feedback,
-                                  publish=publish, minutes=1, check_minutes=1)
+                                  publish=publish, minutes=1, check_minutes=1, prepare=prepare)
         calls = []
 
         def command(argv, cwd=None, timeout=120):
@@ -64,7 +64,7 @@ class RunnerTests(unittest.TestCase):
                 return "https://github.com/owner/repo/pull/3"
             return ""
 
-        def execute(argv, cwd, log, timeout, stdin=None):
+        def execute(argv, cwd, log, timeout, stdin=None, env=None):
             if argv[0] == "codex":
                 runner.save(Path(argv[argv.index("-o") + 1]),
                             {"status": result_status, "title": "Fix bug", "body": "Evidence"})
@@ -72,13 +72,33 @@ class RunnerTests(unittest.TestCase):
                 raise RuntimeError("test failed")
 
         with patch.object(runner, "command", side_effect=command), \
-                patch.object(runner, "execute", side_effect=execute):
+                patch.object(runner, "execute", side_effect=execute), \
+                patch.object(runner.evidence, "snapshot", return_value="changed" if changed else "fingerprint"), \
+                patch.object(runner.evidence, "validate",
+                             side_effect=ValueError("missing evidence") if missing_evidence else None,
+                             return_value={"snapshot": "fingerprint"}):
             try:
                 runner.run(args)
-            except RuntimeError:
-                if not fail_check:
+            except (RuntimeError, ValueError):
+                if not (fail_check or missing_evidence or changed):
                     raise
         return calls, json.loads((root / "state.json").read_text())
+
+    def test_prepare_does_not_run_or_publish(self):
+        calls, state = self.scenario(prepare=True)
+        self.assertEqual(state["status"], "prepared")
+        self.assertEqual(state["attempt"], 0)
+        self.assertFalse(any(c[0] == "gh" or c[:2] == ["git", "push"] for c in calls))
+
+    def test_checks_changing_reviewed_files_cannot_publish(self):
+        calls, state = self.scenario(changed=True)
+        self.assertEqual(state["status"], "blocked")
+        self.assertFalse(any(c[:2] in (["git", "push"], ["git", "commit"]) for c in calls))
+
+    def test_ready_without_specialist_evidence_cannot_publish(self):
+        calls, state = self.scenario(missing_evidence=True)
+        self.assertEqual(state["status"], "blocked")
+        self.assertFalse(any(c[:2] in (["git", "push"], ["git", "commit"]) for c in calls))
 
     def test_blocked_agent_cannot_publish(self):
         calls, state = self.scenario(result_status="blocked")
