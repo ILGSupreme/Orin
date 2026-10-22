@@ -315,17 +315,53 @@ If a test hangs only during agent execution, compare the exact interpreter,
 dependency versions, working directory and execution restrictions. Keep evidence
 from both environments and do not mark a blocked report as passing manually.
 
-### Managed-worktree validation status (2026-10-22)
+### Managed-worktree validation and limited acceptance (2026-10-22)
+
+The owner accepted moving PR #6 forward with the limitations below documented.
+This is limited acceptance of the development tooling, not evidence of a passing
+managed end-to-end run. Merge, deployment and cleanup remain separate actions.
+
+Evidence recorded from the local tests and operator-provided lab output:
 
 - Installation, menu startup, worktree preparation and lifecycle events were
   observed on the lab host with Codex CLI 0.163.0.
-- Local-agent tooling tests passed (36 tests).
+- Local-agent tooling tests passed (36 tests). These include temporary Git
+  repositories; Codex/GitHub boundaries in controller tests are simulated.
 - The host's Python 3.12 application suite passed: 89 tests in 3.272 seconds.
-- The managed smoke attempt remains blocked: a minimal FastAPI TestClient
-  request and the application suite stalled during agent execution.
-- The specific cause is unresolved. A sandbox/environment difference is a
-  hypothesis, not yet a diagnosis. Managed workflow publication and archival
-  acceptance are still pending.
+- Managed smoke attempt 3 remains blocked. The application suite and a minimal
+  FastAPI TestClient stalled during agent execution.
+- A direct workspace-write sandbox probe reproduced the failure without Orin:
+  asyncio's wake-up socket send raised PermissionError (EPERM), and the AnyIO
+  portal hung during shutdown until the 15-second diagnostic timeout (exit 1).
+  One portal call returned successfully; that does not make the probe pass.
+- The identical socket/AnyIO probe on the host sent and received a byte, completed
+  portal startup/call/shutdown, and exited 0.
+- The matched environment was Python 3.12.15 at
+  /data/orin-dev/venv312/bin/python, FastAPI 0.115.8, Starlette 0.45.3,
+  httpx 0.27.2 and AnyIO 4.15.1.
+
+The sandbox execution environment is therefore an established blocker. The
+observed mechanism is denial of local socket writes needed for asyncio wake-ups.
+[Upstream Codex issue #33793](https://github.com/openai/codex/issues/33793)
+reports a matching restricted-network seccomp failure. The exact filter in the
+installed binary has not been independently inspected; an upstream report is
+not proof of a shipped fix. No verified fixed release was identified at this
+checkpoint.
+
+Acceptance limits and follow-up checks:
+
+- Successful managed-agent completion remains unverified. Preserve attempt 3
+  and its blocked reports; host success must not replace specialist evidence.
+- Publication and archival through the managed interface still require human
+  smoke acceptance. Original standalone publication results and tooling tests
+  do not establish these managed-interface outcomes.
+- Validate any candidate Codex fix with the socket/AnyIO probe and minimal
+  TestClient under the intended sandbox restrictions before another full run.
+- Then rerun the original frozen checks and obtain fresh passing specialist
+  evidence. Exercise managed publication and archival, including refusal cases,
+  and record the tested commit, CLI/environment versions and actual outcomes.
+- No evidence gate, frozen check or runtime permission is relaxed by this
+  limited acceptance. Blocked attempts must remain blocked.
 
 For this installed CLI, `codex sandbox --help` shows direct command arguments:
 use `codex sandbox [OPTIONS] -- COMMAND...`, without a `linux` subcommand.
