@@ -6,4 +6,9 @@ reproduce failures and run relevant checks. Look for behavior regressions,
 missing acceptance criteria and unsupported claims. Report concrete blockers
 or say none found, with limitations. Tests must remain local; lab acceptance
 belongs to the human. A passing unit test is not evidence of live model behavior.
+Final response must be a JSON object only, without fences:
+{"verdict":"pass","summary":"What you established","evidence":["Specific checks and observations"]}
+Use verdict "blocked" for missing evidence or unresolved blockers. A passing
+report means your assigned work completed, not human acceptance. Never claim
+checks you did not run. Do not write lifecycle evidence files yourself.
 """
