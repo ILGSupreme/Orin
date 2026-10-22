@@ -14,10 +14,15 @@ For this documentation smoke task:
 - The coordinator delegates investigation of `tools/local-agent` to an
   investigator, bounded document edits to an implementer, and an independent
   final accuracy review to a verifier.
+- Record each specialist's task identifier and actual result, including the
+  independent verifier's completed report. Successful spawning alone does not
+  establish completed investigation, implementation, or verification.
 - The document explains task input, checkout isolation, local checks, optional
   draft publication, feedback continuation, and human acceptance.
 - Both required check commands below pass locally, and the result records actual
   evidence and review limitations without claiming CI or lab acceptance.
+- Include a pre-merge example targeting `local-agent-workflow`, and explain
+  the agent-result handoff before the controller creates the candidate commit.
 
 The coordinator must follow repository instructions, derive explicit acceptance
 criteria, and keep work within the approved task. An inspection request alone
@@ -81,6 +86,7 @@ From a checkout containing the controller, the human may start a new run:
 python tools/local-agent/run.py \
   --task /data/orin-tasks/task.md \
   --checks /data/orin-tasks/smoke-checks.json \
+  --base local-agent-workflow \
   --run /data/orin-agent-runs/local-agent-smoke
 ```
 
@@ -88,8 +94,9 @@ Keep the run directory outside the source repository. The controller clones
 `https://github.com/ILGSupreme/Orin.git` at remote `main` by default, then creates
 an `agent/<random>` branch in `<run>/checkout`. It does not copy uncommitted files
 from the invoking checkout. Override `--repo owner/name` and `--base branch` if
-needed; the base must already exist remotely and becomes the PR target. Before
-this tooling merges, use its existing remote feature branch as the base. The
+needed; the base must already exist remotely and becomes the PR target. The
+pre-merge example above explicitly uses `local-agent-workflow`; omitting `--base`
+would instead select remote `main`. The
 original task and check arrays are saved in `state.json`.
 
 Omitting `--publish` prevents controller GitHub calls and pushes. It still clones
@@ -106,9 +113,18 @@ may contain sensitive information; review and redact evidence before sharing.
 
 The coordinator returns `status`, a single-line `title`, and a PR-description
 `body`. The body must include acceptance criteria, changes, actual test evidence,
-independent review outcome, limitations, and precise HUMAN lab steps. `ready`
+independent review outcome, limitations, and precise HUMAN lab steps. Include
+specialist task identifiers and concise summaries of their actual results. A
+successful spawn proves only that a specialist started: wait for its completed
+report and assess its findings before claiming the work or final review passed.
+If a report is unavailable, state that limitation and return `blocked` when the
+required specialist work cannot be verified. `ready`
 means ready for CI and human evaluation, never live-lab acceptance. The controller
-then independently reruns the captured checks. `local_ready` records a local
+receives the agent's result before independently rerunning the captured checks,
+running `git diff --check`, and creating the candidate commit if changes exist.
+The agent cannot report that future candidate SHA; the controller appends the
+actual candidate commit and its check evidence to `pr-body.md` after the handoff.
+`local_ready` records a local
 candidate and PR body; `awaiting_human` records draft publication, not passing CI
 or lab tests. A successful run with no diff against the base is `no_changes` and
 creates no PR. Failures produce `blocked`; inspect the available result and logs.
@@ -117,9 +133,11 @@ inspection. One process may own a run at a time.
 
 ## Optional draft publication and feedback
 
-Publication is a separate human decision. Only an operator explicitly authorizing
-push and draft publication should use `--publish`; do not run it for this approved
-local-only task. On an authorized run, adding that flag makes the controller push
+Publication requires explicit human authorization. The initial task above does
+not authorize publication. For this documentation continuation, the human has
+authorized the controller to push the documentation branch and open a draft PR
+targeting `local-agent-workflow`; agents still must not publish. On an authorized
+run, adding `--publish` makes the controller push
 the candidate branch and create a draft PR after a ready result and passing
 checks. It never builds images, deploys, merges, or grants human acceptance.
 
@@ -144,11 +162,20 @@ fail a push and needs human reconciliation; closed or merged PRs require a new
 run. Inspect `blocked` state before recovering rather than deleting evidence or
 weakening checks.
 
+For this authorized continuation, the operator may add `--publish` to the
+feedback command above after confirming that the saved `state.json` base is
+`local-agent-workflow`. A continuation reuses its saved base; it does not change
+the PR target through a new `--base` argument. If the saved base differs, start a
+new run with the explicit pre-merge example and `--publish` under the human's
+publication authorization.
+
 ## HUMAN evaluation checklist
 
 1. Review the candidate diff and confirm that only this document changed. Read
    the task and resulting acceptance criteria; verify all three specialist roles
-   actually ran and final review followed completed edits.
+   completed their assigned work and final review followed completed edits.
+   Match task identifiers to completed reports and read each actual result;
+   spawn acknowledgements alone are insufficient evidence.
 2. Run `python -m unittest discover -v -s tools/local-agent/tests` and the exact
    document-presence check from the JSON above in the candidate checkout. Inspect
    both check logs and the recorded candidate SHA. Controller tests simulate
