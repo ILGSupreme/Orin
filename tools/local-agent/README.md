@@ -104,7 +104,10 @@ code/configuration; new tasks fetch their configured remote base.
 
 ## Prerequisites
 
-- Linux, Python 3.10+, git, GitHub CLI (`gh`), and an authenticated current Codex CLI.
+- Linux, git, GitHub CLI (`gh`), and an authenticated current Codex CLI.
+- The controller requires Python 3.10+. Use Python **3.12** for the full pinned
+  application test environment; CI tests 3.10 and 3.12. Do not assume that the
+  dependencies support every newer system Python.
 - Codex must support project `.codex/agents/*.toml`, `agents.enabled`,
   `agents.max_concurrent_threads_per_session`, `exec --output-schema` and
   `--sandbox workspace-write`. Older CLI versions may need updating.
@@ -124,7 +127,7 @@ This pilot does not pin a model: roles inherit the user's selected model and
 account configuration. Local execution still uses the configured inference
 provider and its usage limits; it does not run on Orin's Qwen model by default.
 
-## Start
+## Standalone Python runner
 
 Run the controller from a checkout containing these files. Keep run directories
 outside the repository, preferably on `/data` on the gateway. Each run makes its
@@ -146,8 +149,9 @@ python tools/local-agent/run.py \
 Omit `--publish` to keep the entire result local. The task starts immediately;
 `--publish` authorizes a push and draft PR after local checks. No image build,
 cluster mutation, merge or human acceptance is performed by the controller.
-For testing this workflow before it merges, add `--base local-agent-workflow`;
-that base must already exist remotely and the resulting task PR targets it.
+The original controller is merged; new standalone tasks default to `main`.
+For testing an unmerged tooling change, supply its existing remote branch with
+`--base`; the resulting task PR targets that branch.
 
 Check commands are JSON arrays of argument arrays, executed without a shell.
 Copy the example and tailor it to your task. These checks are captured in state
@@ -187,6 +191,9 @@ CI failures do not autonomously trigger repairs in this pilot. Supply feedback
 explicitly. GitHub workflows already run when the PR is opened or updated.
 
 ## Human acceptance
+
+Documentation-only changes require review and applicable checks, not an image
+build or hardware deployment. For runtime changes requiring lab evaluation:
 
 1. Wait for CI on the candidate commit.
 2. Build the candidate using the existing lab build procedure. Record its commit
@@ -253,7 +260,8 @@ that checkout, review/trust the project and use `/hooks` to review the two hooks
 Exit Codex, and repeat the controller command without `--prepare`. A prepared
 run does not require a feedback file. Hook trust is never bypassed automatically.
 If your CLI does not support these hooks, stop and report its diagnostic output.
-The hook behavior still needs live validation on the installed CLI version.
+Hooks were exercised successfully with Codex CLI 0.163.0 in the original clone
+workflow. Revalidate when changing CLI versions or checkout/execution modes.
 
 Official hook contract: https://learn.chatgpt.com/docs/hooks
 
@@ -265,3 +273,63 @@ specialist reported, not that every technical claim in it is correct.
 
 Upgrade existing pilots using a fresh prepared run so the checkout includes the
 new hooks and role instructions. Keep old attempts as historical evidence.
+
+## Python environment and blocked-run troubleshooting
+
+Use a dedicated environment under the managed home and activate it **before**
+starting `orin-dev`. The launcher uses `python3` from PATH; activation is not
+automatic. With Python 3.12 already installed:
+
+```bash
+python3.12 -m venv /data/orin-dev/venv312
+source /data/orin-dev/venv312/bin/activate
+python -m pip install -r /data/orin-dev/source/requirements-test.txt
+python --version
+command -v python
+orin-dev
+```
+
+For an existing task, install its checkout's `requirements-test.txt` if its pins
+differ from the tooling source. Python 3.14 failed to build the current pinned
+pydantic-core because its PyO3 supports at most Python 3.13. Use the tested 3.12
+environment; do not suppress that check with
+`PYO3_USE_ABI3_FORWARD_COMPATIBILITY`.
+
+If using an already installed `uv` to obtain Python 3.12, keep managed runtimes
+and cache together:
+
+```bash
+export UV_PYTHON_INSTALL_DIR=/data/orin-dev/python
+export UV_CACHE_DIR=/data/orin-dev/cache/uv
+uv venv --python 3.12 --seed /data/orin-dev/venv312
+```
+
+After a blocked attempt, inspect `runs/NAME/attempt-N/result.json` and
+`state.json` before retrying. The current interface does not display the complete
+blocker automatically. `reported` means a specialist finished, not that it passed.
+Use Feedback with nonempty text describing what changed; a line containing only
+`.` is rejected. The existing task and frozen checks are retained.
+
+A passing host check does not establish that the agent ran it successfully.
+If a test hangs only during agent execution, compare the exact interpreter,
+dependency versions, working directory and execution restrictions. Keep evidence
+from both environments and do not mark a blocked report as passing manually.
+
+### Managed-worktree validation status (2026-10-22)
+
+- Installation, menu startup, worktree preparation and lifecycle events were
+  observed on the lab host with Codex CLI 0.163.0.
+- Local-agent tooling tests passed (36 tests).
+- The host's Python 3.12 application suite passed: 89 tests in 3.272 seconds.
+- The managed smoke attempt remains blocked: a minimal FastAPI TestClient
+  request and the application suite stalled during agent execution.
+- The specific cause is unresolved. A sandbox/environment difference is a
+  hypothesis, not yet a diagnosis. Managed workflow publication and archival
+  acceptance are still pending.
+
+For this installed CLI, `codex sandbox --help` shows direct command arguments:
+use `codex sandbox [OPTIONS] -- COMMAND...`, without a `linux` subcommand.
+The earlier `codex sandbox linux ...` diagnostic failed before Python started,
+so it provides no evidence about TestClient. Consult installed help when syntax
+differs from documentation. Do not disable the sandbox or weaken frozen checks
+to make the smoke task pass.
