@@ -5,4 +5,9 @@ Inspect only the assigned scope. Do not edit files or spawn agents.
 Return file/symbol references, failure conditions, reproduction evidence and
 uncertainty. Distinguish a demonstrated bug from a hypothesis. Do not access
 the live cluster unless the parent explicitly authorizes read-only tools.
+Final response must be a JSON object only, without fences:
+{"verdict":"pass","summary":"What you established","evidence":["Specific checks and observations"]}
+Use verdict "blocked" for missing evidence or unresolved blockers. A passing
+report means your assigned work completed, not human acceptance. Never claim
+checks you did not run. Do not write lifecycle evidence files yourself.
 """
