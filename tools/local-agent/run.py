@@ -12,6 +12,8 @@ import sys
 import uuid
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import evidence  # noqa: E402
 FIELDS = ("status", "title", "body")
 SCHEMA = {
     "type": "object", "additionalProperties": False, "required": list(FIELDS),
@@ -26,12 +28,12 @@ def command(argv, cwd=None, timeout=120):
                           timeout=timeout).stdout.strip()
 
 
-def execute(argv, cwd, log, timeout, stdin=None):
+def execute(argv, cwd, log, timeout, stdin=None, env=None):
     """Terminate the whole local process group on timeout or interruption."""
     with log.open("w") as output:
         proc = subprocess.Popen(argv, cwd=cwd, text=True, start_new_session=True,
                                 stdin=subprocess.PIPE if stdin is not None else None,
-                                stdout=output, stderr=subprocess.STDOUT)
+                                stdout=output, stderr=subprocess.STDOUT, env=env)
         try:
             proc.communicate(stdin, timeout=timeout)
         except BaseException:
@@ -83,7 +85,7 @@ def run(args):
         state_path = run_dir / "state.json"
         if state_path.exists():
             state = json.loads(state_path.read_text())
-            if not args.feedback:
+            if not args.feedback and state["status"] != "prepared":
                 raise ValueError("existing run: supply --feedback with instructions to continue")
             if state["repo"] != args.repo:
                 raise ValueError("repository differs from original run")
@@ -107,6 +109,13 @@ def run(args):
                 raise RuntimeError("incomplete checkout initialization; use a new run directory")
             if command(["git", "branch", "--show-current"], work) != state["branch"]:
                 raise RuntimeError("unexpected checkout branch")
+            if getattr(args, "prepare", False):
+                if state["attempt"]:
+                    raise ValueError("prepare is only available before the first attempt")
+                state["status"] = "prepared"
+                save(state_path, state)
+                print(f"Prepared {work}. Open Codex there and review/trust /hooks before running.")
+                return 0
             if args.publish:
                 command(["gh", "auth", "status"])
                 prs = json.loads(command(["gh", "pr", "list", "--repo", state["repo"],
@@ -125,20 +134,27 @@ def run(args):
             if args.feedback:
                 prompt += "\nHuman follow-up instructions:\n" + args.feedback.read_text()
             (attempt / "prompt.txt").write_text(prompt)
+            state.pop("error", None)
             state["status"] = "running"
             save(state_path, state)
             execute(["codex", "exec", "--sandbox", "workspace-write", "--json",
                      "--output-schema", str(schema), "-o", str(result_path), "-"],
-                    work, attempt / "agent.jsonl", args.minutes * 60, prompt)
+                    work, attempt / "agent.jsonl", args.minutes * 60, prompt,
+                    env={**os.environ, "ORIN_AGENT_EVIDENCE": str(attempt / "specialists.jsonl")})
             result = result_from(result_path)
             if result["status"] != "ready":
                 state["status"] = "blocked"
                 save(state_path, state)
                 print(f"Blocked: see {result_path}")
                 return 2
+            proof = evidence.validate(attempt / "specialists.jsonl",
+                                      attempt / "agent.jsonl", work)
+            save(attempt / "verified-specialists.json", proof)
             # Checks are captured before the agent starts, not read from edited code.
             for index, check in enumerate(state["checks"]):
                 execute(check, work, attempt / f"check-{index}.log", args.check_minutes * 60)
+            if evidence.snapshot(work) != proof["snapshot"]:
+                raise ValueError("checkout changed during checks; fresh specialist review required")
             command(["git", "diff", "--check"], work)
             command(["git", "add", "--all"], work)
             if command(["git", "diff", "--cached", "--name-only"], work):
@@ -150,6 +166,8 @@ def run(args):
                 print("No changes; no PR created. See the local result.")
                 return 0
             body = (result["body"] + f"\n\nCandidate commit: `{head}`\n"
+                    "\nSpecialist lifecycle reports verified for this attempt: investigator, "
+                    "implementer, verifier. Reports retained locally.\n"
                     "\nLocal controller checks passed:\n" +
                     "\n".join("- `" + json.dumps(c) + "`" for c in state["checks"]) +
                     "\n\nCI and human lab acceptance are pending. No image has been built "
@@ -188,6 +206,8 @@ def main():
     parser.add_argument("--task", type=Path)
     parser.add_argument("--feedback", type=Path)
     parser.add_argument("--checks", type=Path)
+    parser.add_argument("--prepare", action="store_true",
+                        help="create checkout for project/hook trust review without running Codex")
     parser.add_argument("--publish", action="store_true", help="push and create/update a draft PR")
     parser.add_argument("--minutes", type=int, default=45)
     parser.add_argument("--check-minutes", type=int, default=15)
