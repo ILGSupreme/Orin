@@ -65,8 +65,8 @@ Examples:
 
 Orin can download, load, or execute third-party models.
 
-Model weights are not part of the Orin source-code license unless explicitly
-included and licensed by Nordavind.
+Model weights are not covered by Orin's source-code license merely because
+Orin can download or execute them. Follow the license supplied with each model.
 
 Before using a model, check:
 

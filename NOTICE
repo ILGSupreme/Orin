@@ -1,9 +1,9 @@
 Orin
-Copyright 2026 Nordavind
+Copyright 2026 Samuel Padilla
 
-Orin is a local edge-AI cluster runtime for Kubernetes, developed by Nordavind.
+Orin is a distributed assistance platform, developed by Samuel Padilla.
 
-This product includes software developed by Nordavind and is licensed under
+This product includes software developed by Samuel Padilla and is licensed under
 the Apache License, Version 2.0.
 
 Orin includes integrations with third-party software, container images,

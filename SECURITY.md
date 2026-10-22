@@ -16,11 +16,17 @@ Please report security issues privately.
 
 Do not open a public GitHub issue for vulnerabilities.
 
-The repository currently lists `security@nordavind.se` as its private contact.
-Mailbox availability and monitoring have not been confirmed. Maintainers need
-to confirm this address before it can be treated as a verified reporting channel.
-Do not publish vulnerability details or credentials in an issue while arranging
-private contact.
+The project owner and maintainer is Samuel Padilla
+([ILGSupreme](https://github.com/ILGSupreme)).
+
+A dedicated private reporting address has not yet been published. If GitHub
+offers **Report a vulnerability** for this repository, use that private reporting
+flow. Its availability has not been verified.
+
+If that option is unavailable, ask the maintainer to arrange a private reporting
+channel. A public contact request must contain no vulnerability details,
+credentials or sensitive logs. Publish a verified private channel here once
+one is established.
 
 ## What to include
 
@@ -86,7 +92,7 @@ Orin itself:
 
 ## Disclosure
 
-Nordavind will make a best-effort attempt to acknowledge valid reports, assess
+The maintainer will make a best-effort attempt to acknowledge valid reports, assess
 impact, and provide a fix or mitigation.
 
 Responsible disclosure is appreciated.

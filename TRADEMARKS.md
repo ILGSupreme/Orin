@@ -1,14 +1,12 @@
-# Trademarks
+# Orin name and branding
 
-This document describes use of the Nordavind and Orin names, marks, and branding.
+Orin is owned and maintained by Samuel Padilla. This policy covers use of the
+Orin project name, associated logos, branding and visual identity. It does not
+assert that the name or logos are registered trademarks.
 
-## Nordavind marks
-
-The names "Nordavind" and "Orin", the Orin project name, associated logos,
-branding, and visual identity are trademarks or marks of Nordavind.
-
-The Apache License, Version 2.0, applies to the Orin source code. It does not
-grant trademark rights.
+The Apache License, Version 2.0, applies to the Orin source code. Source-code
+licensing does not grant permission to imply the owner's endorsement or official
+project status.
 
 ## Permitted use
 
@@ -27,28 +25,18 @@ Compatible with Orin
 Plugin for Orin
 ```
 
-## Restricted use
+## Endorsement and official status
 
-You may not use Nordavind or Orin branding in a way that suggests endorsement,
-ownership, sponsorship, or official status without written permission.
+Do not use Orin branding in a way that suggests endorsement, sponsorship,
+ownership or official status without written permission from Samuel Padilla.
 
-Do not name a fork, product, company, or hosted service in a way that could be
-confused with the official Orin project.
-
-Examples that require permission:
-
-```text
-Official Orin Cloud
-Nordavind Orin Enterprise
-Orin Pro
-Orin Hosted
-```
+Clearly distinguish forks and independent products or services from the official
+project. For example, "Official Orin Cloud" would imply official status and
+requires permission.
 
 ## Forks
 
-Forks should clearly identify themselves as forks.
-
-Acceptable examples:
+Forks should identify themselves clearly. Examples:
 
 ```text
 A fork of Orin
@@ -56,19 +44,14 @@ Based on Orin
 Unofficial Orin fork
 ```
 
-Avoid names that imply the fork is the official Nordavind project.
-
 ## Logos
 
-Do not use Nordavind or Orin logos without permission, except where allowed by
-separate written brand guidelines.
+Use of Orin logos requires permission from Samuel Padilla unless separate
+published brand guidelines allow it.
 
 ## Contact
 
-For trademark or branding questions, contact:
-
-```text
-contact@nordavind.se
-```
-
-Replace this address with the correct Nordavind contact address when available.
+For non-sensitive branding or permission requests, contact Samuel Padilla through
+[the Orin repository](https://github.com/ILGSupreme/Orin) or the public contact
+options on [his GitHub profile](https://github.com/ILGSupreme).
+Use the [security policy](SECURITY.md) for vulnerability reporting.

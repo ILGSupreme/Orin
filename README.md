@@ -1,5 +1,7 @@
 # Orin
 
+Owner and maintainer: [Samuel Padilla](https://github.com/ILGSupreme).
+
 Orin is a distributed assistance platform for connecting users with agents,
 generative models and executable capabilities across local, edge and federated
 environments. Its purpose is to make useful capabilities accessible even when
