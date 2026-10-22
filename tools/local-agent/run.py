@@ -85,6 +85,8 @@ def run(args):
         state_path = run_dir / "state.json"
         if state_path.exists():
             state = json.loads(state_path.read_text())
+            if state["status"] == "archived":
+                raise ValueError("archived run: start a new task")
             if not args.feedback and state["status"] != "prepared":
                 raise ValueError("existing run: supply --feedback with instructions to continue")
             if state["repo"] != args.repo:
@@ -100,9 +102,22 @@ def run(args):
         work = run_dir / "checkout"
         try:
             if not work.exists():
-                command(["git", "clone", "--branch", state["base"], "--single-branch",
-                         f"https://github.com/{state['repo']}.git", str(work)], timeout=300)
-                command(["git", "switch", "-c", state["branch"]], work)
+                source = getattr(args, "worktree_source", None)
+                if source:
+                    source = source.resolve()
+                    expected = f"https://github.com/{state['repo']}.git"
+                    if command(["git", "remote", "get-url", "origin"], source) != expected:
+                        raise ValueError("worktree source origin must match repository HTTPS URL")
+                    with (source / ".git" / "orin-worktrees.lock").open("w") as shared_lock:
+                        fcntl.flock(shared_lock, fcntl.LOCK_EX)
+                        command(["git", "fetch", "origin", state["base"]], source, timeout=300)
+                        command(["git", "worktree", "add", "-b", state["branch"],
+                                 str(work), "FETCH_HEAD"], source)
+                    state["worktree_source"] = str(source)
+                else:
+                    command(["git", "clone", "--branch", state["base"], "--single-branch",
+                             f"https://github.com/{state['repo']}.git", str(work)], timeout=300)
+                    command(["git", "switch", "-c", state["branch"]], work)
                 state["base_sha"] = command(["git", "rev-parse", "HEAD"], work)
                 save(state_path, state)
             if "base_sha" not in state:
@@ -206,6 +221,8 @@ def main():
     parser.add_argument("--task", type=Path)
     parser.add_argument("--feedback", type=Path)
     parser.add_argument("--checks", type=Path)
+    parser.add_argument("--worktree-source", type=Path,
+                        help="share Git storage with this trusted standalone source checkout")
     parser.add_argument("--prepare", action="store_true",
                         help="create checkout for project/hook trust review without running Codex")
     parser.add_argument("--publish", action="store_true", help="push and create/update a draft PR")
