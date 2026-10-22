@@ -129,3 +129,41 @@ python -m unittest discover -v -s tools/local-agent/tests
 Tests cover blocking, check failure, draft-only publishing, same-PR feedback,
 local-only mode, result validation and process timeout. GitHub/Codex calls in
 controller tests are simulated; a real local authenticated run remains required.
+
+
+## Specialist completion gate
+
+Every new attempt now requires Codex `SubagentStart` and `SubagentStop` hooks.
+The controller sets `ORIN_AGENT_EVIDENCE` for the Codex invocation. The hook
+records only lifecycle identities and final reports in `attempt-N/specialists.jsonl`.
+It does not copy conversation transcripts. The controller verifies the parent
+thread against that attempt's `thread.started` event, checkout, distinct agent
+identities, all three named roles, and structured passing final reports.
+The final verifier must start after other workers finish. Its checkout fingerprint
+must still match after coordinator exit and controller checks. Missing, malformed,
+untrusted/skipped hooks or reports leave the run blocked before commit/push.
+
+Each specialist must return plain JSON with verdict (`pass` or `blocked`),
+summary (nonempty string), and evidence (nonempty string list). Verified records
+are saved in `verified-specialists.json` locally; only a short verification
+statement goes into the PR. A blocked or malformed report stops the attempt;
+use explicit feedback in a new attempt to repair it.
+
+Before your first attempt, add `--prepare` to your new-run command. This creates
+and records the isolated checkout without invoking Codex. Then open Codex inside
+that checkout, review/trust the project and use `/hooks` to review the two hooks.
+Exit Codex, and repeat the controller command without `--prepare`. A prepared
+run does not require a feedback file. Hook trust is never bypassed automatically.
+If your CLI does not support these hooks, stop and report its diagnostic output.
+The hook behavior still needs live validation on the installed CLI version.
+
+Official hook contract: https://learn.chatgpt.com/docs/hooks
+
+The evidence gate detects absent/stale reports and ordinary workflow mistakes.
+It is not cryptographic attestation or an adversarial security boundary: hooks,
+agent processes and the controller share the operator's account. Do not expose
+this workflow to untrusted tasks. A captured passing report proves what a
+specialist reported, not that every technical claim in it is correct.
+
+Upgrade existing pilots using a fresh prepared run so the checkout includes the
+new hooks and role instructions. Keep old attempts as historical evidence.
