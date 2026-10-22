@@ -8,7 +8,9 @@ evaluation; it is not live lab acceptance.
 
 The commands below are instructions for an operator, not actions performed by
 this documentation task. Do not access the cluster, build/push images, deploy,
-merge or publish while carrying out the documentation-only task.
+merge or publish as an agent while carrying out the documentation-only task.
+The operator's explicit `--publish` flag authorizes subsequent controller
+publication after validation; rewriting the original task is unnecessary.
 
 ## Prerequisites and boundaries
 
@@ -133,6 +135,10 @@ role completed its assigned work, not that a human accepted the change.
 The coordinator returns `ready` or `blocked`, a concise title, and a PR body
 containing acceptance criteria, changes, actual check evidence, independent
 review outcome, limitations and precise HUMAN lab steps.
+Distinguish completed agent edits and checks from subsequent controller actions:
+agents must not commit, push or publish. Describe controller commit/publication
+for the current attempt as pending until the controller executes it; do not make
+blanket claims that no commit or publication occurred.
 
 Hooks write `attempt-N/specialists.jsonl`; the controller verifies current-attempt
 parent/checkout identities, distinct named specialists, passing reports and final
@@ -184,9 +190,10 @@ inspection. Logs may contain private information: review before sharing.
 
 ## Optional draft PR publication and feedback
 
-The documentation task does not authorize publication. A separate operator
-choice to pass `--publish` authorizes the controller to push and create/update a
-draft PR after the local gates. The controller uses a normal push, never a force
+The operator's explicit `--publish` flag authorizes the controller to push and
+create/update a draft PR after the local gates, without rewriting the original
+task. The task's publication prohibition applies to agents, which must still
+not commit, push or publish. The controller uses a normal push, never a force
 push. It does not build an image, deploy or merge. State `awaiting_human` means a
 draft PR exists; it does not mean CI or hardware passed. State `local_ready`
 means local candidate artifacts exist; coordinator `ready` alone is only its
@@ -225,9 +232,11 @@ For this documentation-only candidate, a human should:
    pass/fail. Report failures through an explicit feedback file.
 
 For a separately authorized publication smoke test, use a disposable branch/run
-and an approved repository. Amend the operator's task instructions to explicitly
-authorize controller publication before invoking it with `--publish`; the
-documentation-only task above forbids publication. Confirm `state.json` records
+and an approved repository. Invoke the controller with the operator's explicit
+`--publish` flag to authorize publication after validation; the original task
+does not need rewriting, and agents remain prohibited from committing, pushing
+or publishing. Treat publication as pending until the controller executes it.
+Confirm `state.json` records
 `awaiting_human`, its candidate commit matches the remote branch/PR head, and the
 recorded PR URL opens a draft targeting the intended base. Retain the command,
 candidate SHA, PR URL and observed draft/base/head as evidence.
