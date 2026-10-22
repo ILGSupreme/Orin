@@ -133,13 +133,13 @@ inspection. One process may own a run at a time.
 
 ## Optional draft publication and feedback
 
-Publication requires explicit human authorization. The initial task above does
-not authorize publication. For this documentation continuation, the human has
-authorized the controller to push the documentation branch and open a draft PR
-targeting `local-agent-workflow`; agents still must not publish. On an authorized
-run, adding `--publish` makes the controller push
-the candidate branch and create a draft PR after a ready result and passing
-checks. It never builds images, deploys, merges, or grants human acceptance.
+Passing `--publish` authorizes the controller to push the candidate branch and
+create or update a draft PR for that invocation, after a ready result and passing
+checks. This applies to both an initial run and a feedback continuation;
+authorization is not saved for later invocations. To publish an initial run, add
+`--publish` to the command above. The task text and this documentation do not
+grant publication permission; agents still must not publish. The controller
+never builds images, deploys, merges, or grants human acceptance.
 
 An existing run requires `--feedback`. Save concrete findings and requested
 within-scope changes in `/data/orin-tasks/feedback.md`, then continue locally:
@@ -154,20 +154,21 @@ Use the original `--repo` again if it was overridden. Each attempt starts a new
 coordinator conversation with the saved original task, current checkout, and
 supplied feedback. Include relevant previous findings explicitly; the previous
 conversation is not automatically restored. Captured checks rerun, and a new
-candidate commit is recorded if changes exist. Adding `--publish` to an
-explicitly authorized continuation updates the same open PR and returns it to
-draft if necessary. Without that flag, an existing remote PR is not updated.
+candidate commit is recorded if changes exist. Passing `--publish` on the
+feedback invocation authorizes the controller to push and create a draft PR, or
+update the same open PR and return it to draft if necessary. Without that flag,
+an existing remote PR is not updated.
 There is no automatic CI repair loop or force-push. Remote branch divergence can
 fail a push and needs human reconciliation; closed or merged PRs require a new
 run. Inspect `blocked` state before recovering rather than deleting evidence or
 weakening checks.
 
-For this authorized continuation, the operator may add `--publish` to the
-feedback command above after confirming that the saved `state.json` base is
-`local-agent-workflow`. A continuation reuses its saved base; it does not change
-the PR target through a new `--base` argument. If the saved base differs, start a
-new run with the explicit pre-merge example and `--publish` under the human's
-publication authorization.
+Before publishing a pre-merge continuation, confirm that the saved `state.json`
+base is `local-agent-workflow`, then add `--publish` to the feedback command above
+to authorize publication for that invocation. A continuation reuses its saved
+base; it does not change the PR target through a new `--base` argument. If the
+saved base differs, start a new run with the explicit pre-merge example and pass
+`--publish` when publication is intended.
 
 ## HUMAN evaluation checklist
 
@@ -186,7 +187,8 @@ publication authorization.
    isolated branch, original checkout isolation, local commit, `local_ready`, and
    PR body. No draft should be published without `--publish`. Exercise feedback
    on the same run and confirm a new attempt uses the original checks. Publication
-   and same-PR behavior require separate authorization and real-service testing.
+   and same-PR behavior require `--publish` authorization for each invocation
+   and real-service testing.
 4. For an authorized published candidate, wait for CI on the exact candidate
    commit and record its results. Review the draft manually. This documentation
    change requires no image build, deployment, or hardware test; record those as
