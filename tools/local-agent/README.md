@@ -4,6 +4,104 @@ A user starts one local Codex coordinator. It delegates investigation,
 implementation and verification, then hands a draft PR to the human for CI and
 lab evaluation. This is development tooling, independent of the Orin runtime.
 
+## Managed terminal interface
+
+Use `orin-dev` for named tasks and interactive input instead of assembling runner
+commands and separate task files. The Python runner remains available for scripts.
+
+Install once from a checkout containing this interface, as your normal user:
+
+```bash
+# Only needed if your user cannot create the managed directory under /data:
+sudo install -d -o "$USER" -g "$(id -gn)" /data/orin-dev
+python tools/local-agent/manage.py --home /data/orin-dev install
+export PATH="$HOME/.local/bin:$PATH"
+orin-dev
+```
+
+Add the PATH setting to your shell configuration if it is not already present.
+The installer refuses an existing source/configuration or `orin-dev` launcher;
+it does not overwrite another installation. It clones one source checkout and
+writes a small launcher using `python3` from your active PATH. No packages are
+installed automatically. Activate the appropriate test environment before use.
+For pre-merge testing, append `--source-ref managed-local-workflow` to `install`.
+This also makes that branch the default task base until you change `config.json`.
+After merge, use `main` as the configured base for new tasks.
+
+All managed artifacts live together:
+
+| Path under the managed home | Contents |
+| --- | --- |
+| `source/` | Trusted tooling checkout and shared Git object storage |
+| `config.json` | Repository and default task base |
+| `runs/<name>/` | Task, frozen checks, feedback, state and attempt evidence |
+| `runs/<name>/checkout/` | Isolated task working files on their own branch |
+
+Each task uses a Git worktree, not another full clone. Working files and indexes
+are separate; Git objects, repository configuration and refs are shared. Keep
+`source` in place while tasks exist. This improves storage use, not security
+isolation. Agents still must not commit or alter shared Git metadata.
+
+The menu supports new tasks, hook trust, execution, feedback, draft publication,
+review and archival. Enter multiline task/feedback text and finish with a line
+containing only `.`. New tasks show the proposed checks for confirmation, then
+prepare a worktree. Select **Trust hooks**, review project trust and `/hooks` in
+Codex, exit, then select **Run**. Hook trust is never bypassed.
+
+During a run, the interface shows elapsed time and specialist lifecycle status.
+`reported` means a stop event arrived; it does not itself establish a passing
+report. The runner still validates all reports and runs the frozen checks.
+The interface remains attached to the run; it is not a background daemon.
+Ctrl-C asks the controller to stop and preserve partial work.
+
+Equivalent commands:
+
+```bash
+orin-dev list
+orin-dev new confirmation-loop
+orin-dev trust confirmation-loop
+orin-dev run confirmation-loop
+orin-dev review confirmation-loop
+orin-dev feedback confirmation-loop
+orin-dev publish confirmation-loop
+orin-dev archive confirmation-loop
+```
+
+`new NAME --checks PATH --base REF` overrides checks and base for a new task.
+`orin-dev --minutes 15 run NAME` adjusts the agent execution timeout.
+Publication asks for explicit confirmation and starts a **fresh attempt** with
+feedback and renewed evidence/checks; it does not merely push an old candidate.
+An existing open PR is updated through the same controller path tested by the
+original workflow. Review displays state, the latest PR body, change statistics
+and the location of evidence/check logs. Full diffs remain available with Git
+inside the task checkout.
+
+### Cleanup and existing lab directories
+
+Archive is deliberately conservative. It locks the run, checks its ownership and
+branch, and refuses running/blocked/local-only tasks, unpublished commits, dirty
+files, untracked files, and ignored files. Published candidates must still match
+the remote task branch; if that branch was deleted after merge, archive refuses
+rather than guessing whether unpublished work is safe. No-change tasks must
+still point to the original base commit. Git worktree removal never uses force.
+
+Tests can leave ignored caches in a checkout. Inspect them with
+`git status --short --ignored` before removing specific disposable files yourself;
+the interface will not silently delete them. On successful archive, only the
+working directory is removed. Local branches, task inputs, state and all attempt
+evidence/logs remain in the managed home. Archived tasks cannot resume; create a
+new task. Automatic log expiry, branch deletion and destructive discard are not
+implemented in this version.
+
+Existing runs are not moved, imported or deleted. Their evidence contains absolute
+checkout paths, so moving them is not a supported migration. Keep them as historical
+records until they have been inventoried for unique/unpublished work. This release
+consolidates new work; removing old lab checkouts is a separate operator action.
+
+To update the tooling, finish/stop active runs, then use `git pull --ff-only` in
+`source` on the intended tooling branch. Existing task worktrees keep their own
+code/configuration; new tasks fetch their configured remote base.
+
 ## Prerequisites
 
 - Linux, Python 3.10+, git, GitHub CLI (`gh`), and an authenticated current Codex CLI.
