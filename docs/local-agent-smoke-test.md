@@ -160,6 +160,19 @@ hooks, that a PR was published, or that authenticated feedback continuation
 worked. The document-presence check establishes only that this file is nonempty.
 Record actual check results separately from any HUMAN CLI smoke-test results.
 
+Use a validation record like this, replacing placeholders only with collected
+evidence and leaving unperformed steps marked `unrun`:
+
+```text
+Candidate commit: <recorded SHA, or pending controller commit>
+Automated unit tests: <command, exit status, test count and result>
+Automated document-presence check: <command and exit status>
+HUMAN local CLI smoke test: unrun | <CLI version, command, attempt and observations>
+HUMAN draft publication smoke test: unrun | <command, PR URL, head/base and draft observations>
+HUMAN feedback continuation smoke test: unrun | <command, attempts, before/after SHAs and observations>
+Human acceptance: pending | <reviewer, tested commit and recorded result>
+```
+
 After a `ready` result, the controller independently validates lifecycle evidence,
 reruns frozen checks and runs `git diff --check`. It stages changes and creates a
 local candidate commit even when `--publish` is omitted. Agents must not commit.
