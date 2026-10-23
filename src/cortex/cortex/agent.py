@@ -14,6 +14,7 @@ from uuid import uuid4
 from common.jobs import JobSpec
 from common.protocol.agent_types import (
     AgentLimits,
+    GeneratedTurnPlan,
     decision_for_evidence,
     Goal,
     GoalNotice,
@@ -159,24 +160,27 @@ class AgentRuntime:
                 }
             ),
             privacy=privacy,
-            model=TurnPlan,
+            model=GeneratedTurnPlan,
             budget=self.limits.token_budget,
             max_output_tokens=512,
         )
         plan = TurnPlan.model_validate_json(result.text)
         # Work acknowledgements come from runtime outcomes, never interpreter
         # prose. Preserve a separately identified answer for mixed requests.
-        immediate_reply = (
+        legacy_reply = (
             plan.reply
             if not (plan.tasks or plan.updates)
             or plan.reply_scope == "independent_answer"
             else ""
         )
+        immediate_reply = "\n\n".join(answer.text for answer in plan.answers)
+        if not immediate_reply:
+            immediate_reply = legacy_reply
         logger.info(
-            "Turn interpreted backend=%s tasks=%d updates=%d has_reply=%s "
+            "Turn interpreted backend=%s tasks=%d updates=%d answers=%d has_reply=%s "
             "reply_scope=%s reply_suppressed=%s",
-            result.backend, len(plan.tasks), len(plan.updates), bool(plan.reply),
-            plan.reply_scope, bool(plan.reply and not immediate_reply),
+            result.backend, len(plan.tasks), len(plan.updates), len(plan.answers),
+            bool(plan.reply), plan.reply_scope, bool(plan.reply and not legacy_reply),
         )
         replies = [immediate_reply] if immediate_reply else []
         reply_privacy = privacy

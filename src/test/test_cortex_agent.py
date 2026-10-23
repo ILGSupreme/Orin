@@ -2,11 +2,12 @@ import asyncio
 import json
 import time
 import unittest
+from pathlib import Path
 
 from pydantic import ValidationError
 
 from common.jobs import JobManager, JobSpec, PipelineStage
-from common.protocol.agent_types import AgentLimits, Goal, TaskSpec, TaskState, TurnPlan
+from common.protocol.agent_types import AgentLimits, GeneratedTurnPlan, Goal, TaskSpec, TaskState, TurnPlan
 from common.protocol.internal_types import InferenceObject
 from common.protocol.routing_types import WorkResult
 from common.protocol.unified_types import ContentPart, RuntimeMessage
@@ -34,6 +35,49 @@ def task(id="t1", goal="Inspect nodes", **extra):
 
 
 class UnifiedRuntimeTests(RuntimeFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_captured_combined_plan_is_rejected_for_new_generation(self):
+        plan = json.loads(
+            (Path(__file__).parent / "fixtures/mixed_turn_combined_plan.json").read_text()
+        )
+        with self.assertRaises(ValidationError):
+            GeneratedTurnPlan.model_validate(plan)
+        # Older plans can still be read, but their combined prose stays suppressed.
+        runtime = self.make_runtime(plan)
+        turn = await runtime.handle_turn(request())
+        self.assertNotIn("To inspect the cluster, I will", turn.text)
+        self.assertNotIn("Kubernetes is", turn.text)
+        await self.drain(runtime)
+
+    async def test_structured_mixed_answer_is_returned_before_inspection_finishes(self):
+        plan = GeneratedTurnPlan.model_validate({
+            "tasks": [task(event_key="inspect-event")],
+            "updates": [],
+            "answers": [{
+                "question": "What is Kubernetes?",
+                "text": "Kubernetes manages containerized workloads.",
+            }],
+        })
+        runtime = self.make_runtime(plan.model_dump())
+        turn = await runtime.handle_turn(request(
+            "Explain Kubernetes and inspect nodes when inspect-event arrives"
+        ))
+        self.assertIn("Kubernetes manages containerized workloads.", turn.text)
+        self.assertEqual(runtime.actions.calls, [])
+        goal = await runtime.store.get(turn.goal_id)
+        self.assertEqual(goal.reply, "Kubernetes manages containerized workloads.")
+        self.assertEqual(goal.tasks[0].spec.goal, "Inspect nodes")
+        self.assertEqual(goal.tasks[0].observations, [])
+
+    async def test_structured_conversation_does_not_create_a_goal(self):
+        runtime = self.make_runtime({
+            "tasks": [], "updates": [],
+            "answers": [{"question": "Greeting", "text": "Hello!"}],
+        })
+        turn = await runtime.handle_turn(request("Hello"))
+        self.assertEqual(turn.text, "Hello!")
+        self.assertIsNone(turn.goal_id)
+        self.assertEqual(await runtime.store.list(user_id="u", session_id="s"), [])
+
     async def test_suppression_diagnostics_do_not_log_reply_content(self):
         runtime = self.make_runtime({
             "reply": "PRIVATE: would you like me to inspect?",

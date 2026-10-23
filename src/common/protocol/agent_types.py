@@ -43,13 +43,16 @@ class GoalUpdate(AgentModel):
     feedback: str = Field(default="", max_length=3000)
 
 
-class TurnPlan(AgentModel):
+class ImmediateAnswer(AgentModel):
+    question: str = Field(min_length=1, max_length=1000)
+    text: str = Field(min_length=1, max_length=6000)
+
+
+class GeneratedTurnPlan(AgentModel):
     # Native JSON generation follows schema order: select work before prose.
     tasks: list[TaskSpec] = Field(default_factory=list, max_length=8)
     updates: list[GoalUpdate] = Field(default_factory=list, max_length=8)
-    # Old plans default to a whole-turn reply, not an independent answer.
-    reply_scope: Literal["turn", "independent_answer"] = "turn"
-    reply: str = Field(default="", max_length=6000)
+    answers: list[ImmediateAnswer] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="after")
     def validate_graph(self):
@@ -79,6 +82,12 @@ class TurnPlan(AgentModel):
                 "Recurring/event tasks must be independent in this version"
             )
         return self
+
+
+class TurnPlan(GeneratedTurnPlan):
+    """Read older plans without exposing their prose fields to generation."""
+    reply_scope: Literal["turn", "independent_answer"] = "turn"
+    reply: str = Field(default="", max_length=6000)
 
 
 class Decision(AgentModel):

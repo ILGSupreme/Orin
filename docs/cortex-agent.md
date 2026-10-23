@@ -278,38 +278,37 @@ action name; arbitrary arguments remain prohibited.
 
 ### Immediate reply and work acknowledgements
 
-TurnPlan.reply_scope defaults to `turn`. For conversation-only turns, the reply
-is returned normally. When a turn creates tasks or updates goals, the runtime
-suppresses whole-turn interpreter prose and builds work acknowledgements from
-actual runtime operations. A mixed request can retain an immediate answer to a
-separate conversational question using `reply_scope: independent_answer`.
-This applies to status/result/cancel/resume updates as well as new tasks.
+New interpretation uses GeneratedTurnPlan: tasks, updates, and answers. Each
+immediate answer identifies the conversational question and its answer text.
+There is no whole-turn reply or reply-scope field in the generation schema.
+Conceptual explanations belong in answers even when the same turn requests
+inspection of that subject; executable tasks describe only the delegated work.
+The runtime joins answer text with acknowledgements derived from actual work
+operations. Ordinary conversation uses answers with empty tasks and updates.
 
-The interpreter must not put confirmation questions, progress or completion
-claims about delegated work into an independent answer. This is a semantic model
-contract, not proof of truthful classification: incorrectly labelled text can
-still contradict runtime state. Existing plans that omit the field remain valid,
-but their reply is suppressed when they contain work. Correctly classified mixed
-answers and ordinary chat are retained. Task clarification through `ask_user`,
-authorization, action selection and completion-evidence requirements are unchanged.
+Answer text must not contain confirmation questions, promises, progress, or
+completion claims about delegated work. This is still a semantic model contract:
+the schema enforces separate fields, not correct content or complete coverage.
+A model can still place inappropriate prose in an answer or combine outcomes
+inside a task. Deterministic tests do not establish live model reliability.
 
-Only the selected immediate reply is stored on new goals. Repeated client turn
-IDs return a stored result or a runtime status acknowledgement, rather than
-replaying interpreter prose from an old goal. No new work is started on that path.
+TurnPlan remains a compatibility reader for older reply/reply_scope plans.
+Legacy whole-turn prose is suppressed when tasks or updates exist; explicitly
+independent legacy answers and conversation-only prose remain readable.
+The generation gateway validates against GeneratedTurnPlan, so legacy combined
+plans are rejected for new inference rather than silently accepted.
 
-Deterministic tests cover contradictory confirmations and premature completion
-claims, resume/result/status updates, mixed answers, and replay of legacy goals.
-They replace model and action boundaries with fakes and use real runtime and
-Memory persistence. They do not establish Qwen classification reliability or
-eliminate unnecessary questions on turns for which the model creates no task.
-Validate the changed TurnPlan grammar in native-parser CI and run repeated live
-mixed/direct/confirmation requests before runtime acceptance.
+Only selected immediate text is stored on new goals. Repeated client turn IDs
+return a stored result or runtime status instead of replaying old interpreter
+prose. Task clarification through ask_user, authorization, action selection, and
+completion-evidence requirements are unchanged.
 
+Tests cover the captured combined-plan regression, immediate answers while work
+is pending, conversation-only answers, provider integration, contradictory
+legacy prose, goal updates, and replay. Model/action boundaries are mocked;
+runtime and Memory persistence are real. Native-parser CI compiles both schemas.
+Live acceptance must check both immediate answers and evidence-backed task
+results, including direct, mixed, conversation-only, and clarification cases.
 
-Mixed-turn validation must check both the immediate answer and the eventual task
-result. The native generation schema selects tasks and updates before reply scope
-and text. A conceptual explanation can be independent even when it concerns the
-same subject as an inspection task. Interpretation logs record reply scope and
-whether text was suppressed, without logging the reply content. These diagnostics
-do not establish whether suppressed text was a valid answer; live model validation
-is still required.
+Interpretation diagnostics log answer count and legacy suppression decisions.
+The existing GGUF JSON RAW log separately contains generated plan content.
