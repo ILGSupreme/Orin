@@ -7,7 +7,6 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from torch.cuda import mem_get_info
 
 from common.system.model_inspector import read_gguf_metadata, summarize_gguf_metadata
 from common.types import ModelMetadata, ModelProfile, SystemConstraints
@@ -389,6 +388,7 @@ def build_profile(
     minimum_n_ctx: int = 1024,
     alignment: int = 256,
     profile_factors: dict[str, float] | None,
+    requested_n_ctx: int | None = None,
 ) -> dict[str, ModelProfile]:
     """
     Build a VRAM-based runtime profile for a model load.
@@ -433,22 +433,31 @@ def build_profile(
             alignment=alignment,
         )
 
-        estimated_upper_n_ctx = clamp_n_ctx(
-            estimated_n_ctx=estimated_upper_n_ctx,
-            model_max_context=model_max_context,
-            minimum_n_ctx=minimum_n_ctx,
-            alignment=alignment,
-        )
-
-        recommended_n_ctx = 0
-
-        raw_value = int(estimated_upper_n_ctx * factor)
-        recommended_n_ctx = clamp_n_ctx(
-            estimated_n_ctx=raw_value,
-            model_max_context=model_max_context,
-            minimum_n_ctx=minimum_n_ctx,
-            alignment=alignment,
-        )
+        if model_max_context:
+            estimated_upper_n_ctx = min(
+                estimated_upper_n_ctx, (model_max_context // alignment) * alignment
+            )
+        if estimated_upper_n_ctx < minimum_n_ctx:
+            raise ValueError(
+                f"Insufficient estimated GPU budget for {minimum_n_ctx} context tokens "
+                f"(capacity={estimated_upper_n_ctx}); reduce GPU layers or review memory margins"
+            )
+        if requested_n_ctx is not None:
+            if requested_n_ctx < minimum_n_ctx or requested_n_ctx % alignment:
+                raise ValueError("Requested context must meet minimum and alignment")
+            if requested_n_ctx > estimated_upper_n_ctx:
+                raise ValueError(
+                    f"Requested context {requested_n_ctx} exceeds estimated capacity "
+                    f"{estimated_upper_n_ctx}; reduce GPU layers or review memory margins"
+                )
+            recommended_n_ctx = requested_n_ctx
+        else:
+            recommended_n_ctx = clamp_n_ctx(
+                estimated_n_ctx=int(estimated_upper_n_ctx * factor),
+                model_max_context=model_max_context,
+                minimum_n_ctx=minimum_n_ctx,
+                alignment=alignment,
+            )
 
         profiles[profile_name] = ModelProfile.model_validate(
             {
@@ -544,11 +553,13 @@ def get_ngpu_layers_by_profile_factor(
 
 
 def read_gpu_mem_total() -> int:
+    from torch.cuda import mem_get_info
     _, total = mem_get_info()
     return total
 
 
 def read_gpu_mem_free() -> int:
+    from torch.cuda import mem_get_info
     free, _ = mem_get_info()
     return free
 
@@ -559,6 +570,8 @@ def get_model_profile(
     safety_size: int,
     profile_factors: dict[str, float],
     cache_type="f16",
+    n_gpu_layers: int | None = None,
+    n_ctx: int | None = None,
 ):
     logging.info(
         f"Entering get model profile, reserve: path: {path}, {reserve_size}, safety: {safety_size}, profile_factors: {profile_factors}"
@@ -569,9 +582,14 @@ def get_model_profile(
     n_gpus = get_ngpu_layers_by_profile_factor(
         total_layers=model_metadata.block_count, profile_factors=profile_factors
     )
+    if n_gpu_layers is not None:
+        if not 0 <= n_gpu_layers <= model_metadata.block_count:
+            raise ValueError("n_gpu_layers must be between zero and the model layer count")
+        n_gpus = [n_gpu_layers] * len(profile_factors)
     bytes_per_element = kv_bytes_per_elem_from_cache_type(cache_type=cache_type)
 
     return build_profile(
+        requested_n_ctx=n_ctx,
         total_vram_bytes=memory_info.gpu_free_bytes,
         model_size_bytes=model_metadata.file_size_bytes,
         block_count=model_metadata.block_count,

@@ -40,7 +40,11 @@ class DeploymentConfiguration(BaseModel):
 
     cortex_service_account_name: str = "cortex"
 
+from common.types import GGUFLoadOptions
+
+
 class PrimerConfiguration(BaseModel):
+    gguf_load: GGUFLoadOptions = Field(default_factory=GGUFLoadOptions)
     backend: str = ""
 
     model_id: str = ""

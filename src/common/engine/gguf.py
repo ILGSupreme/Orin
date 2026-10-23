@@ -187,6 +187,8 @@ class GGUFPrimerEngine:
         )
 
     def _unload(self) -> None:
+        if self.engine is not None:
+            self.engine.close()
         self.model_path = None
         self.model_id = None
         self.tokenizer_id = None

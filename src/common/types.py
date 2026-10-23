@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 MEMORY_OPERATIONS = Literal[
     'inventory_list_nodes',
@@ -160,3 +160,19 @@ class Profile(BaseModel):
         if profile:
             return profile
         raise ValueError(f"Profile: {self.current_profile} not found")
+
+
+class GGUFLoadOptions(BaseModel):
+    """Explicit GGUF controls; null layers/context retain automatic selection."""
+    model_config = ConfigDict(extra="forbid")
+    n_gpu_layers: int | None = Field(default=None, ge=0, strict=True)
+    n_ctx: int | None = Field(default=None, ge=1024, strict=True)
+    reserve_bytes: int = Field(default=1024**3, ge=0, strict=True)
+    safety_margin_bytes: int = Field(default=1024**3, ge=0, strict=True)
+
+    @field_validator("n_ctx")
+    @classmethod
+    def aligned_context(cls, value):
+        if value is not None and value % 256:
+            raise ValueError("n_ctx must be a multiple of 256")
+        return value
