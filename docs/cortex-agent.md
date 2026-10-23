@@ -274,3 +274,33 @@ the actual CPU native parser without loading model weights.
 Other local engines retain prompt guidance and result validation. Read-only
 inspection actions accept an empty input or an exact redundant echo of their own
 action name; arbitrary arguments remain prohibited.
+
+
+### Immediate reply and work acknowledgements
+
+TurnPlan.reply_scope defaults to `turn`. For conversation-only turns, the reply
+is returned normally. When a turn creates tasks or updates goals, the runtime
+suppresses whole-turn interpreter prose and builds work acknowledgements from
+actual runtime operations. A mixed request can retain an immediate answer to a
+separate conversational question using `reply_scope: independent_answer`.
+This applies to status/result/cancel/resume updates as well as new tasks.
+
+The interpreter must not put confirmation questions, progress or completion
+claims about delegated work into an independent answer. This is a semantic model
+contract, not proof of truthful classification: incorrectly labelled text can
+still contradict runtime state. Existing plans that omit the field remain valid,
+but their reply is suppressed when they contain work. Correctly classified mixed
+answers and ordinary chat are retained. Task clarification through `ask_user`,
+authorization, action selection and completion-evidence requirements are unchanged.
+
+Only the selected immediate reply is stored on new goals. Repeated client turn
+IDs return a stored result or a runtime status acknowledgement, rather than
+replaying interpreter prose from an old goal. No new work is started on that path.
+
+Deterministic tests cover contradictory confirmations and premature completion
+claims, resume/result/status updates, mixed answers, and replay of legacy goals.
+They replace model and action boundaries with fakes and use real runtime and
+Memory persistence. They do not establish Qwen classification reliability or
+eliminate unnecessary questions on turns for which the model creates no task.
+Validate the changed TurnPlan grammar in native-parser CI and run repeated live
+mixed/direct/confirmation requests before runtime acceptance.

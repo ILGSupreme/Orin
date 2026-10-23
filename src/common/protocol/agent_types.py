@@ -44,6 +44,8 @@ class GoalUpdate(AgentModel):
 
 
 class TurnPlan(AgentModel):
+    # Old plans default to a whole-turn reply, not an independent answer.
+    reply_scope: Literal["turn", "independent_answer"] = "turn"
     reply: str = Field(default="", max_length=6000)
     tasks: list[TaskSpec] = Field(default_factory=list, max_length=8)
     updates: list[GoalUpdate] = Field(default_factory=list, max_length=8)

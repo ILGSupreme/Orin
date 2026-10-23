@@ -106,7 +106,7 @@ class AgentRuntime:
             if previous:
                 running = self.running.get(previous.id)
                 return TurnResponse(
-                    previous.result or previous.reply or "Work already recorded.",
+                    previous.result or f"Work already recorded ({previous.status}).",
                     previous.id,
                     running.job_id if running else None,
                     previous.privacy,
@@ -168,7 +168,15 @@ class AgentRuntime:
             "Turn interpreted backend=%s tasks=%d updates=%d has_reply=%s",
             result.backend, len(plan.tasks), len(plan.updates), bool(plan.reply),
         )
-        replies = [plan.reply] if plan.reply else []
+        # Work acknowledgements come from runtime outcomes, never interpreter
+        # prose. Preserve a separately identified answer for mixed requests.
+        immediate_reply = (
+            plan.reply
+            if not (plan.tasks or plan.updates)
+            or plan.reply_scope == "independent_answer"
+            else ""
+        )
+        replies = [immediate_reply] if immediate_reply else []
         reply_privacy = privacy
         for update in plan.updates:
             referenced = await self.store.get(
@@ -210,7 +218,7 @@ class AgentRuntime:
             privacy=privacy,
             tasks=tasks,
             messages=request.content,
-            reply=plan.reply,
+            reply=immediate_reply,
             allocated_tokens=result.tokens,
         )
         if stable_id:

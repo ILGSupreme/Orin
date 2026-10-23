@@ -93,10 +93,84 @@ class UnifiedRuntimeTests(RuntimeFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.jobs.list_jobs(), [])
         self.assertEqual(await runtime.store.list(user_id="u", session_id="s"), [])
 
+    async def test_task_reply_does_not_repeat_confirmation_or_claim_completion(self):
+        for text in ("Would you like me to inspect the nodes now?",
+                     "All nodes are ready; inspection is complete."):
+            with self.subTest(text=text):
+                runtime = self.make_runtime({"reply": text, "tasks": [task()]})
+                turn = await runtime.handle_turn(request("Yes, inspect them now"))
+                self.assertNotIn(text, turn.text)
+                self.assertIn("working", turn.text)
+                await self.drain(runtime)
+                goal = await runtime.store.get(turn.goal_id)
+                self.assertEqual(goal.reply, "")
+                self.assertEqual(goal.status, "completed")
+                self.assertEqual([c[0] for c in runtime.actions.calls], ["list_nodes"])
+
+    async def test_scheduled_task_retry_does_not_replay_discarded_reply(self):
+        runtime = self.make_runtime({
+            "reply": "Should I monitor those nodes?", "tasks": [task(event_key="new-data")]
+        })
+        first = await runtime.handle_turn(request(turn_id="scheduled"))
+        # Existing persisted goals may predate reply scoping.
+        stored = await runtime.store.get(first.goal_id)
+        stored.reply = "Should I monitor those nodes?"
+        await runtime.store.save(stored)
+        second = await runtime.handle_turn(request(turn_id="scheduled"))
+        self.assertNotIn("Should I", first.text)
+        self.assertNotIn("Should I", second.text)
+        self.assertEqual(first.goal_id, second.goal_id)
+        self.assertEqual(len(runtime.inference.calls), 1)
+
+    async def test_resume_update_uses_runtime_acknowledgement(self):
+        runtime = self.make_runtime(
+            {"tasks": [task()]},
+            lambda data: {"kind": "ask_user", "text": "Which nodes?"},
+        )
+        first = await runtime.handle_turn(request())
+        await self.drain(runtime)
+        runtime.inference.decide = auto_decide
+        runtime.inference.plan = {
+            "reply": "Would you like me to inspect them now?",
+            "updates": [{"goal_id": first.goal_id, "action": "resume",
+                         "feedback": "Inspect all nodes"}],
+        }
+        turn = await runtime.handle_turn(request("All nodes, please"))
+        self.assertNotIn("Would you like", turn.text)
+        self.assertIn("Updated", turn.text)
+        await self.drain(runtime)
+        self.assertEqual((await runtime.store.get(first.goal_id)).status, "completed")
+
+    async def test_result_update_does_not_echo_invented_interpreter_result(self):
+        runtime = self.make_runtime({"tasks": [task()]})
+        first = await runtime.handle_turn(request())
+        await self.drain(runtime)
+        runtime.inference.plan = {
+            "reply": "All nodes failed!",
+            "updates": [{"goal_id": first.goal_id, "action": "result"}],
+        }
+        turn = await runtime.handle_turn(request("What was the result?"))
+        goal = await runtime.store.get(first.goal_id)
+        self.assertEqual(turn.text, goal.result)
+        self.assertNotIn("All nodes failed", turn.text)
+
+    async def test_independent_answer_survives_status_update(self):
+        runtime = self.make_runtime({"tasks": [task(event_key="new-data")]})
+        first = await runtime.handle_turn(request())
+        runtime.inference.plan = {
+            "reply": "Kubernetes orchestrates containers.",
+            "reply_scope": "independent_answer",
+            "updates": [{"goal_id": first.goal_id, "action": "status"}],
+        }
+        turn = await runtime.handle_turn(request("What is Kubernetes and what is my task status?"))
+        self.assertIn("Kubernetes orchestrates", turn.text)
+        self.assertIn(first.goal_id, turn.text)
+
     async def test_mixed_turn_preserves_immediate_reply_and_independent_requests(self):
         runtime = self.make_runtime(
             {
                 "reply": "Hello. This is a sensor.",
+                "reply_scope": "independent_answer",
                 "tasks": [
                     task("news", "Get current news", context="NEWS_ONLY"),
                     task("doc", "Summarize document", context="DOCUMENT_ONLY"),
