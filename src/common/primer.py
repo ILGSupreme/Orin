@@ -13,7 +13,7 @@ from common.protocol.routing_types import WorkResult
 from common.protocol.unified_types import RuntimeMessage
 from common.provider.huggingface.hf_downloader import HFDownloader
 from common.system import configuration
-from common.types import MAX_TOKENS_POLICY, SAFETY_TOKEN_SIZE, Profile
+from common.types import MAX_TOKENS_POLICY, SAFETY_TOKEN_SIZE, Profile, GGUFLoadOptions
 
 
 class Primer:
@@ -142,6 +142,13 @@ class Primer:
         if self._engine is None:
             raise ValueError("engine is not assigned")
 
+        override = kwargs.pop("gguf_load", None)
+        options = (
+            GGUFLoadOptions.model_validate(override)
+            if override is not None else self.primer_config().gguf_load
+        )
+        if override is not None and self.engine_type != "gguf":
+            raise ValueError("gguf_load options require the GGUF engine")
         repo_id = kwargs.pop("repo_id", None)
         filename = kwargs.pop("filename", None)
         revision = kwargs.pop("revision", "main")
@@ -163,19 +170,28 @@ class Primer:
 
             kwargs["path"] = str(path)
 
-        if kwargs["path"]:
-            from common.system import profiler
-            profiles = profiler.get_model_profile(
-                path=kwargs["path"],
-                reserve_size=self._profile.reserve_size,
-                safety_size=self._profile.safety_size,
-                profile_factors=self._profile.runtime_profiles,
-            )
-            self._profile.set_profiles(profiles=profiles)
-            kwargs["profile"] = self._profile.get_current_profile()
+        async def replace_model():
+            if self.engine_type == "gguf":
+                from common.system import profiler
+                # Release native allocations before measuring available GPU memory.
+                await self._engine.stop()
+                self._profile.profiles = {}
+                selected = self._profile.current_profile
+                profiles = profiler.get_model_profile(
+                    path=kwargs["path"],
+                    reserve_size=options.reserve_bytes,
+                    safety_size=options.safety_margin_bytes,
+                    profile_factors={selected: self._profile.runtime_profiles[selected]},
+                    n_gpu_layers=options.n_gpu_layers,
+                    n_ctx=options.n_ctx,
+                )
+                self._profile.set_profiles(profiles=profiles)
+                kwargs["profile"] = self._profile.get_current_profile()
+            await self.load_message_adapter("openai", nothink=True)
+            await self._engine.load_model(*args, **kwargs)
 
-        await self.load_message_adapter("openai", nothink=True)
-        await self._engine.load_model(*args, **kwargs)
+        # Keep loading serialized with generation even if the caller is cancelled.
+        await self._await_generation(replace_model)
 
     
     # ---------------------------------------------------------------------------

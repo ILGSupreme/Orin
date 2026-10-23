@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from common.jobs import JobSpec
+from common.types import GGUFLoadOptions
 from common.protocol.unified_types import RuntimeMessage
 
 
@@ -18,6 +19,7 @@ class InferenceSession(BaseModel):
 
 
 class LoadModelRequest(BaseModel):
+    gguf_load: GGUFLoadOptions | None = None
     model_id: str
     provider: str = "huggingface"
     engine: str | None = None
@@ -39,6 +41,7 @@ class LoadModelRequest(BaseModel):
                 "revision": self.revision,
                 "tokenizer_id": self.tokenizer_id,
                 "force_reload": self.force_reload,
+                "gguf_load": self.gguf_load.model_dump() if self.gguf_load else None,
             },
         )
 
