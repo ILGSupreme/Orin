@@ -34,6 +34,20 @@ def task(id="t1", goal="Inspect nodes", **extra):
 
 
 class UnifiedRuntimeTests(RuntimeFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_suppression_diagnostics_do_not_log_reply_content(self):
+        runtime = self.make_runtime({
+            "reply": "PRIVATE: would you like me to inspect?",
+            "reply_scope": "turn",
+            "tasks": [task(event_key="new-data")],
+        })
+        with self.assertLogs("cortex.cortex.agent", level="INFO") as logs:
+            turn = await runtime.handle_turn(request())
+        output = "\n".join(logs.output)
+        self.assertIn("has_reply=True", output)
+        self.assertIn("reply_scope=turn reply_suppressed=True", output)
+        self.assertNotIn("PRIVATE", output)
+        self.assertNotIn("PRIVATE", turn.text)
+
     async def test_retry_with_same_turn_id_does_not_duplicate_delegated_work(self):
         runtime = self.make_runtime({"tasks": [task(event_key="new-data")]})
         first = await runtime.handle_turn(request(turn_id="turn-1"))

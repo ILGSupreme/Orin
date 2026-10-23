@@ -4,6 +4,13 @@ from common.protocol.unified_types import embed_system_message_user_dict
 
 TURN = """Convert this user turn into a reply and executable tasks for a persistent assistant.
 Return one JSON object with tasks, updates, reply_scope and reply. Choose tasks FIRST.
+Then check the user turn for an explanation or conversational question not covered
+by those tasks. If present, answer it in reply and set reply_scope="independent_answer",
+even when the explanation and the task concern the SAME subject. For example,
+explaining Kubernetes is independent of inspecting its current nodes: the explanation
+does not depend on inspection results. Do not drop either requested outcome.
+If there is no separate answer, use reply_scope="turn" and an empty reply for work.
+Task context must come from the actual conversation, never from these examples.
 reply_scope is "turn" by default. When tasks or updates are present, leave reply
 empty unless answering a SEPARATE conversational question from the user. Only
 that separate answer uses reply_scope="independent_answer". The runtime reports

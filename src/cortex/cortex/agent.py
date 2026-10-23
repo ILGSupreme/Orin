@@ -164,10 +164,6 @@ class AgentRuntime:
             max_output_tokens=512,
         )
         plan = TurnPlan.model_validate_json(result.text)
-        logger.info(
-            "Turn interpreted backend=%s tasks=%d updates=%d has_reply=%s",
-            result.backend, len(plan.tasks), len(plan.updates), bool(plan.reply),
-        )
         # Work acknowledgements come from runtime outcomes, never interpreter
         # prose. Preserve a separately identified answer for mixed requests.
         immediate_reply = (
@@ -175,6 +171,12 @@ class AgentRuntime:
             if not (plan.tasks or plan.updates)
             or plan.reply_scope == "independent_answer"
             else ""
+        )
+        logger.info(
+            "Turn interpreted backend=%s tasks=%d updates=%d has_reply=%s "
+            "reply_scope=%s reply_suppressed=%s",
+            result.backend, len(plan.tasks), len(plan.updates), bool(plan.reply),
+            plan.reply_scope, bool(plan.reply and not immediate_reply),
         )
         replies = [immediate_reply] if immediate_reply else []
         reply_privacy = privacy

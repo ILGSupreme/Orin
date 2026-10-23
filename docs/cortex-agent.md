@@ -304,3 +304,12 @@ Memory persistence. They do not establish Qwen classification reliability or
 eliminate unnecessary questions on turns for which the model creates no task.
 Validate the changed TurnPlan grammar in native-parser CI and run repeated live
 mixed/direct/confirmation requests before runtime acceptance.
+
+
+Mixed-turn validation must check both the immediate answer and the eventual task
+result. The native generation schema selects tasks and updates before reply scope
+and text. A conceptual explanation can be independent even when it concerns the
+same subject as an inspection task. Interpretation logs record reply scope and
+whether text was suppressed, without logging the reply content. These diagnostics
+do not establish whether suppressed text was a valid answer; live model validation
+is still required.
