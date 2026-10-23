@@ -78,20 +78,63 @@ inside the task checkout.
 
 ### Cleanup and existing lab directories
 
-Archive is deliberately conservative. It locks the run, checks its ownership and
-branch, and refuses running/blocked/local-only tasks, unpublished commits, dirty
-files, untracked files, and ignored files. Published candidates must still match
-the remote task branch; if that branch was deleted after merge, archive refuses
-rather than guessing whether unpublished work is safe. No-change tasks must
-still point to the original base commit. Git worktree removal never uses force.
+Archive retires an idle task while preserving its work, including blocked or
+unpublished work. Run `orin-dev archive NAME` or select **Archive** and confirm.
+Running tasks, busy locks, unexpected branches and foreign/redirected checkouts
+are refused. Stop other processes editing the checkout before archiving: the
+controller lock does not stop an editor or an independently launched process.
 
-Tests can leave ignored caches in a checkout. Inspect them with
-`git status --short --ignored` before removing specific disposable files yourself;
-the interface will not silently delete them. On successful archive, only the
-working directory is removed. Local branches, task inputs, state and all attempt
-evidence/logs remain in the managed home. Archived tasks cannot resume; create a
-new task. Automatic log expiry, branch deletion and destructive discard are not
-implemented in this version.
+The command moves the complete Git worktree to `runs/NAME/archive/checkout` using
+`git worktree move`. Staged and unstaged edits, untracked and ignored files,
+symlinks and file modes remain intact. Nothing is cleaned, reset or force-removed.
+This organizes inactive work; it **does not free checkout disk space**. Sensitive
+local files remain local and are not uploaded. Keep the managed home private.
+
+Before moving, archive creates and verifies `archive/history.bundle` containing
+the current commit, named task branch and full ancestry. `archive/manifest.json`
+records the original state, exact HEAD, paths and bundle SHA-256. The task state
+becomes `archived`, with its previous status retained in `archived_from`; list and
+review expose that status. A blocked task remains a blocked outcome. Reports,
+inputs and logs stay in place; historical absolute paths in evidence are not
+rewritten. Archival never grants publication or bypasses the evidence gates.
+
+No remote branch or network access is required. This supports deleted remote
+branches after ordinary or squash merges, and also preserves unmerged work.
+Archive does not infer or certify a merge (`merge_verified` is false). It does not
+delete local or remote branches. Publication remains a separate validated action.
+
+The preserved worktree and index still depend on `source/.git`; retain the source
+checkout. The bundle is an independent backup of committed history only, not of
+uncommitted files or the index. For a complete backup, preserve the managed home.
+To inspect committed history independently, clone the bundle to a new directory:
+
+```bash
+git clone /data/orin-dev/runs/NAME/archive/history.bundle /data/recovered-NAME
+```
+
+Inspect all local edits directly in `archive/checkout` with `git status`,
+`git diff` and `git diff --cached`. To recover the original working location
+(including its index) for manual inspection, with no active task process and the
+original path absent:
+
+```bash
+git -C /data/orin-dev/source worktree move \
+  /data/orin-dev/runs/NAME/archive/checkout \
+  /data/orin-dev/runs/NAME/checkout
+```
+
+This manual recovery does not reactivate the task: its state remains archived.
+Create a fresh task for further agent work and transfer reviewed changes; do not
+edit state to bypass checks. There is no automatic restore/resume or purge command.
+
+If interrupted after the manifest is written, rerun archive to complete the
+recorded move/state update; original state, HEAD and bundle integrity are checked.
+If bundle creation/verification fails before a manifest exists, the original
+checkout is retained. Inspect the incomplete archive directory before moving it
+aside and retrying; the command never overwrites an existing incomplete archive.
+Git may refuse unsupported worktree layouts such as worktrees with submodules;
+no forced fallback is used. Existing archives made by the older checkout-removal
+implementation are unchanged and do not acquire a snapshot retroactively.
 
 Existing runs are not moved, imported or deleted. Their evidence contains absolute
 checkout paths, so moving them is not a supported migration. Keep them as historical

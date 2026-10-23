@@ -3,6 +3,7 @@
 import argparse
 import fcntl
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -72,7 +73,7 @@ def overview(home):
     for path in sorted((home / "runs").glob("*/state.json")):
         state = state_for(path.parent)
         print(f"{path.parent.name:24} {state['status']:16} attempt {state['attempt']}  "
-              f"{state.get('pr', '')}")
+              f"{state.get('pr', '')} {('from ' + state['archived_from']) if state.get('archived_from') else ''}")
 
 
 def progress(path):
@@ -179,40 +180,72 @@ def show(path):
 
 
 def archive(home, path, confirmed=False):
-    """Remove only clean, published worktrees; retain branches and all evidence."""
+    """Retire an idle task without discarding its checkout or changing its verdict."""
     with (path / "lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         state = state_for(path)
         source = home / "source"
         if state.get("worktree_source") != str(source.resolve()):
             raise ValueError("not a worktree owned by this managed home")
-        if state["status"] not in ("awaiting_human", "no_changes"):
-            raise ValueError("only published or no-change tasks can be archived; unpublished work retained")
+        if state["status"] not in ("prepared", "blocked", "local_ready", "awaiting_human", "no_changes"):
+            raise ValueError("only idle, non-archived tasks can be archived")
         work = path / "checkout"
-        if work.is_symlink():
-            raise ValueError("refusing a redirected checkout")
-        if runner.command(["git", "status", "--porcelain", "--untracked-files=all", "--ignored"], work):
-            raise ValueError("checkout has modified, untracked or ignored files; inspect before archiving")
-        head = runner.command(["git", "rev-parse", "HEAD"], work)
-        if runner.command(["git", "branch", "--show-current"], work) != state["branch"]:
-            raise ValueError("unexpected branch")
-        if state["status"] == "awaiting_human":
-            if head != state.get("candidate"):
-                raise ValueError("HEAD differs from recorded published candidate")
-            remote = runner.command(["git", "ls-remote", "origin", f"refs/heads/{state['branch']}"], work)
-            if not remote or remote.split()[0] != head:
-                raise ValueError("remote branch does not match candidate; unpublished work retained")
-        elif head != state["base_sha"]:
-            raise ValueError("no-change checkout has additional commits; retained")
-        if not confirmed and input(f"Remove checkout for {path.name}, retain branch and all logs? [y/N] ").lower() != "y":
+        saved = path / "archive"
+        destination = saved / "checkout"
+        manifest_path = saved / "manifest.json"
+        if work.is_symlink() or saved.is_symlink() or destination.is_symlink():
+            raise ValueError("refusing a redirected checkout or archive")
+        if not confirmed and input(
+            f"Archive {path.name} ({state['status']}), retaining ALL files and logs "
+            "without freeing disk space? [y/N] "
+        ).lower() != "y":
             return
-        # No --force: Git remains the final guard against dirty worktree removal.
         with (source / ".git/orin-worktrees.lock").open("a") as shared_lock:
             fcntl.flock(shared_lock, fcntl.LOCK_EX)
-            runner.command(["git", "worktree", "remove", str(work)], source)
-        state.update(status="archived", archived_from=state["status"], archived_head=head)
-        runner.save(path / "state.json", state)
-        print("Working directory removed. Branch, inputs, reports and logs retained.")
+            # A manifest is written before moving anything. Retrying after an
+            # interrupted move/state update finishes the same transaction.
+            current = work if work.exists() else destination
+            common = runner.command(["git", "rev-parse", "--git-common-dir"], current)
+            if (current / common).resolve() != (source / ".git").resolve():
+                raise ValueError("checkout belongs to a different Git repository")
+            if runner.command(["git", "rev-parse", "--show-toplevel"], current) != str(current.resolve()):
+                raise ValueError("checkout is not a worktree root")
+            if runner.command(["git", "branch", "--show-current"], current) != state["branch"]:
+                raise ValueError("unexpected branch")
+            head = runner.command(["git", "rev-parse", "HEAD"], current)
+            if manifest_path.exists():
+                manifest = json.loads(manifest_path.read_text())
+                if (manifest["original_state"] != state or manifest["head"] != head
+                        or manifest["original_checkout"] != str(work)):
+                    raise ValueError("archive transaction no longer matches task; retained for inspection")
+                bundle = saved / "history.bundle"
+                if hashlib.sha256(bundle.read_bytes()).hexdigest() != manifest["bundle_sha256"]:
+                    raise ValueError("archive history checksum mismatch")
+                runner.command(["git", "bundle", "verify", str(bundle)], source)
+            else:
+                if saved.exists():
+                    raise ValueError("incomplete archive directory; inspect it before retrying")
+                saved.mkdir(mode=0o700)
+                bundle = saved / "history.bundle"
+                # Include HEAD and the named branch, with their full ancestry.
+                runner.command(["git", "bundle", "create", str(bundle), "HEAD",
+                                f"refs/heads/{state['branch']}"], work)
+                runner.command(["git", "bundle", "verify", str(bundle)], source)
+                manifest = {
+                    "version": 1, "original_state": state.copy(), "head": head,
+                    "original_checkout": str(work), "archived_checkout": str(destination),
+                    "bundle_sha256": hashlib.sha256(bundle.read_bytes()).hexdigest(),
+                    "created_at": time.time(), "merge_verified": False,
+                }
+                runner.save(manifest_path, manifest)
+            if work.exists():
+                # Git moves the full directory and preserves its index. No clean,
+                # reset, force removal, stash or remote operation is involved.
+                runner.command(["git", "worktree", "move", str(work), str(destination)], source)
+            state.update(status="archived", archived_from=state["status"], archived_head=head,
+                         archived_checkout=str(destination), archive_manifest=str(manifest_path))
+            runner.save(path / "state.json", state)
+        print(f"Task archived as {state['archived_from']}. All checkout files retained at {destination}.")
 
 
 def menu(home, minutes):
