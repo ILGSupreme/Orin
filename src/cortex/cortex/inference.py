@@ -57,6 +57,14 @@ class InferenceGateway:
     def __init__(self, config: InferenceConfiguration, *, primer, router, http):
         self.config, self.primer, self.router, self.http = config, primer, router, http
 
+    def available_for(self, role, privacy="local_only"):
+        return any(
+            self._available(self.config.backends[name])
+            and (self.config.backends[name].kind != "openai"
+                 or privacy == "external_allowed")
+            for name in self.config.bindings.get(role, [])
+        )
+
     def status(self):
         bindings = {}
         for role, names in self.config.bindings.items():

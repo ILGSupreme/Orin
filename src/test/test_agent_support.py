@@ -59,7 +59,7 @@ class FakeActions:
         self.calls = []
         self.handler = handler
 
-    def available(self):
+    def available(self, privacy="local_only"):
         return {
             "news_search": "Retrieve current news",
             "list_nodes": "Inspect nodes",

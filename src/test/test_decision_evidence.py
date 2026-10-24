@@ -81,7 +81,7 @@ class EvidenceStepTests(unittest.IsolatedAsyncioTestCase):
 
         runtime = AgentRuntime(
             inference=SimpleNamespace(generate=generate),
-            actions=SimpleNamespace(available=lambda: {"list_nodes": "Inspect"}),
+            actions=SimpleNamespace(available=lambda privacy="local_only": {"list_nodes": "Inspect"}),
             store=None, jobs=None, limits=AgentLimits(),
         )
         runtime._save = AsyncMock()

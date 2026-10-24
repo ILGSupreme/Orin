@@ -274,3 +274,56 @@ the actual CPU native parser without loading model weights.
 Other local engines retain prompt guidance and result validation. Read-only
 inspection actions accept an empty input or an exact redundant echo of their own
 action name; arbitrary arguments remain prohibited.
+
+
+### Immediate reply and work acknowledgements
+
+New interpretation uses GeneratedTurnPlan: tasks, updates, and answers. Each
+immediate answer identifies the conversational question and its answer text.
+There is no whole-turn reply or reply-scope field in the generation schema.
+Conceptual explanations belong in answers even when the same turn requests
+inspection of that subject; executable tasks describe only the delegated work.
+The runtime joins answer text with acknowledgements derived from actual work
+operations. Ordinary conversation uses answers with empty tasks and updates.
+
+Answer text must not contain confirmation questions, promises, progress, or
+completion claims about delegated work. This is still a semantic model contract:
+the schema enforces separate fields, not correct content or complete coverage.
+A model can still place inappropriate prose in an answer or combine outcomes
+inside a task. Deterministic tests do not establish live model reliability.
+
+TurnPlan remains a compatibility reader for older reply/reply_scope plans.
+Legacy whole-turn prose is suppressed when tasks or updates exist; explicitly
+independent legacy answers and conversation-only prose remain readable.
+The generation gateway validates against GeneratedTurnPlan, so legacy combined
+plans are rejected for new inference rather than silently accepted.
+
+Only selected immediate text is stored on new goals. Repeated client turn IDs
+return a stored result or runtime status instead of replaying old interpreter
+prose. A task can carry a `clarification` question: the runtime persists it as
+blocked and returns the question without executing tools. Resuming clears that
+question and records feedback. The interpreter must populate this field when
+inputs are missing or the user explicitly asks to clarify before inspection;
+the runtime cannot infer omitted prerequisites from arbitrary prose.
+
+Clarifications of existing work use resume updates. The runtime suppresses an
+untriggered, independent new task whose goal exactly matches (ignoring case and
+outer whitespace) a task resumed in the same turn. It preserves different goals,
+triggered tasks, and tasks participating in dependency graphs. This narrow guard
+covers the captured duplicate; it does not detect paraphrased duplicates.
+
+Decision schemas restrict action names to the advertised inventory plus the empty
+name used for finish/ask_user. Work inference actions are advertised only when a
+backend is available under the goal's privacy policy. Runtime availability checks
+remain necessary because a backend may disappear after generation. Completion
+still requires successful evidence from the current cycle or dependencies.
+
+Tests cover the captured combined-plan regression, immediate answers while work
+is pending, conversation-only answers, provider integration, contradictory
+legacy prose, goal updates, and replay. Model/action boundaries are mocked;
+runtime and Memory persistence are real. Native-parser CI compiles both schemas.
+Live acceptance must check both immediate answers and evidence-backed task
+results, including direct, mixed, conversation-only, and clarification cases.
+
+Interpretation diagnostics log answer count and legacy suppression decisions.
+The existing GGUF JSON RAW log separately contains generated plan content.

@@ -14,6 +14,7 @@ from uuid import uuid4
 from common.jobs import JobSpec
 from common.protocol.agent_types import (
     AgentLimits,
+    GeneratedTurnPlan,
     decision_for_evidence,
     Goal,
     GoalNotice,
@@ -106,7 +107,7 @@ class AgentRuntime:
             if previous:
                 running = self.running.get(previous.id)
                 return TurnResponse(
-                    previous.result or previous.reply or "Work already recorded.",
+                    previous.result or f"Work already recorded ({previous.status}).",
                     previous.id,
                     running.job_id if running else None,
                     previous.privacy,
@@ -139,7 +140,7 @@ class AgentRuntime:
                     "inputs": inputs,
                     "conversation": context,
                     "now": time.time(),
-                    "actions": self.actions.available(),
+                    "actions": self.actions.available(privacy),
                     "goals": [
                         {
                             "id": g.id,
@@ -159,16 +160,44 @@ class AgentRuntime:
                 }
             ),
             privacy=privacy,
-            model=TurnPlan,
+            model=GeneratedTurnPlan,
             budget=self.limits.token_budget,
             max_output_tokens=512,
         )
         plan = TurnPlan.model_validate_json(result.text)
-        logger.info(
-            "Turn interpreted backend=%s tasks=%d updates=%d has_reply=%s",
-            result.backend, len(plan.tasks), len(plan.updates), bool(plan.reply),
+        # Suppress exact restatements of tasks explicitly resumed in this turn.
+        # Keep independent outcomes, including tasks with dependency/trigger semantics.
+        resumed = {
+            t.spec.goal.strip().casefold()
+            for update in plan.updates if update.action == "resume"
+            for g in goals if g.id == update.goal_id
+            for t in g.tasks
+            if update.task_id is None or update.task_id == t.spec.id
+        }
+        referenced_ids = {dep for t in plan.tasks for dep in t.depends_on}
+        plan.tasks = [t for t in plan.tasks if not (
+            t.goal.strip().casefold() in resumed
+            and not t.depends_on and t.id not in referenced_ids
+            and not (t.start_at or t.repeat_seconds or t.event_key)
+        )]
+        # Work acknowledgements come from runtime outcomes, never interpreter
+        # prose. Preserve a separately identified answer for mixed requests.
+        legacy_reply = (
+            plan.reply
+            if not (plan.tasks or plan.updates)
+            or plan.reply_scope == "independent_answer"
+            else ""
         )
-        replies = [plan.reply] if plan.reply else []
+        immediate_reply = "\n\n".join(answer.text for answer in plan.answers)
+        if not immediate_reply:
+            immediate_reply = legacy_reply
+        logger.info(
+            "Turn interpreted backend=%s tasks=%d updates=%d answers=%d has_reply=%s "
+            "reply_scope=%s reply_suppressed=%s",
+            result.backend, len(plan.tasks), len(plan.updates), len(plan.answers),
+            bool(plan.reply), plan.reply_scope, bool(plan.reply and not legacy_reply),
+        )
+        replies = [immediate_reply] if immediate_reply else []
         reply_privacy = privacy
         for update in plan.updates:
             referenced = await self.store.get(
@@ -198,7 +227,8 @@ class AgentRuntime:
             tasks.append(
                 TaskState(
                     spec=spec,
-                    status="waiting" if waiting else "ready",
+                    status="blocked" if spec.clarification else ("waiting" if waiting else "ready"),
+                    answer=spec.clarification,
                     next_wake_at=spec.start_at
                     if waiting and not spec.event_key
                     else None,
@@ -210,7 +240,7 @@ class AgentRuntime:
             privacy=privacy,
             tasks=tasks,
             messages=request.content,
-            reply=plan.reply,
+            reply=immediate_reply,
             allocated_tokens=result.tokens,
         )
         if stable_id:
@@ -228,6 +258,7 @@ class AgentRuntime:
             # may have accepted the same client turn. Do not create duplicate work.
             goal = previous
         job = await self._start(goal)
+        replies.extend(t.spec.clarification for t in goal.tasks if t.spec.clarification)
         replies.append(
             "I’ve recorded the requested work."
             if not job
@@ -389,7 +420,8 @@ class AgentRuntime:
             if o.status == "completed" and o.cycle == task.cycles
         }
         evidence_ids.update(item["id"] for item in dependencies)
-        decision_model = decision_for_evidence(sorted(evidence_ids))
+        available_actions = self.actions.available(goal.privacy)
+        decision_model = decision_for_evidence(sorted(evidence_ids), list(available_actions))
 
         async def charge(tokens):
             goal.allocated_tokens += tokens
@@ -408,7 +440,7 @@ class AgentRuntime:
                         "input_refs": task.spec.input_refs,
                         "dependencies": dependencies,
                         "eligible_evidence_ids": sorted(evidence_ids),
-                        "actions": self.actions.available(),
+                        "actions": available_actions,
                         "cycle": task.cycles,
                         "remaining_steps": self.limits.max_steps_per_task
                         - task.steps
@@ -460,7 +492,7 @@ class AgentRuntime:
                 signature = json.dumps([decision.action, decision.text], sort_keys=True)
                 if signature in task.action_history:
                     raise ValueError("Identical action already attempted this cycle")
-                if decision.action not in self.actions.available():
+                if decision.action not in self.actions.available(goal.privacy):
                     raise ValueError("Action unavailable or prohibited")
                 task.action_history.append(signature)
                 task.pending_action = decision.action
@@ -673,6 +705,7 @@ class AgentRuntime:
                 item.status, item.next_wake_at = "ready", None
                 item.steps, item.action_history = 0, []
                 item.answer = ""
+                item.spec.clarification = ""
                 item.cycles += 1
                 changed.add(item.spec.id)
             if not changed:

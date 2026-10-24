@@ -2,11 +2,12 @@ import asyncio
 import json
 import time
 import unittest
+from pathlib import Path
 
 from pydantic import ValidationError
 
 from common.jobs import JobManager, JobSpec, PipelineStage
-from common.protocol.agent_types import AgentLimits, Goal, TaskSpec, TaskState, TurnPlan
+from common.protocol.agent_types import AgentLimits, GeneratedTurnPlan, Goal, TaskSpec, TaskState, TurnPlan
 from common.protocol.internal_types import InferenceObject
 from common.protocol.routing_types import WorkResult
 from common.protocol.unified_types import ContentPart, RuntimeMessage
@@ -34,6 +35,63 @@ def task(id="t1", goal="Inspect nodes", **extra):
 
 
 class UnifiedRuntimeTests(RuntimeFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_captured_combined_plan_is_rejected_for_new_generation(self):
+        plan = json.loads(
+            (Path(__file__).parent / "fixtures/mixed_turn_combined_plan.json").read_text()
+        )
+        with self.assertRaises(ValidationError):
+            GeneratedTurnPlan.model_validate(plan)
+        # Older plans can still be read, but their combined prose stays suppressed.
+        runtime = self.make_runtime(plan)
+        turn = await runtime.handle_turn(request())
+        self.assertNotIn("To inspect the cluster, I will", turn.text)
+        self.assertNotIn("Kubernetes is", turn.text)
+        await self.drain(runtime)
+
+    async def test_structured_mixed_answer_is_returned_before_inspection_finishes(self):
+        plan = GeneratedTurnPlan.model_validate({
+            "tasks": [task(event_key="inspect-event")],
+            "updates": [],
+            "answers": [{
+                "question": "What is Kubernetes?",
+                "text": "Kubernetes manages containerized workloads.",
+            }],
+        })
+        runtime = self.make_runtime(plan.model_dump())
+        turn = await runtime.handle_turn(request(
+            "Explain Kubernetes and inspect nodes when inspect-event arrives"
+        ))
+        self.assertIn("Kubernetes manages containerized workloads.", turn.text)
+        self.assertEqual(runtime.actions.calls, [])
+        goal = await runtime.store.get(turn.goal_id)
+        self.assertEqual(goal.reply, "Kubernetes manages containerized workloads.")
+        self.assertEqual(goal.tasks[0].spec.goal, "Inspect nodes")
+        self.assertEqual(goal.tasks[0].observations, [])
+
+    async def test_structured_conversation_does_not_create_a_goal(self):
+        runtime = self.make_runtime({
+            "tasks": [], "updates": [],
+            "answers": [{"question": "Greeting", "text": "Hello!"}],
+        })
+        turn = await runtime.handle_turn(request("Hello"))
+        self.assertEqual(turn.text, "Hello!")
+        self.assertIsNone(turn.goal_id)
+        self.assertEqual(await runtime.store.list(user_id="u", session_id="s"), [])
+
+    async def test_suppression_diagnostics_do_not_log_reply_content(self):
+        runtime = self.make_runtime({
+            "reply": "PRIVATE: would you like me to inspect?",
+            "reply_scope": "turn",
+            "tasks": [task(event_key="new-data")],
+        })
+        with self.assertLogs("cortex.cortex.agent", level="INFO") as logs:
+            turn = await runtime.handle_turn(request())
+        output = "\n".join(logs.output)
+        self.assertIn("has_reply=True", output)
+        self.assertIn("reply_scope=turn reply_suppressed=True", output)
+        self.assertNotIn("PRIVATE", output)
+        self.assertNotIn("PRIVATE", turn.text)
+
     async def test_retry_with_same_turn_id_does_not_duplicate_delegated_work(self):
         runtime = self.make_runtime({"tasks": [task(event_key="new-data")]})
         first = await runtime.handle_turn(request(turn_id="turn-1"))
@@ -93,10 +151,84 @@ class UnifiedRuntimeTests(RuntimeFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.jobs.list_jobs(), [])
         self.assertEqual(await runtime.store.list(user_id="u", session_id="s"), [])
 
+    async def test_task_reply_does_not_repeat_confirmation_or_claim_completion(self):
+        for text in ("Would you like me to inspect the nodes now?",
+                     "All nodes are ready; inspection is complete."):
+            with self.subTest(text=text):
+                runtime = self.make_runtime({"reply": text, "tasks": [task()]})
+                turn = await runtime.handle_turn(request("Yes, inspect them now"))
+                self.assertNotIn(text, turn.text)
+                self.assertIn("working", turn.text)
+                await self.drain(runtime)
+                goal = await runtime.store.get(turn.goal_id)
+                self.assertEqual(goal.reply, "")
+                self.assertEqual(goal.status, "completed")
+                self.assertEqual([c[0] for c in runtime.actions.calls], ["list_nodes"])
+
+    async def test_scheduled_task_retry_does_not_replay_discarded_reply(self):
+        runtime = self.make_runtime({
+            "reply": "Should I monitor those nodes?", "tasks": [task(event_key="new-data")]
+        })
+        first = await runtime.handle_turn(request(turn_id="scheduled"))
+        # Existing persisted goals may predate reply scoping.
+        stored = await runtime.store.get(first.goal_id)
+        stored.reply = "Should I monitor those nodes?"
+        await runtime.store.save(stored)
+        second = await runtime.handle_turn(request(turn_id="scheduled"))
+        self.assertNotIn("Should I", first.text)
+        self.assertNotIn("Should I", second.text)
+        self.assertEqual(first.goal_id, second.goal_id)
+        self.assertEqual(len(runtime.inference.calls), 1)
+
+    async def test_resume_update_uses_runtime_acknowledgement(self):
+        runtime = self.make_runtime(
+            {"tasks": [task()]},
+            lambda data: {"kind": "ask_user", "text": "Which nodes?"},
+        )
+        first = await runtime.handle_turn(request())
+        await self.drain(runtime)
+        runtime.inference.decide = auto_decide
+        runtime.inference.plan = {
+            "reply": "Would you like me to inspect them now?",
+            "updates": [{"goal_id": first.goal_id, "action": "resume",
+                         "feedback": "Inspect all nodes"}],
+        }
+        turn = await runtime.handle_turn(request("All nodes, please"))
+        self.assertNotIn("Would you like", turn.text)
+        self.assertIn("Updated", turn.text)
+        await self.drain(runtime)
+        self.assertEqual((await runtime.store.get(first.goal_id)).status, "completed")
+
+    async def test_result_update_does_not_echo_invented_interpreter_result(self):
+        runtime = self.make_runtime({"tasks": [task()]})
+        first = await runtime.handle_turn(request())
+        await self.drain(runtime)
+        runtime.inference.plan = {
+            "reply": "All nodes failed!",
+            "updates": [{"goal_id": first.goal_id, "action": "result"}],
+        }
+        turn = await runtime.handle_turn(request("What was the result?"))
+        goal = await runtime.store.get(first.goal_id)
+        self.assertEqual(turn.text, goal.result)
+        self.assertNotIn("All nodes failed", turn.text)
+
+    async def test_independent_answer_survives_status_update(self):
+        runtime = self.make_runtime({"tasks": [task(event_key="new-data")]})
+        first = await runtime.handle_turn(request())
+        runtime.inference.plan = {
+            "reply": "Kubernetes orchestrates containers.",
+            "reply_scope": "independent_answer",
+            "updates": [{"goal_id": first.goal_id, "action": "status"}],
+        }
+        turn = await runtime.handle_turn(request("What is Kubernetes and what is my task status?"))
+        self.assertIn("Kubernetes orchestrates", turn.text)
+        self.assertIn(first.goal_id, turn.text)
+
     async def test_mixed_turn_preserves_immediate_reply_and_independent_requests(self):
         runtime = self.make_runtime(
             {
                 "reply": "Hello. This is a sensor.",
+                "reply_scope": "independent_answer",
                 "tasks": [
                     task("news", "Get current news", context="NEWS_ONLY"),
                     task("doc", "Summarize document", context="DOCUMENT_ONLY"),
