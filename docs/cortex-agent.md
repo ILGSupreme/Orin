@@ -300,8 +300,23 @@ plans are rejected for new inference rather than silently accepted.
 
 Only selected immediate text is stored on new goals. Repeated client turn IDs
 return a stored result or runtime status instead of replaying old interpreter
-prose. Task clarification through ask_user, authorization, action selection, and
-completion-evidence requirements are unchanged.
+prose. A task can carry a `clarification` question: the runtime persists it as
+blocked and returns the question without executing tools. Resuming clears that
+question and records feedback. The interpreter must populate this field when
+inputs are missing or the user explicitly asks to clarify before inspection;
+the runtime cannot infer omitted prerequisites from arbitrary prose.
+
+Clarifications of existing work use resume updates. The runtime suppresses an
+untriggered, independent new task whose goal exactly matches (ignoring case and
+outer whitespace) a task resumed in the same turn. It preserves different goals,
+triggered tasks, and tasks participating in dependency graphs. This narrow guard
+covers the captured duplicate; it does not detect paraphrased duplicates.
+
+Decision schemas restrict action names to the advertised inventory plus the empty
+name used for finish/ask_user. Work inference actions are advertised only when a
+backend is available under the goal's privacy policy. Runtime availability checks
+remain necessary because a backend may disappear after generation. Completion
+still requires successful evidence from the current cycle or dependencies.
 
 Tests cover the captured combined-plan regression, immediate answers while work
 is pending, conversation-only answers, provider integration, contradictory

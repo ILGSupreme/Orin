@@ -18,6 +18,8 @@ def main():
     for model in (
         GeneratedTurnPlan, TurnPlan, Decision,
         decision_for_evidence([]),
+        decision_for_evidence([], ["list_nodes"]),
+        decision_for_evidence(["obs-1"], []),
         decision_for_evidence(["eb9647aad2be46168a3d8575ce3daa60"]),
         decision_for_evidence(["eb9647aad2be46168a3d8575ce3daa60", "dependency:t1"]),
     ):

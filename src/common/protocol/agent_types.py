@@ -21,6 +21,7 @@ class TaskSpec(AgentModel):
     goal: str = Field(min_length=1, max_length=2000)
     criteria: str = Field(min_length=1, max_length=1000)
     context: str = Field(default="", max_length=3000)
+    clarification: str = Field(default="", max_length=1000)
     depends_on: list[str] = Field(default_factory=list, max_length=8)
     input_refs: list[str] = Field(default_factory=list, max_length=8)
     start_at: float | None = Field(default=None, ge=0)
@@ -98,7 +99,9 @@ class Decision(AgentModel):
     evidence: list[str] = Field(default_factory=list, max_length=32)
 
 
-def decision_for_evidence(evidence_ids: list[str]) -> type[Decision]:
+def decision_for_evidence(
+    evidence_ids: list[str], actions: list[str] | None = None
+) -> type[Decision]:
     """Constrain generation and validation to this decision's eligible evidence."""
     ids = tuple(sorted(set(evidence_ids)))
     if ids:
@@ -110,10 +113,15 @@ def decision_for_evidence(evidence_ids: list[str]) -> type[Decision]:
         evidence_field = Field(
             default_factory=list, max_length=0, json_schema_extra={"const": []}
         )
+    fields = {}
+    if actions is not None:
+        names = tuple(sorted(set(actions) | {""}))
+        fields["action"] = (Literal[names], Field(default=""))
     return create_model(
         "EvidenceDecision",
         __base__=Decision,
         evidence=(evidence_type, evidence_field),
+        **fields,
     )
 
 

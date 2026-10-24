@@ -17,11 +17,13 @@ For ordinary conversation, tasks=[] and updates=[]; respond through answers.
 
 For work requiring actions, verification, retrieval, or later monitoring, create:
 {"id":"t1","goal":"outcome","criteria":"what establishes completion",
- "context":"only relevant user context","depends_on":[],"input_refs":[],
+ "context":"only relevant user context","clarification":"","depends_on":[],"input_refs":[],
  "start_at":null,"repeat_seconds":null,"event_key":null}.
 A direct read-only inspection request authorizes that work now. Create its task;
 do not ask permission or substitute a promise for the task. Missing task inputs
-belong in the task's clarification flow. Current facts require real retrieval;
+must set clarification to the question the user must answer before any action.
+Use clarification="" only when work can proceed. Explicit requests to ask before
+inspecting must set clarification; the runtime pauses these tasks without tools. Current facts require real retrieval;
 retain requests as tasks when capabilities are missing so runtime reports the gap.
 Use dependencies only when an outcome needs another result. Input refs identify
 supplied parts, e.g. "0:1". Truncated parts require a task using their input_refs.
@@ -31,6 +33,8 @@ Only explicit user requests may set a future start time, recurrence (at least
 For an existing goal use updates:
 {"goal_id":"existing ID","action":"status|result|cancel|resume",
  "task_id":null,"feedback":"user clarification or changed instruction"}.
+A clarification of existing work belongs ONLY in updates, never a duplicate task.
+Create additional tasks only for independent new outcomes in the same message.
 Use resume for clarification or corrective feedback on unfinished work; status or
 result for questions about prior work. Never invent a goal ID. Resolve "yes" and
 "do it" from the actual conversation; create a task if no existing goal represents
@@ -43,9 +47,9 @@ Examples:
 User: "Hello! Explain briefly what an AI agent is."
 Output: {"tasks":[],"updates":[],"answers":[{"question":"What is an AI agent?","text":"An AI agent observes, acts toward a goal, and checks results."}]}
 User: "Inspect the cluster nodes and tell me which ones are currently ready."
-Output: {"tasks":[{"id":"t1","goal":"Inspect cluster nodes and report which are ready","criteria":"Report readiness supported by node inspection observations and state their coverage limits","context":"","depends_on":[],"input_refs":[],"start_at":null,"repeat_seconds":null,"event_key":null}],"updates":[],"answers":[]}
+Output: {"tasks":[{"id":"t1","goal":"Inspect cluster nodes and report which are ready","criteria":"Report readiness supported by node inspection observations and state their coverage limits","context":"","clarification":"","depends_on":[],"input_refs":[],"start_at":null,"repeat_seconds":null,"event_key":null}],"updates":[],"answers":[]}
 User: "Briefly explain what Kubernetes is, and inspect cluster nodes to tell me which are ready."
-Output: {"tasks":[{"id":"t1","goal":"Inspect cluster nodes and report which are ready","criteria":"Report readiness supported by node inspection observations and state their coverage limits","context":"","depends_on":[],"input_refs":[],"start_at":null,"repeat_seconds":null,"event_key":null}],"updates":[],"answers":[{"question":"What is Kubernetes?","text":"Kubernetes manages containerized workloads across machines."}]}
+Output: {"tasks":[{"id":"t1","goal":"Inspect cluster nodes and report which are ready","criteria":"Report readiness supported by node inspection observations and state their coverage limits","context":"","clarification":"","depends_on":[],"input_refs":[],"start_at":null,"repeat_seconds":null,"event_key":null}],"updates":[],"answers":[{"question":"What is Kubernetes?","text":"Kubernetes manages containerized workloads across machines."}]}
 """
 
 DECIDE = """Choose one next step toward this task's outcome. Return JSON only:

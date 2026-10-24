@@ -36,12 +36,14 @@ class ActionRegistry:
         }:
             raise ValueError("Duplicate or reserved tool action name")
 
-    def available(self):
+    def available(self, privacy="local_only"):
         actions = {
             "analyze": "Reason about supplied text; no live retrieval",
             "summarize": "Summarize supplied text",
             "describe": "Explain supplied input, including images if the work inference backend supports them",
         }
+        if self.inference is None or not self.inference.available_for("work", privacy):
+            actions = {}
         if self.commands is not None:
             actions.update(
                 {
@@ -61,7 +63,7 @@ class ActionRegistry:
     async def execute(
         self, name, text, *, messages, privacy, budget, checkpoint, charge
     ):
-        if name not in self.available():
+        if name not in self.available(privacy):
             raise ValueError("Requested action is unavailable or prohibited")
         if name in {"cluster_snapshot", "list_nodes", "list_pods"}:
             # Small models sometimes echo the selected action as its input.
