@@ -155,7 +155,6 @@ orin/
     test/
   tools/
     lab-mcp/
-    local-agent/
   install_orin.sh
   terminal-chat.py
 ```
@@ -177,7 +176,8 @@ tests are separate from unit-test discovery.
 
 See [CI and local test instructions](docs/ci.md) for commands and check scope,
 [lab access](tools/lab-mcp/README.md) for the lab bridge, and
-[local validation tooling](tools/local-agent/README.md) for development workflows.
+[standalone dev-agent](https://github.com/ILGSupreme/dev-agent) for development
+workflows. Development coordination is maintained in that separate repository.
 
 Current priorities are:
 
