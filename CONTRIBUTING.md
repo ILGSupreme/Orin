@@ -33,7 +33,6 @@ and standard Linux hosts are the current deployment targets. Start with the
 | `src/test/` | Deterministic tests and separate live/native smoke scripts |
 | `docs/` | Focused runtime, CI, storage and design documentation |
 | `tools/lab-mcp/` | Lab access bridge |
-| `tools/local-agent/` | Local development and validation tooling |
 
 The Tool role exists in protocols and configuration; no standalone `src/tool/`
 implementation is currently present. Built-in inspection can live inside Cortex.
@@ -57,6 +56,15 @@ For operational changes, identify effects on configuration, persistent data and
 running services. Record tested commits, image digests, model/runtime settings,
 dependency versions and correlated goal/job/action evidence. Do not merge or
 deploy without authorization within the agreed scope.
+
+## Development agent tooling
+
+Use [dev-agent](https://github.com/ILGSupreme/dev-agent) from its own checkout and
+workspace. Orin does not ship the coordinator, specialist roles or lifecycle
+hooks. Dev-agent installs its managed configuration in task checkouts for manual
+trust review. Preserve Orin-specific boundaries in [AGENTS.md](AGENTS.md), not in
+copies of dev-agent's generic role templates. Do not commit generated preparation
+files.
 
 ## Persistence and upgrades
 

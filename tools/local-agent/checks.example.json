@@ -1,5 +1,0 @@
-[
-  ["python", "-m", "compileall", "-q", "src", "terminal-chat.py"],
-  ["env", "PYTHONPATH=src", "HF_HUB_OFFLINE=1", "python", "-m", "unittest", "discover", "-v", "-s", "src/test", "-p", "test_*.py"],
-  ["python", "-m", "unittest", "discover", "-v", "-s", "tools/local-agent/tests"]
-]
