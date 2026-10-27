@@ -440,6 +440,29 @@ class UnifiedRuntimeTests(RuntimeFixture, unittest.IsolatedAsyncioTestCase):
 
 
 class GoalStoreTests(RuntimeFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_expired_lease_rejects_write_without_revision_or_owner_change(self):
+        from unittest.mock import patch
+
+        runtime = self.make_runtime()
+        goal = Goal(
+            user_id="u", session_id="s", tasks=[TaskState(spec=TaskSpec(**task()))]
+        )
+        with patch("time.time", return_value=1000):
+            await runtime.store.save(goal)
+            claimed = await runtime.store.claim(goal, "one", 1)
+        self.assertIsNotNone(claimed)
+        before = await runtime.store.get(goal.id)
+        self.assertEqual(before.revision, claimed.revision)
+        self.assertEqual(before.lease_owner, "one")
+
+        claimed.result = "must not be saved"
+        with patch("time.time", return_value=1002):
+            self.assertLessEqual(before.lease_until, time.time())
+            with self.assertRaises(RuntimeError):
+                await runtime.store.save(claimed, owner="one")
+        after = await runtime.store.get(goal.id)
+        self.assertEqual(after.model_dump(), before.model_dump())
+
     async def test_expired_lease_is_recoverable_and_old_owner_cannot_write(self):
         from unittest.mock import patch
 
