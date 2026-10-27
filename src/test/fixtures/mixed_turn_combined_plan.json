@@ -1,0 +1,20 @@
+{
+  "tasks": [
+    {
+      "id": "t1",
+      "goal": "Explain what Kubernetes is and inspect cluster nodes to report which are ready",
+      "criteria": "Provide a brief definition of Kubernetes and report the readiness status of each node observed during inspection",
+      "context": "User requested a definition and node inspection",
+      "depends_on": [],
+      "input_refs": [
+        "0:0"
+      ],
+      "start_at": null,
+      "repeat_seconds": null,
+      "event_key": null
+    }
+  ],
+  "updates": [],
+  "reply_scope": "turn",
+  "reply": "Kubernetes is an open-source container orchestration platform that automates deployment, scaling, and management of containerized applications. To inspect the cluster, I will retrieve the current node inventory and report their readiness status."
+}

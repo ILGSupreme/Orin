@@ -55,7 +55,7 @@ class HarnessIntegrationTests(RuntimeFixture, unittest.IsolatedAsyncioTestCase):
                     json=response(
                         json.dumps(
                             {
-                                "reply": "API provider reply",
+                                "answers": [{"question": "Greeting", "text": "API provider reply"}],
                                 "tasks": [],
                                 "updates": [],
                             }
@@ -190,7 +190,7 @@ class HarnessIntegrationTests(RuntimeFixture, unittest.IsolatedAsyncioTestCase):
                     200,
                     json=response(
                         json.dumps(
-                            {"reply": "Provider reply", "tasks": [], "updates": []}
+                            {"answers": [{"question": "Greeting", "text": "Provider reply"}], "tasks": [], "updates": []}
                         )
                     ),
                 )
